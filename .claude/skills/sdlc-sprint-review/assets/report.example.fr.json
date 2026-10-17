@@ -1,0 +1,283 @@
+{
+  "schemaVersion": 1,
+  "report": {
+    "id": "S-3-release",
+    "version": 1,
+    "language": "fr",
+    "generatedAt": "2026-10-27T16:10:00-04:00",
+    "preparedBy": "example-author-model",
+    "fictional": true
+  },
+  "project": {"key": "DEMO", "name": "Espace démo fictif"},
+  "sprint": {
+    "vault": "demo",
+    "key": "S-3",
+    "name": "Invitations",
+    "goal": "Inviter et révoquer des utilisateurs",
+    "state": "active",
+    "startDate": "2026-10-19T09:00:00-04:00",
+    "endDate": "2026-10-30T17:00:00-04:00",
+    "scopeDigest": "e387183dc5718d03cd08cc619bcda778ce18f58eb78dc39bb8462e88149c0b90",
+    "closureTask": "DEMO-2"
+  },
+  "release": {
+    "repository": "https://git.example.com/demo/invitations",
+    "base": {"ref": "v1.3.0", "sha": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"},
+    "candidate": {
+      "sha": "9c8b7a6f5e4d3c2b1a0918273645546372819aab",
+      "url": "https://git.example.com/demo/invitations/commit/9c8b7a6f5e4d3c2b1a0918273645546372819aab"
+    },
+    "tag": "v1.4.0"
+  },
+  "outcome": {
+    "readiness": "blocked",
+    "headline": "Le candidat n'est pas prêt. Un lien révoqué reste valide et l'évaluation du courriel échoue.",
+    "summary": "La revue d'implémentation a trouvé un défaut élevé au tour 1 : un lien révoqué reste valide 60 secondes à cause du cache de jetons. La correction est en cours.\n\nL'évaluation du courriel d'invitation passe sous le seuil approuvé. Le parcours de bout en bout n'a pas pu s'exécuter, car la préproduction était indisponible. Un nouveau tour complet suivra les corrections."
+  },
+  "scope": {
+    "summary": "Le brief approuvé comptait trois récits. DEMO-5 a été ajouté au jour 4 par un amendement approuvé. DEMO-4 passe à DEMO-8, car le texte traduit n'est pas prêt.",
+    "items": [
+      {
+        "key": "DEMO-1",
+        "title": "Envoyer une invitation par courriel",
+        "origin": "planned",
+        "outcome": "delivered",
+        "destination": null,
+        "note": null
+      },
+      {
+        "key": "DEMO-3",
+        "title": "Révoquer une invitation en attente",
+        "origin": "planned",
+        "outcome": "delivered",
+        "destination": null,
+        "note": "Défaut R1 ouvert."
+      },
+      {
+        "key": "DEMO-4",
+        "title": "Courriel d'invitation en français",
+        "origin": "planned",
+        "outcome": "deferred",
+        "destination": "DEMO-8",
+        "note": "Le candidat désactive la langue française pour les invitations."
+      },
+      {
+        "key": "DEMO-5",
+        "title": "Limiter les invitations à 20 par administrateur par heure",
+        "origin": "added",
+        "outcome": "delivered",
+        "destination": null,
+        "note": "Ajouté par l'amendement approuvé du 2026-10-22."
+      }
+    ]
+  },
+  "areas": {
+    "implementation": {
+      "status": "incomplete",
+      "decision": "REVIEW_AGAIN",
+      "round": 1,
+      "reviewers": ["example-reviewer-a"],
+      "findings": {"raised": 3, "resolved": 2, "deferred": 0},
+      "summary": "Le tour 1 a trouvé le défaut de cache à la révocation (R1). Il faut un nouveau tour complet après la correction.",
+      "evidence": [
+        {
+          "label": "Revue du tour 1",
+          "url": null,
+          "ref": {"key": "S-3", "digest": "86def6a8c112b12a79c3d00d2881ea1de6e556da913791d31cb0dd9888001035"}
+        }
+      ]
+    },
+    "verification": {
+      "status": "incomplete",
+      "decision": "FIX",
+      "round": 1,
+      "reviewers": ["example-reviewer-b"],
+      "findings": {"raised": 2, "resolved": 0, "deferred": 0},
+      "summary": "L'évaluation du courriel échoue (C4) et le parcours de bout en bout n'a pas été exécuté (C3). La revue ne peut pas conclure sans ces résultats.",
+      "evidence": [
+        {
+          "label": "Revue du tour 1",
+          "url": null,
+          "ref": {"key": "S-3", "digest": "c268b6940c61eb1e35ccc0e9014761430558d1130503e7f0ac7873e5fb0437c4"}
+        }
+      ]
+    },
+    "documentation": {
+      "status": "incomplete",
+      "decision": null,
+      "round": null,
+      "reviewers": [],
+      "findings": null,
+      "summary": "Pas encore exécutée. Elle suivra la correction de R1, sur le même candidat que les autres domaines.",
+      "evidence": []
+    },
+    "retrospective": {
+      "status": "passed",
+      "decision": "HUMAN_REVIEW",
+      "round": 1,
+      "reviewers": ["example-reviewer-a"],
+      "findings": {"raised": 0, "resolved": 0, "deferred": 0},
+      "summary": "Un motif répété, présenté plus bas avec ses preuves. Ce résultat sera revu au prochain tour.",
+      "evidence": [
+        {
+          "label": "Rétrospective",
+          "url": null,
+          "ref": {"key": "S-3", "digest": "1561d6b775d51dbb867bf3fe28e2ac78b7da18fc073e983c8991702fcbe11e04"}
+        }
+      ]
+    }
+  },
+  "checks": [
+    {
+      "id": "C1",
+      "name": "Contrôle local",
+      "kind": "gate",
+      "required": true,
+      "status": "passed",
+      "command": "make check",
+      "detail": "Le contrôle a écrit PASS pour l'arbre du candidat.",
+      "evidence": [
+        {
+          "label": "Verdict du contrôle",
+          "url": "https://git.example.com/demo/invitations/blob/9c8b7a6f5e4d3c2b1a0918273645546372819aab/docs/sprints/S-3/evidence/gate-verdict.txt"
+        }
+      ],
+      "cost": null
+    },
+    {
+      "id": "C2",
+      "name": "API d'invitation sur une vraie base de données",
+      "kind": "integration",
+      "required": true,
+      "status": "passed",
+      "command": "go test -tags integration ./services/invitations/...",
+      "detail": "13 tests réussis sur un conteneur PostgreSQL 16 jetable.",
+      "evidence": [
+        {
+          "label": "Reçu d'exécution",
+          "url": null,
+          "ref": {"key": "DEMO-2", "digest": "8b80a7787bcb001055c824929b32b821d577f0c7d94588a13c24b6667a08d90d"}
+        }
+      ],
+      "cost": null
+    },
+    {
+      "id": "C3",
+      "name": "Parcours inviter, accepter et révoquer",
+      "kind": "e2e",
+      "required": true,
+      "status": "not_run",
+      "command": "make browser",
+      "detail": "La préproduction était indisponible le 2026-10-27. Nouvelle exécution prévue après la correction de R1.",
+      "evidence": [],
+      "cost": null
+    },
+    {
+      "id": "C4",
+      "name": "Qualité du courriel d'invitation",
+      "kind": "llm_eval",
+      "required": true,
+      "status": "failed",
+      "command": "go run ./tools/evals/invitation-email --trials 60",
+      "detail": "41 essais sur 60 respectent la grille. Le seuil approuvé est 55. Les échecs omettent la date d'expiration.",
+      "evidence": [
+        {
+          "label": "Traces de l'évaluation",
+          "url": "https://git.example.com/demo/invitations/blob/9c8b7a6f5e4d3c2b1a0918273645546372819aab/docs/sprints/S-3/evidence/email-eval-traces.json"
+        }
+      ],
+      "cost": {"amount": 1.92, "currency": "USD", "budget": 5.0, "calls": 60, "model": "example-llm-2026-06"}
+    }
+  ],
+  "measurements": [
+    {
+      "metric": "Couverture des lignes",
+      "scope": "services/invitations",
+      "baseline": "78,4 %",
+      "candidate": "83,0 %",
+      "tool": "go test -cover (go 1.26)",
+      "observation": "Le chemin de révocation n'a pas encore de test d'intégration pour le cache."
+    },
+    {
+      "metric": "Mutation",
+      "scope": "services/invitations",
+      "baseline": null,
+      "candidate": null,
+      "tool": null,
+      "observation": "Non mesuré. Aucun outil de mutation n'est configuré."
+    }
+  ],
+  "risks": [
+    {
+      "id": "R1",
+      "severity": "High",
+      "area": "implementation",
+      "title": "Un lien d'invitation révoqué reste valide 60 secondes",
+      "status": "open",
+      "blocking": true,
+      "resolution": null,
+      "followup": null,
+      "evidence": [
+        {
+          "label": "Constat R1",
+          "url": null,
+          "ref": {"key": "S-3", "digest": "93c645bc9e4b1c031c65589a0d14cc202617634734ffc2f05ba60b91af8a3c02"}
+        }
+      ]
+    },
+    {
+      "id": "R4",
+      "severity": "Medium",
+      "area": "verification",
+      "title": "Le courriel omet la date d'expiration dans 19 essais sur 60",
+      "status": "open",
+      "blocking": true,
+      "resolution": null,
+      "followup": null,
+      "evidence": [
+        {
+          "label": "Traces de l'évaluation",
+          "url": "https://git.example.com/demo/invitations/blob/9c8b7a6f5e4d3c2b1a0918273645546372819aab/docs/sprints/S-3/evidence/email-eval-traces.json"
+        }
+      ]
+    }
+  ],
+  "followups": [{"key": "DEMO-8", "title": "Courriel d'invitation en français", "reason": "Portée reportée (DEMO-4)."}],
+  "retrospective": {
+    "summary": "La question de l'invalidation du cache est arrivée tard dans trois récits sur quatre.",
+    "candidates": [
+      {
+        "id": "P1",
+        "type": "process",
+        "observation": "La revue IA, et non la planification, a soulevé l'invalidation du cache dans DEMO-1, DEMO-3 et DEMO-5.",
+        "proposal": "Ajouter une question sur l'invalidation du cache au modèle de plan.",
+        "recommendation": "trial",
+        "humanChoice": "pending",
+        "destination": null,
+        "evidence": [
+          {
+            "label": "Clôture de DEMO-3",
+            "url": null,
+            "ref": {"key": "DEMO-3", "digest": "fa2a12d44a6653f3329279d4638d3428d510862d0ad09d710dbf61fefff2cdfd"}
+          }
+        ]
+      }
+    ]
+  },
+  "decision": {
+    "approval": {
+      "status": "not_requested",
+      "approver": null,
+      "decidedAt": null,
+      "ref": null,
+      "sprint": null,
+      "scopeDigest": null,
+      "candidate": null,
+      "reportDigest": null,
+      "reportUrl": null,
+      "tag": null,
+      "note": "Aucune demande tant que le candidat est bloqué."
+    },
+    "tagPublication": {"status": "not_published", "tag": null, "candidate": null, "object": null, "verifiedAt": null, "evidence": []}
+  }
+}

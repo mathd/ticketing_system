@@ -35,3 +35,6 @@ spike/
 .gate.lock
 .gate.log
 .gate.verdict
+# Review round records (sdlc-ticket, references/reviews.md). Scratch input to
+# scripts/review_round.py; the record of truth is the ticket's kind=review comment.
+.review-*.json

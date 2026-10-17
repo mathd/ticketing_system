@@ -1,7 +1,7 @@
-# A/B stages — `plan` and `aiReview` as harness/model experiments
+# A/B stages — `plan` and `aiReview` as model experiments
 
 Read this when `config.models` gives `plan` or `aiReview` an **array** of model values
-(e.g. `"aiReview": ["gpt-5.6-sol", "gpt-5.6-sol@claudex"]`). An array means: run every arm
+(e.g. `"aiReview": ["gpt-6.1-sol", "opencode/kimi-k2.7-code"]`). An array means: run every arm
 on the same input, score them, and record the comparison. A single string keeps today's
 behavior exactly — arrays are opt-in per stage, per repo.
 
@@ -12,16 +12,15 @@ Ground rules for any A/B stage:
   with worktree isolation, not this pipeline).
 - **Every arm independently satisfies the cross-model invariant** (reviewer ≠ author, planner
   ≠ plan-reviewer). Check each element as if it were the sole value.
-- **Each arm runs by its own runner rules** — bare `gpt-*` per `codex-runner.md`, `@claudex`
-  per `claudex-runner.md`, Claude models as subagents. Same brief, same input artifact,
-  launched in parallel (all arms are read-only, so no isolation is needed).
+- **Each arm runs by its own runner rules** (SKILL.md § config.models) — in T3 every arm per
+  `t3-runner.md`; outside it `gpt-*` per `codex-runner.md` and Claude models as subagents. Same brief, same input artifact, launched in parallel (all arms are read-only, so
+  no isolation is needed). All arms of one stage run in the same environment: never compare a
+  T3 arm with a CLI arm and call the difference a model difference.
 - **Arms may vary effort** via the `:effort` suffix (SKILL.md § config.models) — e.g.
-  `["gpt-5.6-sol:high@claudex", "gpt-5.6-sol:low@claudex"]` asks "is low effort enough?".
-  Keep it **one variable per experiment**: arms that differ in both harness *and* effort
-  (or model *and* effort) produce a comparison you can't attribute — pick one axis.
-  For `aiReview`, effort-varied arms must all be `@claudex` (codex's `adversarial-review`
-  has no effort flag). Record each arm's effort in the tally and in the log line's
-  `model` string.
+  `["gpt-6.1-sol:high", "gpt-6.1-sol:low"]` asks "is low effort enough?".
+  Keep it **one variable per experiment**: arms that differ in both model *and* effort produce a
+  comparison you can't attribute — pick one axis. Record each arm's effort in the tally and in
+  the log line's `model` string.
 - **One arm failing doesn't abort the stage.** The surviving arm's output drives the pipeline;
   the failure is logged as that arm's result (a harness failure is a finding about the harness).
 - **Record everything twice:** the comparison always goes in the **stage comment** (the
@@ -42,9 +41,10 @@ Ground rules for any A/B stage:
 4. Tally per arm: confirmed / refuted / unique-confirmed (found by this arm alone). Put the
    table in the stage comment. Fixes proceed from the union of confirmed findings, exactly
    as a single review's would.
-5. **Second passes are never A/B'd.** A re-review of a fix diff runs on the **first array
-   element only** (the control). One variable, measured once, at the first pass — A/B'ing
-   the second pass would score arms on different diffs.
+5. **Only round 1 is A/B'd.** Every arm produces its own round record; the stage acts on the
+   most restrictive contract output across arms (`reviews.md` § A/B review arms). Rounds 2 and
+   later run on the **first array element only** (the control). One variable, measured once, in
+   the first round — A/B'ing later rounds would score arms on different diffs.
 
 ## `plan` — selection by the human gate
 

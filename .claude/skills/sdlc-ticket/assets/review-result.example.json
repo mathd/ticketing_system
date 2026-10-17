@@ -1,0 +1,18 @@
+{
+  "stage": "ai-review",
+  "round": 1,
+  "lens": "initial",
+  "artifact": "base:BASE_SHA/head:HEAD_SHA",
+  "reviewer": "gpt-6.1-sol",
+  "complete": true,
+  "verdict": "REVISE",
+  "summary": "A stale update can overwrite newer data.",
+  "findings": [{
+    "id": "R1",
+    "severity": "High",
+    "evidence": "services/commerce/internal/store/store.go:42 compares the revision read during this request.",
+    "impact": "Concurrent edits can overwrite the user's newer value.",
+    "correction": "Compare with the revision submitted by the client."
+  }],
+  "researchRequests": []
+}

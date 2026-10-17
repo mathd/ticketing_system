@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -301,6 +302,100 @@ func TestReconcileContractAcceptsEventTypePerOccurrence(t *testing.T) {
 	}
 	if len(out.Results) != 2 || out.Results[0]["result"] != "rejected" || out.Results[1]["result"] != "rejected" {
 		t.Fatalf("results = %+v, want two per-item rejections", out.Results)
+	}
+}
+
+// An unknown event_type on a VALID, in-scope credential is refused for that item
+// only: "only its item" means HTTP 200 with a per-item rejected result, not a 422
+// for the whole batch. The request holds one row, so it does not prove that
+// another row succeeds. The test above cannot see the event_type check, because
+// its credential is invalid and the credential check refuses that row too. The
+// store is nil on purpose: without the check the row would be recorded as an
+// entry admission, and here it panics in (*Postgres).ReconcileAdmission instead.
+//
+// The plan adds a positive control (TKT-553 D8): a second, separate single-row
+// request with event_type "exit" must reach admission recording. It proves that
+// occurrence parsing, the credential and the scope check let this fixture
+// through, so the refusal of the "sideways" row comes from the event_type check.
+// It is a separate request and not a second row, because an exit row in the same
+// batch would reach the store and panic before the sideways row is handled.
+// D8 also adds eight unmutated runs to the mutation check of this test, so the
+// control must reach recording on every run, not only once.
+func TestReconcileUnknownEventTypeRejectsOnlyItsItem(t *testing.T) {
+	organizer := uuid.New()
+	verifier, payload := signedFor(t, organizer)
+	// A setup check only: a broken credential fails here, and does not read as a
+	// refusal by the event_type check.
+	claims, err := verifier.Verify(payload)
+	if err != nil {
+		t.Fatalf("fixture credential does not verify: %v", err)
+	}
+	if claims.OrganizerID != organizer {
+		t.Fatalf("fixture credential organizer = %s, want %s", claims.OrganizerID, organizer)
+	}
+	router := enrolled(newTestServer(nil, verifier), organizer).Router(nil, true)
+	reconcile := func(occurrenceID, eventType string) *http.Request {
+		body, err := json.Marshal(map[string]any{"occurrences": []map[string]string{{
+			"qr_payload": payload, "occurrence_id": occurrenceID, "occurred_at": "2026-07-17T09:00:00Z",
+			"local_decision": "", "event_type": eventType,
+		}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := scanRequest(http.MethodPost, "/scans/reconciliations", bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		return request
+	}
+	// reachedRecording serves one request and reports if it reached admission
+	// recording. Only ServeHTTP runs under recover, so a setup or assertion
+	// failure is never hidden. A panic counts only when its stack contains the
+	// recording method; any other panic fails the test with its value and stack.
+	reachedRecording := func(recorder *httptest.ResponseRecorder, request *http.Request) (reached bool) {
+		defer func() {
+			recovered := recover()
+			if recovered == nil {
+				return
+			}
+			stack := debug.Stack()
+			if !bytes.Contains(stack, []byte("(*Postgres).ReconcileAdmission")) {
+				t.Fatalf("panic outside admission recording: %v\n%s", recovered, stack)
+			}
+			reached = true
+		}()
+		router.ServeHTTP(recorder, request)
+		return false
+	}
+
+	control := reconcile(uuid.NewString(), "exit")
+	controlRecorder := httptest.NewRecorder()
+	if !reachedRecording(controlRecorder, control) {
+		t.Fatalf("valid exit control did not reach admission recording: status=%d body=%s", controlRecorder.Code, controlRecorder.Body.String())
+	}
+	t.Log("positive control reached admission recording")
+
+	occurrenceID := uuid.NewString()
+	sideways := reconcile(occurrenceID, "sideways")
+	recorder := httptest.NewRecorder()
+	if reachedRecording(recorder, sideways) {
+		t.Fatal("unknown event_type reached admission recording")
+	}
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("reconcile with unknown event_type = %d, want 200 with a per-item result; body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Results []map[string]any `json:"results"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v; body=%s", err, recorder.Body.String())
+	}
+	if len(response.Results) != 1 {
+		t.Fatalf("results = %+v, want exactly one", response.Results)
+	}
+	if response.Results[0]["occurrence_id"] != occurrenceID {
+		t.Errorf("occurrence_id = %v, want %s echoed unchanged", response.Results[0]["occurrence_id"], occurrenceID)
+	}
+	if response.Results[0]["result"] != "rejected" {
+		t.Errorf("result = %v, want rejected", response.Results[0]["result"])
 	}
 }
 

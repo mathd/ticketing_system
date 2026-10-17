@@ -1,7 +1,6 @@
 {
   "tracker": "local",
   "gates": "autonomous",
-  "confluence": null,
   "code": {
     "repo": "ticketing_system",
     "defaultBranch": "main",
@@ -12,10 +11,21 @@
     "plan": "gpt-6.1-sol",
     "planReview": "opus-5.5",
     "implement": "opus-5.5",
-    "aiReview": "gpt-6.1-sol"
+    "aiReview": "gpt-6.1-sol",
+    "research": "gpt-6-luna:high"
+  },
+  "review": {
+    "severityMap": {
+      "critical": "Critical", "high": "High", "medium": "Medium", "low": "Low", "nit": "Nit",
+      "P0": "Critical", "P1": "High", "P2": "Medium", "P3": "Low", "P4": "Nit"
+    }
   },
   "registry": {
     "bindingPath": "docs/adr/",
     "referenceLocation": "local"
+  },
+  "sprints": {
+    "vault": "sdlc",
+    "reportLanguage": "en"
   }
 }

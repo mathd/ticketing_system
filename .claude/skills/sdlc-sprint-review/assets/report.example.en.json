@@ -1,0 +1,364 @@
+{
+  "schemaVersion": 1,
+  "report": {
+    "id": "S-3-release",
+    "version": 2,
+    "language": "en",
+    "generatedAt": "2026-10-29T15:40:00-04:00",
+    "preparedBy": "example-author-model",
+    "fictional": true
+  },
+  "project": {"key": "DEMO", "name": "Fictional Demo Workspace"},
+  "sprint": {
+    "vault": "demo",
+    "key": "S-3",
+    "name": "Invitations",
+    "goal": "Invite and revoke users",
+    "state": "active",
+    "startDate": "2026-10-19T09:00:00-04:00",
+    "endDate": "2026-10-30T17:00:00-04:00",
+    "scopeDigest": "e387183dc5718d03cd08cc619bcda778ce18f58eb78dc39bb8462e88149c0b90",
+    "closureTask": "DEMO-2"
+  },
+  "release": {
+    "repository": "https://git.example.com/demo/invitations",
+    "base": {"ref": "v1.3.0", "sha": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"},
+    "candidate": {
+      "sha": "f1e2d3c4b5a6978877665544332211ffeeddccbb",
+      "url": "https://git.example.com/demo/invitations/commit/f1e2d3c4b5a6978877665544332211ffeeddccbb"
+    },
+    "tag": "v1.4.0"
+  },
+  "outcome": {
+    "readiness": "ready",
+    "headline": "Admins can invite and revoke users. The French invitation email moved to the next sprint.",
+    "summary": "The candidate delivers three of four stories. All four reviews reached human review on round 2, and every required check passed or does not apply to this scope.\n\nRound 1 found one High defect: a revoked link stayed valid for 60 seconds because of the token cache. The fix and its integration test are in the candidate. Two smaller items are follow-up work."
+  },
+  "scope": {
+    "summary": "The approved brief had three stories. DEMO-5 joined on day 4 after the human approved a scope amendment. DEMO-4 moved to DEMO-8 because the translated copy was not ready.",
+    "items": [
+      {
+        "key": "DEMO-1",
+        "title": "Send an invitation by email",
+        "origin": "planned",
+        "outcome": "delivered",
+        "destination": null,
+        "note": null
+      },
+      {
+        "key": "DEMO-3",
+        "title": "Revoke a pending invitation",
+        "origin": "planned",
+        "outcome": "delivered",
+        "destination": null,
+        "note": null
+      },
+      {
+        "key": "DEMO-4",
+        "title": "French invitation email",
+        "origin": "planned",
+        "outcome": "deferred",
+        "destination": "DEMO-8",
+        "note": "The candidate turns off the French locale for invitations."
+      },
+      {
+        "key": "DEMO-5",
+        "title": "Limit invitations to 20 per admin per hour",
+        "origin": "added",
+        "outcome": "delivered",
+        "destination": null,
+        "note": "Added by approved amendment on 2026-10-22."
+      }
+    ]
+  },
+  "areas": {
+    "implementation": {
+      "status": "passed",
+      "decision": "HUMAN_REVIEW",
+      "round": 2,
+      "reviewers": ["example-reviewer-a"],
+      "findings": {"raised": 3, "resolved": 3, "deferred": 0},
+      "summary": "Round 1 found the revoke cache defect (R1). Round 2 confirmed the fix. The three stories share one token service, and the reviewer found no duplicate mechanism.",
+      "evidence": [
+        {
+          "label": "Round 2 review record",
+          "url": null,
+          "ref": {"key": "S-3", "digest": "88e6b14e31ada2c3edfb9ba0efb6ffaa3d7732121677129c0f23f8d965a17ac1"}
+        },
+        {
+          "label": "Correction diff for R1",
+          "url": "https://git.example.com/demo/invitations/compare/9c8b7a6...f1e2d3c"
+        }
+      ]
+    },
+    "verification": {
+      "status": "passed",
+      "decision": "HUMAN_REVIEW",
+      "round": 2,
+      "reviewers": ["example-reviewer-b"],
+      "findings": {"raised": 2, "resolved": 1, "deferred": 1},
+      "summary": "The integration and end-to-end tests exercise the real database and the staging build. The email evaluation ran against the live model inside the approved budget. It uses only English fixtures (R2).",
+      "evidence": [
+        {
+          "label": "Round 2 review record",
+          "url": null,
+          "ref": {"key": "S-3", "digest": "44e5c4aad7487a3288958beb4689dd4107654d9b4f30737cc85d9e55b97a9abc"}
+        }
+      ]
+    },
+    "documentation": {
+      "status": "passed",
+      "decision": "HUMAN_REVIEW",
+      "round": 2,
+      "reviewers": ["example-reviewer-b"],
+      "findings": {"raised": 2, "resolved": 1, "deferred": 1},
+      "summary": "The admin guide and release notes match the delivered behavior, including the hourly limit. One screenshot still shows the old menu (R3).",
+      "evidence": [
+        {
+          "label": "Round 2 review record",
+          "url": null,
+          "ref": {"key": "S-3", "digest": "2efee297df27ae37d4215fbf89b79dc3c52d23c9524e39d995a6b5f8161b8e10"}
+        },
+        {
+          "label": "Report fidelity check",
+          "url": null,
+          "ref": {"key": "S-3", "digest": "47fb4621067d59ce820c629e18b291ed02b931f0f8f1cf66eb29599ebbd3772f"}
+        }
+      ]
+    },
+    "retrospective": {
+      "status": "passed",
+      "decision": "HUMAN_REVIEW",
+      "round": 2,
+      "reviewers": ["example-reviewer-a"],
+      "findings": {"raised": 0, "resolved": 0, "deferred": 0},
+      "summary": "One repeated pattern and one ADR candidate. Both are below, with the evidence that supports them.",
+      "evidence": [
+        {
+          "label": "Retrospective record",
+          "url": null,
+          "ref": {"key": "S-3", "digest": "1561d6b775d51dbb867bf3fe28e2ac78b7da18fc073e983c8991702fcbe11e04"}
+        }
+      ]
+    }
+  },
+  "checks": [
+    {
+      "id": "C1",
+      "name": "Local gate",
+      "kind": "gate",
+      "required": true,
+      "status": "passed",
+      "command": "make check",
+      "detail": "The gate wrote PASS for the candidate tree.",
+      "evidence": [
+        {
+          "label": "Gate verdict",
+          "url": "https://git.example.com/demo/invitations/blob/f1e2d3c4b5a6978877665544332211ffeeddccbb/docs/sprints/S-3/evidence/gate-verdict.txt"
+        }
+      ],
+      "cost": null
+    },
+    {
+      "id": "C2",
+      "name": "Invitation API against a real database",
+      "kind": "integration",
+      "required": true,
+      "status": "passed",
+      "command": "go test -tags integration ./services/invitations/...",
+      "detail": "14 tests passed against a disposable PostgreSQL 16 container.",
+      "evidence": [
+        {
+          "label": "Run receipt",
+          "url": null,
+          "ref": {"key": "DEMO-2", "digest": "8b80a7787bcb001055c824929b32b821d577f0c7d94588a13c24b6667a08d90d"}
+        }
+      ],
+      "cost": null
+    },
+    {
+      "id": "C3",
+      "name": "Invite, accept and revoke journey",
+      "kind": "e2e",
+      "required": true,
+      "status": "passed",
+      "command": "make browser",
+      "detail": "3 journeys passed on the staging build of the candidate.",
+      "evidence": [
+        {
+          "label": "Run receipt",
+          "url": null,
+          "ref": {"key": "DEMO-2", "digest": "c745e0d10a182dd0a496847c674ebf6ab2910f8afedfdc8b987ed5870800300c"}
+        }
+      ],
+      "cost": null
+    },
+    {
+      "id": "C4",
+      "name": "Invitation email quality",
+      "kind": "llm_eval",
+      "required": true,
+      "status": "passed",
+      "command": "go run ./tools/evals/invitation-email --trials 60",
+      "detail": "58 of 60 trials met the rubric. The approved threshold is 55.",
+      "evidence": [
+        {
+          "label": "Evaluation traces",
+          "url": "https://git.example.com/demo/invitations/blob/f1e2d3c4b5a6978877665544332211ffeeddccbb/docs/sprints/S-3/evidence/email-eval-traces.json"
+        }
+      ],
+      "cost": {"amount": 1.86, "currency": "USD", "budget": 5.0, "calls": 60, "model": "example-llm-2026-06"}
+    },
+    {
+      "id": "C5",
+      "name": "French email rendering",
+      "kind": "integration",
+      "required": true,
+      "status": "not_applicable",
+      "command": null,
+      "detail": "DEMO-4 moved to DEMO-8. The candidate turns off the French locale, and C2 checks that it does.",
+      "evidence": [],
+      "cost": null
+    },
+    {
+      "id": "C6",
+      "name": "Load test, 200 concurrent invitations",
+      "kind": "e2e",
+      "required": false,
+      "status": "not_run",
+      "command": null,
+      "detail": "Optional for this release. No load environment was available. Follow-up DEMO-9.",
+      "evidence": [],
+      "cost": null
+    }
+  ],
+  "measurements": [
+    {
+      "metric": "Line coverage",
+      "scope": "services/invitations",
+      "baseline": "78.4%",
+      "candidate": "86.1%",
+      "tool": "go test -cover (go 1.26)",
+      "observation": "Most of the gain comes from the revoke-path integration tests, not from new unit tests."
+    },
+    {
+      "metric": "Highest cyclomatic complexity",
+      "scope": "services/invitations/service.go",
+      "baseline": "9",
+      "candidate": "12",
+      "tool": "gocyclo 0.6",
+      "observation": "SendInvitation gained the rate-limit branch. The reviewer read it and found it clear. No split needed now."
+    },
+    {
+      "metric": "Mutation score",
+      "scope": "services/invitations",
+      "baseline": null,
+      "candidate": null,
+      "tool": null,
+      "observation": "Not measured. The project has no mutation tool configured."
+    }
+  ],
+  "risks": [
+    {
+      "id": "R1",
+      "severity": "High",
+      "area": "implementation",
+      "title": "A revoked invitation link stayed valid for 60 seconds",
+      "status": "resolved",
+      "blocking": true,
+      "resolution": "The cache is now cleared on revoke. TestRevokedLinkRejected covers it. Round 2 confirmed.",
+      "followup": null,
+      "evidence": [
+        {
+          "label": "Finding R1",
+          "url": null,
+          "ref": {"key": "S-3", "digest": "93c645bc9e4b1c031c65589a0d14cc202617634734ffc2f05ba60b91af8a3c02"}
+        }
+      ]
+    },
+    {
+      "id": "R2",
+      "severity": "Medium",
+      "area": "verification",
+      "title": "The email evaluation has English fixtures only",
+      "status": "deferred",
+      "blocking": false,
+      "resolution": "French is off in this candidate. Fixtures come with DEMO-8.",
+      "followup": "DEMO-8",
+      "evidence": []
+    },
+    {
+      "id": "R3",
+      "severity": "Low",
+      "area": "documentation",
+      "title": "An admin guide screenshot shows the old menu",
+      "status": "deferred",
+      "blocking": false,
+      "resolution": null,
+      "followup": "DEMO-11",
+      "evidence": []
+    }
+  ],
+  "followups": [
+    {
+      "key": "DEMO-8",
+      "title": "French invitation email and evaluation fixtures",
+      "reason": "Deferred scope (DEMO-4) and finding R2."
+    },
+    {"key": "DEMO-9", "title": "Load test for concurrent invitations", "reason": "Optional check C6 was not run."},
+    {"key": "DEMO-11", "title": "Update the admin guide screenshot", "reason": "Finding R3."}
+  ],
+  "retrospective": {
+    "summary": "Cache invalidation came up late in three of four stories. The evaluation budget was right on the first estimate.",
+    "candidates": [
+      {
+        "id": "P1",
+        "type": "process",
+        "observation": "AI review, not planning, found cache invalidation questions in DEMO-1, DEMO-3 and DEMO-5.",
+        "proposal": "Add a cache invalidation question to the story plan template.",
+        "recommendation": "trial",
+        "humanChoice": "pending",
+        "destination": null,
+        "evidence": [
+          {
+            "label": "DEMO-3 closeout",
+            "url": null,
+            "ref": {"key": "DEMO-3", "digest": "fa2a12d44a6653f3329279d4638d3428d510862d0ad09d710dbf61fefff2cdfd"}
+          }
+        ]
+      },
+      {
+        "id": "P2",
+        "type": "adr",
+        "observation": "Two services now share signed, stateless invitation tokens with a server-side revocation list.",
+        "proposal": "Record an ADR for the token format and the revocation list.",
+        "recommendation": "adopt",
+        "humanChoice": "pending",
+        "destination": null,
+        "evidence": [
+          {
+            "label": "Implementation review",
+            "url": null,
+            "ref": {"key": "S-3", "digest": "88e6b14e31ada2c3edfb9ba0efb6ffaa3d7732121677129c0f23f8d965a17ac1"}
+          }
+        ]
+      }
+    ]
+  },
+  "decision": {
+    "approval": {
+      "status": "pending",
+      "approver": null,
+      "decidedAt": null,
+      "ref": {"key": "S-3", "digest": "9c89e413d3108383b31f5728e8a59110c848079e2349a54ccb2c355d58342475"},
+      "sprint": null,
+      "scopeDigest": null,
+      "candidate": null,
+      "reportDigest": null,
+      "reportUrl": null,
+      "tag": null,
+      "note": "Approval requested from the product owner."
+    },
+    "tagPublication": {"status": "not_published", "tag": null, "candidate": null, "object": null, "verifiedAt": null, "evidence": []}
+  }
+}

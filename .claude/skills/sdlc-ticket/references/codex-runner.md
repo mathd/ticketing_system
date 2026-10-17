@@ -1,153 +1,97 @@
-# Codex runner — mechanics for stages that resolve to a `gpt-*` model
+# Codex runner — `gpt-*` stages outside T3
 
-Read this when `config.models` resolves a stage to a `gpt-*` model. *Which* stage that is
-is the config's call (`SKILL.md` § config.models); this file is only *how* to run it.
+Read this when `config.models` resolves a stage to a `gpt-*` model **and the session does not run
+in T3 Code** (no `delegate_task` tool). In T3, use `t3-runner.md` instead (SKILL.md § config.models).
+*Which* stage is the config's call; this file is only *how* to run it.
 
-## The companion script — not `codex exec`, not slash commands
+## Invocation — `/codex:rescue`, for every stage
 
-Where `codex@openai-codex` is installed, call the plugin's **companion script** directly — it is
-agent-invocable and works every time. The `/codex:*` slash commands are
-`disable-model-invocation: true` (human-only) and trigger inconsistently; raw `codex exec` is
-the fallback of last resort (§ below).
+Run every `gpt-*` stage through the codex plugin's **`/codex:rescue`** command (Skill tool, skill
+`codex:rescue`). It forwards to the companion's `task` command. Do not call the `codex` CLI,
+`codex exec` or the companion script yourself. `/codex:review` and `/codex:adversarial-review`
+are human-only: do not use them.
 
-```bash
-CODEX=~/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs
-# free-form work (plan draft / plan critique / implementation) — `task` takes a model.
-# Read-only stages: NO --write. Implementation: --write.
-# (The raw-fallback equivalent of "no --write" is `-s read-only` — see § Raw codex exec (b).)
-node "$CODEX" task --prompt-file .brief.$$.md --model gpt-5.6-sol --effort high --background
-node "$CODEX" status <job-id> ; node "$CODEX" result <job-id>
-# ai-review — the PR diff vs the base branch
-node "$CODEX" adversarial-review --base origin/main --scope branch "<focus: what to attack>"
-# decision audit — a separate read-only task after blind findings are recorded
-node "$CODEX" task --prompt-file .decision-audit.$$.md --model gpt-5.6-sol --effort high --background
+```
+/codex:rescue --fresh --background --model gpt-6.1-sol --effort high Read the brief at <abs path>/.brief.TKT-123-aireview-1.md and follow it. READ-ONLY: do not edit, create or delete any file. Do not commit.
 ```
 
-- **`adversarial-review`** is the review command: it takes focus text and challenges the
-  approach. Plain `review` is native-review only and **rejects focus text entirely**. Both map
-  to Codex's built-in reviewer — no `-m` flag to get wrong; args `--base <ref>`,
-  `--scope auto|working-tree|branch`.
-- **`task` is the only command that takes a model** — pass `--model gpt-5.6-sol` explicitly.
-  **The literal is `gpt-5.6-sol`; plain `gpt-5.6` does not work.** Don't "correct" it.
-- **`adversarial-review` cannot pin a model.** It runs the codex default from `~/.codex/config.toml`.
-  When `config.models.aiReview` names a different model, run every review pass (blind and fix-diff)
-  as a read-only `task --model <aiReview>` with a defect-hunting brief ("assume the diff is wrong;
-  find where"). Running `adversarial-review` there silently substitutes the model (TKT-144).
-- **Keep the two review inputs separate.** The `adversarial-review` call receives the diff and no
-  plan or rationale. Record its output before starting the decision-audit `task`. The audit brief
-  contains the approved plan, every `kind=decision` comment, the diff and verification evidence,
-  and asks the questions in `quality-practices.md` §2. Reusing one prompt for both destroys the
-  blind pass.
-- ⚠ **`--background` is a lie for reviews** — parsed and then ignored (verified in the script:
-  `review`/`adversarial-review` unconditionally call `runForegroundCommand`; only `task` honours
-  it). `status`/`result` polling does **not** work for review jobs, and a stalled review blocks
-  the caller. Instead: background the review through the harness
-  (`Bash(..., run_in_background: true)`) or wrap it in `timeout` so a hang is caught — but note
-  **`timeout` is not on macOS** (it is GNU coreutils; `gtimeout` only if the user installed it), and
-  a missing binary makes the whole call exit 127 having never reached the model. Prefer harness
-  backgrounding, which works everywhere; that is a harness failure, not a rung failure, so re-launch
-  rather than escalating the ladder (TKT-99). `--wait`
-  is equally redundant — foreground is the only mode.
+- **`--fresh` always.** Each stage and each review lens starts a new Codex thread. A resumed
+  thread carries the previous pass into a pass that must be blind.
+- **`--model` and `--effort` always.** The model literal is the config value left of `:`
+  (`gpt-6.1-sol`; plain `gpt-6.1` does not resolve — don't "correct" it). The effort is the
+  `:effort` suffix, else `high`. The forwarder leaves both unset when you omit them, and the run
+  then takes whatever `~/.codex/config.toml` says.
+- **Say READ-ONLY in the request text, not only in the brief.** The forwarder adds `--write` unless
+  the request asks for read-only work. Every stage except `implement` is read-only.
+- **`--background`**: the result arrives as a notification. Do not poll.
 
-## Prompt files — materialized, never interpolated
+**Check the job record before you trust the output.** The companion writes
+`~/.claude/plugins/data/codex-openai-codex/state/<workspace>-<hash>/jobs/<id>.json`. It holds
+`write`, `request.model`, `request.effort` and `request.cwd`. A read-only stage with
+`"write": true`, a different model, or a different effort is a failed stage.
 
-Write the brief with a **file-writing tool or a quoted heredoc**, never by interpolating
-ticket/plan text into a shell command — ticket text and inlined code routinely contain backticks
-and `$(…)`, which a double-quoted `printf`/`echo` will **execute**. Use a collision-resistant
-name (`.plan-brief.$$.md`), delete only what this run created, and keep the file lean (plan + the
-code actually under discussion) — a huge file risks being dropped from context.
+## Briefs — a file, never interpolated
 
-## Raw `codex exec` — fallback only, when the plugin is absent
+Write the brief with the Write tool, never through a shell command: ticket text and code contain
+backticks and `$(…)`, which a shell executes. Name it `.brief.<ticket>-<stage>[-<pass>].md` in the
+ticket worktree root, and delete only the files this run created. Inline the plan or the diff in
+the brief, and give absolute paths. Keep it lean: a huge brief can be dropped from context.
 
-- **(a)** Pass `-m gpt-5.6-sol` explicitly — the CLI default errors `requires a newer Codex`.
-- **(b)** Pass **`-s read-only`** on every read-only stage — which is every stage this fallback
-  serves: plan drafting and all reviews. The companion enforces read-only by *omitting* `--write`;
-  raw `codex exec` enforces nothing and takes the sandbox from `~/.codex/config.toml`. So a
-  fallback that drops this flag hands the substitute MORE privilege than the command it stands in
-  for, and a reviewer that can edit the tree it is reviewing is not a reviewer. (Restored after
-  TKT-67: the flag was in the pre-`codex-runner.md` SKILL.md and was lost when these mechanics were
-  extracted. Nothing caught it, because the stage it protects had already failed for an unrelated
-  reason.)
-- **(c)** Feed the prompt via **stdin redirect** (`< prompt.txt`), never as a positional arg — a
-  large arg hangs at `Reading additional input from stdin…`.
-- **(d)** **Inline the plan/diff in the prompt file** rather than telling codex to `git diff`
-  itself.
-- **(e)** Run it **backgrounded + poll**.
-- **(f)** **A local skill will hijack the prompt and cannot be stopped** — "review"/"critique"
-  loads the machine's skills (possibly an *unrelated client's*); neither `--disable plugins` nor
-  `-c features.skills=false` prevents it (`--disable skills` isn't a valid flag). The hijack also
-  happens *through the plugin*. Survivable, not preventable — judge the output (§ below).
-  **Believe "survivable" literally**: on TKT-67 the two runs that *completed* were hijacked exactly
-  as hard as the two that died, and produced 1 critical + 4 important findings through the foreign
-  rubric. A hijacked run is not a failed run, and blaming the hijack for an unrelated hang is the
-  easy mistake — it is the loudest thing in the log.
+## Reviews — a defect-hunting `task`, two separate runs per round
 
-## Judging the output — exit 0 ≠ success
+A review is a read-only run with a brief that primes for guilt: "assume the diff is wrong; find
+where". Each round (`reviews.md` § One round) runs it twice, with separate briefs, on the same
+frozen artifact:
 
-**A `task --write` implementer cannot run everything here.** Its sandbox denies Docker, local
-listeners (`httptest`) and sometimes `.git` writes. So `-tags smoke` tests, httptest-backed tests,
-their mutations and the commit fall to the orchestrator. Plan for it: brief the implementer to write
-those tests, report which ones it could not run, and NOT commit (its `.git` was read-only on 5 of 6
-runs in TKT-147). Then read the diff, commit it yourself BEFORE mutation-testing it, run the tests,
-mutate them, and label that evidence as yours (TKT-144, TKT-147).
+1. **Initial inspection** — the diff only, no plan, no rationale. Record its findings before step 2.
+2. **Decision audit** — the approved plan, every `kind=decision` comment, the diff, the initial
+   findings and the verification evidence, with the questions in `quality-practices.md` §2.
 
-**`$CODEX` is NOT set in a fresh shell.** Shell state does not persist between `Bash` calls, so
-`node "$CODEX" …` expands to `node ""` — which **exits 0 and does nothing**, printing not one byte.
-Invoke the companion by absolute path instead, resolving it once per session:
-`node /home/mathieu/.claude/plugins/cache/openai-codex/codex/<version>/scripts/codex-companion.mjs …`
-(`find ~/.claude/plugins -name codex-companion.mjs` if the version moved). A completely empty
-tool result is the signature of this failure, not of a quiet success.
+Every brief names the stage, round, lens, artifact ID and the actual author models, and asks for
+one JSON object shaped like `assets/review-result.example.json` (inline the shape: the worker
+cannot open skill files). If `config.models.research` is set, the brief also says the reviewer may
+return `researchRequests` with `complete: false` (`reviews.md` § Researcher). Name the brief
+`.brief.<ticket>-<stage>-r<round>-<lens>.md`.
 
-**A codex invocation is the ONLY command in its `Bash` call.** Never chain it after anything — no
-`python3 … && node "$CODEX" …`, no `git push; node "$CODEX" …`, no leading `cd`. When chained, the
-first command runs and **the codex call silently does not**: no error, exit 0, an output file a few
-bytes long. This happened **three times in one ticket** (TKT-238), each time caught only by reading
-the artifact — and a review that never ran is indistinguishable from one that found nothing, which
-is the single most dangerous failure this pipeline has, because the whole cross-model invariant
-rests on it having executed. Set the working directory with the tool's own facility or absolute
-paths, and put every preparation step in a separate call *before* the one that launches codex.
+Reusing one brief for both lenses destroys the blind pass. (Why `task` and not `adversarial-review`: the
+latter cannot pin a model (TKT-144) and returned zero bytes twice on TKT-267 where a `task` brief
+returned code-cited findings.)
 
-**Read the output; never judge by exit status** (raw `exec` exits 0 on both a zero-findings
-hijack and a bad flag that never reached the model). Pass = **the reviewer actually ran against
-the intended scope and returned a conclusive verdict** — *not* whether it found defects. A
-conclusive "no findings" on a genuinely clean diff is a PASS; a run that reviewed the wrong
-scope, or returned only a rubric template, is a failure however many sections it printed. A run
-that announces a foreign skill but returns concrete, code-cited findings is likewise a pass — the
-rubric is irrelevant. A hang counts as a failure: kill it fast. Never substitute a self-review; a
-skipped review that looks done is worse than a stalled ticket.
+## Implementation by Codex — the orchestrator finishes it
 
-**FIRST, assert the artifact is non-empty and contains a verdict — before reading it for findings.**
-`wc -c` the output; if it is zero bytes, the review did not run, whatever the status command says.
-This is the most common failure and the most dangerous, because it is **indistinguishable from a
-clean review**: on TKT-267 the companion's `adversarial-review` reported `Phase: done, Duration:
-1m 45s` and produced a zero-byte file, and a triage that opened with "no findings — ship it" would
-have been the natural reading. `Phase: done` is not evidence; bytes are. The same check catches the
-truncation shape (a captured message cut mid-sentence, verdict present, findings gone): if the output
-ends without a conclusion, treat it as a rung failure and escalate, do not salvage half of it as
-though it were the whole.
+The Codex `--write` sandbox denies Docker, local listeners (`httptest`) and often `.git` writes.
+Brief the implementer to write all the tests, report which ones it could not run, and NOT commit.
+Then read the diff, commit it yourself BEFORE you mutation-test it, run the tests, mutate them, and
+label that evidence as yours (TKT-144, TKT-147).
 
-**And note which command produced the emptiness.** On TKT-267 `adversarial-review` returned zero
-bytes twice while `task` with a defect-hunting brief returned conclusive, code-cited findings on the
-same diff, three times running. If `adversarial-review` comes back empty, a `task`-framed retry is a
-legitimate rung-1 variant rather than a second attempt at the same rung — but say so in the stage
-comment, since the two commands prime the model differently and that is a fact about the review.
+## Judging the output — completed ≠ ran
 
-## Escalation ladder when a delegated stage fails — fixed, not improvised
+- **Assert the output is non-empty and contains a verdict before you read it for findings.** (A
+  researcher call returns evidence, not a verdict, and a reviewer may return open research
+  requests instead: judge those per `reviews.md` § Researcher.) An
+  empty result is a review that did not run, and it looks exactly like a clean review (TKT-267:
+  `Phase: done` with zero bytes). Output that ends mid-sentence is truncated: a failure, not a
+  partial pass.
+- **Pass = the reviewer ran against the intended scope and returned a conclusive verdict**, not
+  "it found defects". A conclusive "no findings" on a clean diff is a pass. A rubric template with
+  no findings is a failure.
+- **A local skill can hijack the prompt and cannot be disabled.** Codex loads the machine's skills
+  on "review" or "critique" prompts, possibly an unrelated client's. A hijacked run that returns
+  concrete, code-cited findings is a pass (TKT-67). Do not blame the hijack for an unrelated hang.
+- `status` can say **"No job found"** while the job file says `running`: trust the file and the
+  log's mtime (TKT-84). **"Selected model is at capacity"** means the model was never reached: a
+  rung failure, never a reason to substitute a model.
+- **Never substitute a self-review.** A skipped review that looks done is worse than a stalled
+  ticket.
+
+## Escalation ladder — fixed, not improvised
 
 One attempt per rung, in order:
 
-1. The plugin command (`adversarial-review` / `task`).
-2. On empty, truncated, or hung output → the documented raw fallback above.
+1. The `/codex:rescue` run.
+2. On empty, truncated, hung or mis-configured output (job record wrong) → one `--fresh` retry.
 3. Still no conclusive verdict → **stop on the current `agent:*` label and report to the human**.
 
-No rung twice, no fourth rung — improvised retries cost wall-clock (TKT-62: ~1h, three attempts).
-Two more shapes (TKT-84): the companion's `status`/`result` can report **"No job found"
-while the job's JSON state file still says `running`** — trust the file
-(`…/state/<repo-hash>/jobs/<id>.json`) plus the log's mtime, not the status command; and raw
-`codex exec` can fail with **"Selected model is at capacity"** — the model was never reached,
-which is a rung failure, not a reason to substitute a model.
-Known failure shapes, all exiting 0: the plugin returning **zero bytes**; the companion
-**truncating** the captured assistant message mid-sentence (the verdict survives, the findings
-don't); `codex exec` **dying mid-investigation** with no final answer. If a partial run left
-legible reasoning, salvage it — quote it in the stage comment and verify its open threads
-**yourself, labelled as your own work** (that's authorship, not a substituted review).
+No rung twice, no fourth rung (TKT-62: ~1h lost to improvised retries). If a failed run left
+legible reasoning, quote it in the stage comment and verify its open threads **yourself, labelled
+as your own work** — that is authorship, not a substituted review.
