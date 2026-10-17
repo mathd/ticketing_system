@@ -40,6 +40,10 @@ export type RevocationPull = { completedAt?: string }
 export interface OccurrenceStore {
   /** Commits the PENDING record; resolves only after the IDB transaction completes. */
   mint(qrPayload: string, occurredAt: string, direction: ScanDirection): Promise<MintedOccurrence>
+  /**
+   * Commits a local refusal as a PENDING record of this page, like mint. It
+   * never actuates. The page queues it with markQueued after its time check.
+   */
   mintRefusal(qrPayload: string, occurredAt: string): Promise<OccurrenceRecord>
   isRevoked(ticketID: string): Promise<boolean>
   mergeRevoked(ticketIDs: string[]): Promise<void>
@@ -53,6 +57,13 @@ export interface OccurrenceStore {
   markQueued(occurrenceId: string): Promise<void>
   /** recorded/synced → SYNCED; any other result → RESOLVED (operator-facing, never a gate action). */
   markSynced(occurrenceId: string, result: string): Promise<void>
+  /**
+   * Declares that the scan of this row ran out of time, then closes the row
+   * with `result` (TKT-399 D30). The declaration is made before the write and
+   * stays for the page when the write fails. See LateScans.
+   */
+  closeLate(occurrenceId: string, result: string): Promise<void>
+  /** The QUEUED rows to reconcile. Never a row that this page declared late. */
   queued(): Promise<OccurrenceRecord[]>
   get(occurrenceId: string): Promise<OccurrenceRecord | undefined>
   close(): void
@@ -63,6 +74,82 @@ const REVOCATIONS = 'revocations'
 const REVOCATION_META = 'revocation_meta'
 type RevocationMeta = { key: `pull:${string}`; completedAt: string }
 const DEFAULT_PENDING_LEASE_MS = 30_000
+
+const terminalState = (result: string): OccurrenceState =>
+  result === 'recorded' || result === 'synced' ? 'SYNCED' : 'RESOLVED'
+
+/**
+ * The rows that one page declared late (TKT-399 D30). A scan that the time
+ * limit stopped is never synced to Access, also when the write that closes its
+ * row fails. The page keeps one instance for its life and gives it to every
+ * store it opens, because a failed write makes the page replace its store.
+ *
+ * A row is declared before the write that closes it, so the declaration exists
+ * even when that write fails. Each store of the page then applies it:
+ * - Recovery closes a declared row and never queues it.
+ * - queued() never lists a declared row, and first tries again to close it.
+ * - close() keeps the owner lock of a declared row that is not closed yet.
+ *   Recovery in any tab needs that lock, so no other tab can take the row
+ *   while this page lives. The lock goes when a store of this page closes the
+ *   row, or when the page releases its owners.
+ *
+ * The declarations are in memory. When the page is gone, a declared row that
+ * is not closed is recovered like the row of a page that crashed (ADR-025 §3).
+ */
+export class LateScans {
+  private readonly declared = new Map<string, { ownerId: string; result: string; closed: boolean }>()
+  private readonly heldOwners = new Map<string, Array<() => void>>()
+
+  declare(occurrenceId: string, ownerId: string, result: string): void {
+    if (!this.declared.has(occurrenceId)) this.declared.set(occurrenceId, { ownerId, result, closed: false })
+  }
+
+  /** The terminal result of a declared row, or undefined if the row is not declared. */
+  result(occurrenceId: string): string | undefined {
+    return this.declared.get(occurrenceId)?.result
+  }
+
+  /** Declared rows whose close has not been written yet. */
+  unclosed(): Array<{ occurrenceId: string; result: string }> {
+    return [...this.declared]
+      .filter(([, entry]) => !entry.closed)
+      .map(([occurrenceId, entry]) => ({ occurrenceId, result: entry.result }))
+  }
+
+  /** Records that the close was written, and lets the owner go when it has no other open row. */
+  closed(occurrenceId: string): void {
+    const entry = this.declared.get(occurrenceId)
+    if (!entry || entry.closed) return
+    entry.closed = true
+    if (this.ownerHasOpenRows(entry.ownerId)) return
+    const releases = this.heldOwners.get(entry.ownerId) ?? []
+    this.heldOwners.delete(entry.ownerId)
+    for (const release of releases) release()
+  }
+
+  /** Releases the owner lock now, or when the last open row of that owner is closed. */
+  releaseOwnerWhenClosed(ownerId: string, release: () => void): void {
+    if (!this.ownerHasOpenRows(ownerId)) {
+      release()
+      return
+    }
+    this.heldOwners.set(ownerId, [...(this.heldOwners.get(ownerId) ?? []), release])
+  }
+
+  /** The page is going away: let every owner go. */
+  releaseOwners(): void {
+    const releases = [...this.heldOwners.values()].flat()
+    this.heldOwners.clear()
+    for (const release of releases) release()
+  }
+
+  private ownerHasOpenRows(ownerId: string): boolean {
+    for (const entry of this.declared.values()) {
+      if (entry.ownerId === ownerId && !entry.closed) return true
+    }
+    return false
+  }
+}
 
 export type OccurrenceStoreOptions = {
   ownerId?: string
@@ -75,6 +162,8 @@ export type OccurrenceStoreOptions = {
   openTimer?: OpenTimer
   /** Monotonic milliseconds. Decides if the database open ran out of time. */
   openClock?: () => number
+  /** The rows this page declared late. Shared by every store of one page. */
+  lateScans?: LateScans
 }
 
 /**
@@ -259,6 +348,7 @@ export async function openOccurrenceStore(
   const pendingLeaseMs = options.pendingLeaseMs ?? DEFAULT_PENDING_LEASE_MS
   const now = options.now ?? Date.now
   const ownerLiveness = options.ownerLiveness ?? browserOwnerLiveness()
+  const lateScans = options.lateScans ?? new LateScans()
   if (!ownerId || !Number.isSafeInteger(pendingLeaseMs) || pendingLeaseMs <= 0) {
     throw new TypeError('occurrence owner and pending lease must be valid')
   }
@@ -274,7 +364,7 @@ export async function openOccurrenceStore(
     closed = true
     globalThis.clearInterval(heartbeat)
     db.close()
-    releaseOwner?.()
+    if (releaseOwner) lateScans.releaseOwnerWhenClosed(ownerId, releaseOwner)
   }
   // A later version cannot open while this connection stays open. Close at once.
   // The later version can still wait for transactions that were already running
@@ -290,14 +380,21 @@ export async function openOccurrenceStore(
     const os = tx.objectStore(STORE)
     const record = await requestDone(os.get(occurrenceId) as IDBRequest<OccurrenceRecord | undefined>)
     const timestamp = now()
+    // A row that this page declared late is closed, never queued (D30).
+    const late = lateScans.result(occurrenceId)
+    let closedLate = false
     if (record?.state === 'PENDING' && record.ownerId !== ownerId) {
       const belongsToReloadedTab = recoverOwnerId !== undefined && record.ownerId === recoverOwnerId
       const leaseExpired = typeof record.leaseExpiresAt !== 'number'
         || !Number.isFinite(record.leaseExpiresAt)
         || record.leaseExpiresAt <= timestamp
-      if (belongsToReloadedTab || leaseExpired) os.put({ ...record, state: 'QUEUED' })
+      if (belongsToReloadedTab || leaseExpired) {
+        closedLate = late !== undefined
+        os.put(late === undefined ? { ...record, state: 'QUEUED' } : { ...record, state: terminalState(late), result: late })
+      }
     }
     await done
+    if (closedLate) lateScans.closed(occurrenceId)
   }
 
   const recoverPending = async (recoverOwnerId?: string): Promise<void> => {
@@ -387,6 +484,14 @@ export async function openOccurrenceStore(
     return next !== null
   }
 
+  // Writes the close of a declared row. Any state becomes the terminal one:
+  // the row may still be PENDING, or a recovery may have queued it before the
+  // scan declared it late.
+  const closeDeclared = async (occurrenceId: string, result: string): Promise<void> => {
+    await transition(occurrenceId, (record) => ({ ...record, state: terminalState(result), result }))
+    lateScans.closed(occurrenceId)
+  }
+
   return {
     async mint(qrPayload, occurredAt, direction) {
       const record: MintedOccurrence = {
@@ -404,13 +509,18 @@ export async function openOccurrenceStore(
       return record
     },
     async mintRefusal(qrPayload, occurredAt) {
+      // PENDING under this page, like a scan: until the page has checked the
+      // time of the mint, no other tab may queue it (D30). A page that crashed
+      // first leaves it to recovery, which queues it as a refusal.
       const record: OccurrenceRecord = {
         occurrenceId: crypto.randomUUID(),
         qrPayload,
         occurredAt,
-        state: 'QUEUED',
+        state: 'PENDING',
         actuated: false,
         createdAt: new Date().toISOString(),
+        ownerId,
+        leaseExpiresAt: now() + pendingLeaseMs,
         localDecision: 'revocation_refused',
       }
       await put(record)
@@ -442,8 +552,9 @@ export async function openOccurrenceStore(
       return { completedAt: meta?.completedAt }
     },
     actuate(occurrenceId) {
+      // A local refusal is PENDING too, but it never opens the gate.
       return transition(occurrenceId, (record) =>
-        record.actuated || record.state !== 'PENDING' || record.ownerId !== ownerId
+        record.actuated || record.state !== 'PENDING' || record.ownerId !== ownerId || record.localDecision !== undefined
           ? null
           : { ...record, actuated: true, state: 'ACTUATED' },
       )
@@ -452,14 +563,30 @@ export async function openOccurrenceStore(
       await transition(occurrenceId, (record) => ({ ...record, state: 'QUEUED' }))
     },
     async markSynced(occurrenceId, result) {
-      const terminal: OccurrenceState = result === 'recorded' || result === 'synced' ? 'SYNCED' : 'RESOLVED'
+      const terminal = terminalState(result)
       await transition(occurrenceId, (record) => ({ ...record, state: terminal, result }))
     },
+    async closeLate(occurrenceId, result) {
+      // Declared first, with no wait before it, so a failed write below still
+      // leaves the declaration, and a closed store still makes it.
+      lateScans.declare(occurrenceId, ownerId, result)
+      await closeDeclared(occurrenceId, result)
+    },
     async queued() {
+      assertOpen()
+      // Try again to close each declared row. A failure here does not stop the
+      // listing: the filter below keeps the row out in any case.
+      for (const { occurrenceId, result } of lateScans.unclosed()) {
+        try {
+          await closeDeclared(occurrenceId, result)
+        } catch {
+          // The next listing tries again.
+        }
+      }
       await recoverPending(options.recoverOwnerId)
       const tx = db.transaction(STORE, 'readonly')
       const all = await requestDone(tx.objectStore(STORE).getAll() as IDBRequest<OccurrenceRecord[]>)
-      return all.filter((record) => record.state === 'QUEUED')
+      return all.filter((record) => record.state === 'QUEUED' && lateScans.result(record.occurrenceId) === undefined)
     },
     get: read,
     close,

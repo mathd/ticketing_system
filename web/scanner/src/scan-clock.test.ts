@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { SCAN_OPEN_LIMIT_MS, SCAN_SEND_LIMIT_MS, scanStillInTime } from './scan-clock'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { readScanClock, SCAN_OPEN_LIMIT_MS, SCAN_SEND_LIMIT_MS, scanStillInTime } from './scan-clock'
 
 // The expected values come from the rule (ADR-025 §3, D27): a 3000 ms limit on
 // each clock to mint and send a scan, a 30 000 ms limit on each clock to open
@@ -90,5 +90,19 @@ describe('scanStillInTime (TKT-399 D27)', () => {
   ]))('refuses a clock that gives no usable time: $name', ({ from, to }) => {
     expect(inTimeToSend(to, from)).toBe(false)
     expect(inTimeToOpen(to, from)).toBe(false)
+  })
+})
+
+// Every scan test replaces readScanClock, so only this test sees which clock
+// the production reader uses. The two clocks give different values here, so a
+// reader that takes one clock for the other, or reads the wall clock another
+// way (new Date().getTime()), fails.
+describe('readScanClock (TKT-399 D27)', () => {
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('reads the monotonic clock from performance.now() and the wall clock from Date.now()', () => {
+    vi.spyOn(globalThis.performance, 'now').mockReturnValue(1_234.5)
+    vi.spyOn(Date, 'now').mockReturnValue(1_760_000_000_000)
+    expect(readScanClock()).toEqual({ monotonic: 1_234.5, wall: 1_760_000_000_000 })
   })
 })

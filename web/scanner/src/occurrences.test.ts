@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  LateScans,
   OccurrenceStoreBlockedError,
   OccurrenceStoreClosedError,
   OccurrenceStoreOpenTimeoutError,
@@ -81,10 +82,42 @@ describe('durable pending record', () => {
     expect(a.occurrenceId).not.toBe(b.occurrenceId)
   })
 
-  it('commits a revocation refusal directly as queued', async () => {
+  // A refusal is born PENDING under this page, like a scan, so the page can
+  // still close it if its mint ends too late (TKT-399 D30). It never opens the
+  // gate, and the page queues it only after the time check.
+  it('commits a revocation refusal as pending under this page, never actuates it, and queues it on request', async () => {
     const record = await store.mintRefusal('listed-ticket', '2026-07-17T09:00:00Z')
-    expect(record).toMatchObject({ state: 'QUEUED', actuated: false, localDecision: 'revocation_refused' })
-    expect(await store.get(record.occurrenceId)).toMatchObject({ state: 'QUEUED', localDecision: 'revocation_refused' })
+    expect(record).toMatchObject({ state: 'PENDING', actuated: false, localDecision: 'revocation_refused' })
+    expect(await store.get(record.occurrenceId)).toMatchObject({ state: 'PENDING', localDecision: 'revocation_refused' })
+    expect(await store.actuate(record.occurrenceId)).toBe(false)
+    expect(await store.queued()).toEqual([])
+
+    await store.markQueued(record.occurrenceId)
+    expect(await store.queued()).toEqual([expect.objectContaining({
+      occurrenceId: record.occurrenceId, state: 'QUEUED', actuated: false, localDecision: 'revocation_refused',
+    })])
+  })
+
+  it('does not let another live tab queue a refusal before this page has checked its time', async () => {
+    const dbName = `refusal-tabs-${crypto.randomUUID()}`
+    const firstTab = await openStore(dbName, { ownerId: 'first-tab', now: () => 1_000 })
+    const refusal = await firstTab.mintRefusal('listed-ticket', '2026-07-17T09:00:00Z')
+
+    const secondTab = await openStore(dbName, { ownerId: 'second-tab', now: () => 1_000_000 })
+    expect(await secondTab.queued()).toEqual([])
+    expect(await secondTab.get(refusal.occurrenceId)).toMatchObject({ state: 'PENDING', ownerId: 'first-tab' })
+  })
+
+  it('recovers the refusal of a page that crashed before it queued it, as a refusal', async () => {
+    const dbName = `refusal-crash-${crypto.randomUUID()}`
+    const crashed = await openStore(dbName, { ownerId: 'page-before-reload' })
+    const refusal = await crashed.mintRefusal('listed-ticket', '2026-07-17T09:00:00Z')
+    crashed.close()
+
+    const reloaded = await openStore(dbName, { ownerId: 'page-after-reload', recoverOwnerId: 'page-before-reload' })
+    expect(await reloaded.queued()).toEqual([expect.objectContaining({
+      occurrenceId: refusal.occurrenceId, state: 'QUEUED', localDecision: 'revocation_refused',
+    })])
   })
 
   // The direction is a fact of the occurrence (TKT-399). It is committed with the
@@ -740,6 +773,7 @@ describe('version 3 barrier between scanner versions (TKT-399)', () => {
       () => current.actuate(inFlight.occurrenceId),
       () => current.markQueued(inFlight.occurrenceId),
       () => current.markSynced(inFlight.occurrenceId, 'recorded'),
+      () => current.closeLate(inFlight.occurrenceId, 'late_not_sent'),
       () => current.queued(),
       () => current.get(inFlight.occurrenceId),
     ]
@@ -784,5 +818,124 @@ describe('version 3 barrier between scanner versions (TKT-399)', () => {
     expect(later?.kind).toBe('opened')
     if (later?.kind === 'opened') later.db.close()
     expect(await ownerLiveness.runIfOwnerAbsent('recovering-page', async () => {})).toBe(true)
+  })
+})
+
+// The owner's decision D30 (TKT-399): a row that the page declared late is never
+// reconciled, even when the write that closes it fails. Three mechanisms hold
+// that, and each test below fails when its own mechanism is removed.
+describe('rows this page declared late (TKT-399 D30)', () => {
+  // Every write of a terminal state fails until stop(), as a full disk does.
+  function failTerminalWrites() {
+    const put = IDBObjectStore.prototype.put
+    const spy = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, value: unknown, key?: IDBValidKey) {
+      if (this.name === 'occurrences' && (value as { state?: unknown } | null)?.state === 'RESOLVED') {
+        throw new DOMException('the disk is full', 'QuotaExceededError')
+      }
+      return put.call(this, value, key)
+    })
+    return { stop: () => spy.mockRestore() }
+  }
+
+  it('closes a declared row at once when the write succeeds', async () => {
+    const page = new LateScans()
+    const current = await openStore(`late-${crypto.randomUUID()}`, { ownerId: 'page', lateScans: page })
+    const late = await current.mint('late-qr', '2026-10-17T10:00:00Z', 'entry')
+    await current.closeLate(late.occurrenceId, 'late_not_sent')
+    expect(await current.get(late.occurrenceId)).toMatchObject({ state: 'RESOLVED', result: 'late_not_sent', actuated: false })
+    current.close()
+    expect(await ownerLiveness.runIfOwnerAbsent('page', async () => {})).toBe(true)
+  })
+
+  // Mechanism 1: the page keeps the owner lock of the row. Recovery in any tab
+  // needs that lock, so only a page that is gone lets the row be recovered.
+  it('keeps the owner of a row whose close failed, so another tab cannot recover it, until this page closes the row', async () => {
+    const dbName = `late-owner-${crypto.randomUUID()}`
+    const page = new LateScans()
+    const first = await openStore(dbName, { ownerId: 'late-page', lateScans: page, pendingLeaseMs: 100, now: () => 1_000 })
+    const late = await first.mint('late-qr', '2026-10-17T10:00:00Z', 'entry')
+    const writes = failTerminalWrites()
+    await expect(first.closeLate(late.occurrenceId, 'late_not_sent')).rejects.toThrow('the disk is full')
+    writes.stop()
+    first.close()
+
+    // Another tab, long after the lease of the row expired.
+    const otherTab = await openStore(dbName, { ownerId: 'other-tab', now: () => 1_000_000 })
+    expect(await otherTab.queued()).toEqual([])
+    expect(await otherTab.get(late.occurrenceId)).toMatchObject({ state: 'PENDING', ownerId: 'late-page' })
+
+    // The next store of this page closes the row, and then lets the owner go.
+    const next = await openStore(dbName, { ownerId: 'late-page-next', recoverOwnerId: 'late-page', lateScans: page })
+    expect(await next.queued()).toEqual([])
+    expect(await next.get(late.occurrenceId)).toMatchObject({ state: 'RESOLVED', result: 'late_not_sent', actuated: false })
+    expect(await ownerLiveness.runIfOwnerAbsent('late-page', async () => {})).toBe(true)
+  })
+
+  it('lets the owner of an open late row go when the page releases its owners', async () => {
+    const page = new LateScans()
+    const current = await openStore(`late-release-${crypto.randomUUID()}`, { ownerId: 'leaving-page', lateScans: page })
+    const late = await current.mint('late-qr', '2026-10-17T10:00:00Z', 'entry')
+    const writes = failTerminalWrites()
+    await expect(current.closeLate(late.occurrenceId, 'late_not_sent')).rejects.toThrow('the disk is full')
+    writes.stop()
+    current.close()
+    expect(await ownerLiveness.runIfOwnerAbsent('leaving-page', async () => {})).toBe(false)
+
+    page.releaseOwners()
+    expect(await ownerLiveness.runIfOwnerAbsent('leaving-page', async () => {})).toBe(true)
+  })
+
+  // Mechanism 2: when the store closed for another failure before the scan
+  // found it was late, its owner is already gone. Recovery in this page then
+  // closes the row instead of queueing it.
+  it('closes, and never queues, a declared row when this page recovers it', async () => {
+    const dbName = `late-recovery-${crypto.randomUUID()}`
+    const page = new LateScans()
+    const first = await openStore(dbName, { ownerId: 'closed-page', lateScans: page })
+    const late = await first.mint('late-qr', '2026-10-17T10:00:00Z', 'entry')
+    first.close()
+    await expect(first.closeLate(late.occurrenceId, 'late_unconfirmed')).rejects.toBeInstanceOf(OccurrenceStoreClosedError)
+
+    const next = await openStore(dbName, { ownerId: 'next-page', recoverOwnerId: 'closed-page', lateScans: page })
+    // Read before queued(): the open alone recovered the row.
+    expect(await next.get(late.occurrenceId)).toMatchObject({ state: 'RESOLVED', result: 'late_unconfirmed', actuated: false })
+    expect(await next.queued()).toEqual([])
+  })
+
+  // Mechanism 3: a declared row is never listed for reconciliation, also while
+  // every write that would close it fails. Here a recovery queued the row
+  // before the scan declared it late.
+  it('never lists a declared row for reconciliation while its close keeps failing', async () => {
+    const page = new LateScans()
+    const current = await openStore(`late-listing-${crypto.randomUUID()}`, { ownerId: 'page', lateScans: page })
+    const late = await current.mint('late-qr', '2026-10-17T10:00:00Z', 'entry')
+    const kept = await current.mint('kept-qr', '2026-10-17T10:00:01Z', 'entry')
+    await current.markQueued(late.occurrenceId)
+    await current.markQueued(kept.occurrenceId)
+    const writes = failTerminalWrites()
+    await expect(current.closeLate(late.occurrenceId, 'late_unconfirmed')).rejects.toThrow('the disk is full')
+
+    expect((await current.queued()).map((row) => row.occurrenceId)).toEqual([kept.occurrenceId])
+    expect(await current.get(late.occurrenceId)).toMatchObject({ state: 'QUEUED' })
+
+    // When the disk works again, the next listing closes the row.
+    writes.stop()
+    expect((await current.queued()).map((row) => row.occurrenceId)).toEqual([kept.occurrenceId])
+    expect(await current.get(late.occurrenceId)).toMatchObject({ state: 'RESOLVED', result: 'late_unconfirmed' })
+  })
+
+  // A different page has its own declarations: this one cannot hide another
+  // page's rows.
+  it('lists the rows of a store that does not share the declaring page', async () => {
+    const dbName = `late-scope-${crypto.randomUUID()}`
+    const current = await openStore(dbName, { ownerId: 'page', lateScans: new LateScans() })
+    const queued = await current.mint('queued-qr', '2026-10-17T10:00:00Z', 'entry')
+    await current.markQueued(queued.occurrenceId)
+    const writes = failTerminalWrites()
+    await expect(current.closeLate(queued.occurrenceId, 'late_unconfirmed')).rejects.toThrow('the disk is full')
+    writes.stop()
+
+    const otherPage = await openStore(dbName, { ownerId: 'other-page', lateScans: new LateScans() })
+    expect((await otherPage.queued()).map((row) => row.occurrenceId)).toEqual([queued.occurrenceId])
   })
 })

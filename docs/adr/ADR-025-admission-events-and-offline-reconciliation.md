@@ -248,35 +248,95 @@ conflicts. Together every physical admission that Access learns about is represe
    by some tens of milliseconds at most in 30 seconds. We have not
    measured this on every browser; a device above it refuses scans, it never lets one through. The check does not catch
    faults that cancel out: a monotonic clock that stops while the wall clock is set back by about
-   the same time. The scan checks a limit at four points, the 3 second limit at the first two and
-   the 30 second limit at the last two:
+   the same time. The scan checks a limit at five points, the 3 second limit at the first two and
+   the 30 second limit at the last three:
 
    - Before it mints its occurrence, or the local refusal of a ticket on the revocation list. A
      late scan mints nothing and sends nothing. The screen says that the scanner could not
      confirm that the scan finished within 3 seconds, and that no ticket was checked.
-   - After the mint and before it sends the scan, because the mint is a wait too. The scan sends
-     nothing, and the screen says the same. The row is marked `RESOLVED` (result
-     `late_not_sent`), so it is never reconciled: a reconciliation would record a scan that the
-     operator was told did not happen. If that write fails, the row stays `PENDING` and is
-     recovered like the row of a page that crashed between mint and send.
+   - After the mint, because the mint is a wait too. After the mint of a scan, a late scan sends
+     nothing, and the screen says the same. The row is closed (result `late_not_sent`), so it is
+     never reconciled: a reconciliation would record a scan that the operator was told did not
+     happen. After the mint of a local refusal, a late refusal is closed too (result
+     `late_not_sent`) and never synced, but the screen still says that the ticket is not valid
+     for entry: a revoked ticket must never read as admissible.
    - After Access accepts the scan and before the row is marked actuated. If the check fails
      here, for example because the answer came 30 seconds or more after the scan started, the
      gate does not open. Access has already recorded the scan, so the screen says that Access recorded it, that
      the scanner could not confirm that the scan was still within 30 seconds, and that the gate
-     was not opened. The row is marked `RESOLVED` (result `late_accepted`) and is
-     never actuated. If that write fails, the row stays `PENDING`. Recovery can only queue it, and
-     its reconciliation finds the scan that Access already recorded (a replay, §4).
+     was not opened. The row is closed (result `late_accepted`), and it is never actuated and
+     never synced.
    - After the row is marked actuated and before the screen shows the accepted result, because
      the mark is a wait too. If the check fails here, the gate does not open, the screen says the
      same as at the point before, and the row stays `ACTUATED`: the stranded
      admission of a crash between marking and opening, as above, never a late opening.
+   - After a failure of the sent scan (no answer, an answer that cannot be read, or a local write
+     that failed after the answer) and before the screen shows the offline result. The offline
+     result of an entry tells staff to admit per venue offline policy, so it is shown only if this
+     check passes, with no wait between the check and the result. If the check fails, the screen
+     says that the scanner sent the scan but could not confirm an answer from Access within 30
+     seconds, that it did not open the gate, and that Access may have recorded the scan. The row
+     is closed (result `late_unconfirmed`) and never synced. If the check passes, the result is
+     shown first and the queue write comes after it. The write only records a decision already
+     made in time, so a slow queue write cannot make the result late. If the queue write fails,
+     the row stays `PENDING` and recovery queues it, as before: staff were told to admit.
 
-   A rejected answer, a `401`, and an Exit-mode scan of a ticket on the revocation list open
-   nothing, so they are shown as before, even when late. A failure after the scan was sent still
-   queues the row and shows the offline result, as before: Access may have recorded the scan,
-   and only reconciliation can tell. The revocation pull and the queue sync do not check the
-   limit. They open nothing, and a reconciliation sends facts that each scan decided when it
-   happened, so a late sync is the normal offline path, not a late scan.
+   **Amended by TKT-399 (decision D30, 2026-10-17): a scan that the time limit stopped is never
+   synced to Access, also when the write that closes its row fails in this page.** The danger is
+   a reconciliation that records a scan the screen said did not happen, or did not admit. A
+   write can fail or be slow, so one more write cannot carry this rule alone. The rule is held
+   by one record in the memory of the page, `LateScans`. The page keeps it for its life and
+   gives it to every store it opens, because a failed write makes the page close its store and
+   open a new one with a new owner. A scan that runs out of time declares its row in this record
+   first, with no wait before the declaration, and then writes the close (`closeLate`). Each
+   store of the page applies the record at each point where a row can become reconcilable:
+
+   - Recovery of a `PENDING` row closes a declared row with its result and never queues it.
+   - The listing of rows to reconcile (`queued`, which every sync uses) never lists a declared
+     row. Before it lists, it tries again to write the close of each declared row that is not
+     closed yet. If that write fails again, the filter still keeps the row out.
+   - When a store closes, it keeps the owner lock of each declared row that is not closed yet.
+     Recovery in any tab needs that lock, so while this page lives, no other tab can recover the
+     row, whatever its lease shows. The lock goes when a store of this page writes the close, or
+     when the page goes away.
+
+   The queue write (`markQueued`) does not read the record. Only the scan that owns a row calls
+   it, and that scan calls it only after a check that passed, never after it declared the row
+   late. A local refusal is now minted `PENDING` under the page owner, like a scan, and queued
+   only after its check. So at each point where a scan can declare its row late, the row is
+   `PENDING` and its owner lock is held, and no other tab can queue it first, unless another
+   failure closed the store of the scan first (the second open case below). The actuation rule
+   refuses a row with a local decision, so a `PENDING` refusal never opens the gate.
+
+   An Exit-mode scan follows the same rule. An exit is never refused (D7), so each late exit
+   screen says that the holder may leave. But a late exit is closed and never synced, as the
+   late exits at the points above already were: D30 does not depend on the direction, and an
+   exception would make what Access records depend on the direction with no decision that says
+   so. The cost: if the live request did not reach Access, Access does not learn of that exit,
+   and Access can still show a pass as inside after its holder left. We have not checked what
+   Access then does at the next entry of that pass.
+
+   These cases stay open:
+
+   - The page goes away (crash, reload, closed tab) after a close write failed and before a
+     store of this page wrote it again. The browser then releases the owner lock, the record in
+     memory is lost, and the row is recovered like the row of a page that crashed (the recovery
+     rule above): it is queued and reconciled. This is the crash window of this section, and
+     this decision does not close it.
+   - Another failure made the page close the store of a scan while that scan waited, before the
+     scan declared its row late. That close released the owner lock with no declared row to
+     keep. Between that close and the declaration, a recovery can queue the row: at once in this
+     page, which recovers the rows of the owner it replaced, or in another tab when the lease has
+     expired. A sync can then reconcile it. After the declaration, this page closes the row and
+     never lists it, but another tab can still list a row that is already `QUEUED` while the
+     close write fails. A test pins this: a store that does not share the record lists such a row.
+
+   A rejected answer and a `401` open nothing and tell staff nothing to admit, so they are shown
+   as before, even when late. A `401` also queues the row as before, in time or late: it is not
+   a scan that the time limit stopped. An Exit-mode scan of a ticket on the revocation list records
+   nothing. The revocation pull and the queue sync do not check the limit. They open nothing,
+   and a reconciliation sends facts that each scan decided in time, so a late sync is the normal
+   offline path, not a late scan.
 
    **Amended by TKT-399: each database open also has a limit of 3 seconds, as an early signal.**
    The browser keeps one queue of open requests for each storage key and database name; for the

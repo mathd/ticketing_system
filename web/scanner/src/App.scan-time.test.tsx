@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { IDBFactory } from 'fake-indexeddb'
+import { IDBFactory, IDBObjectStore } from 'fake-indexeddb'
 import type { OccurrenceStore, OccurrenceStoreOptions, OwnerLiveness } from './occurrences'
 
 // The rule (TKT-399 D27, ADR-025 §3): no scan may be minted or sent 3 seconds
@@ -15,7 +15,9 @@ const hooks = vi.hoisted(() => ({
   beforeRecover: undefined as undefined | (() => Promise<void>),
   afterIsRevoked: undefined as undefined | (() => void),
   afterMint: undefined as undefined | (() => void),
+  afterMintRefusal: undefined as undefined | (() => void),
   afterActuate: undefined as undefined | (() => void),
+  beforeMarkQueued: undefined as undefined | (() => Promise<void>),
 }))
 
 vi.mock('./scan-clock', async (importOriginal) => {
@@ -64,10 +66,19 @@ vi.mock('./occurrences', async (importOriginal) => {
           hooks.afterMint?.()
           return record
         },
+        async mintRefusal(qrPayload, occurredAt) {
+          const record = await store.mintRefusal(qrPayload, occurredAt)
+          hooks.afterMintRefusal?.()
+          return record
+        },
         async actuate(occurrenceId) {
           const opened = await store.actuate(occurrenceId)
           hooks.afterActuate?.()
           return opened
+        },
+        async markQueued(occurrenceId) {
+          await hooks.beforeMarkQueued?.()
+          return store.markQueued(occurrenceId)
         },
       }
     },
@@ -81,12 +92,16 @@ const DB = 'gate-occurrences'
 const scanStoppedText = 'The scanner could not confirm that this scan finished within 3 seconds, so it stopped the scan. No ticket was checked. If another scanner tab is open on this device, close it, then try again.'
 const answeredLateText = (direction: 'entry' | 'exit') =>
   `Access accepted this ticket and recorded the ${direction}, but the scanner could not confirm that the scan was still within 30 seconds, so it did not open the gate.`
+const unconfirmedLateText = (direction: 'entry' | 'exit') =>
+  `The scanner sent this scan, but it could not confirm an answer from Access within 30 seconds, so it did not open the gate. Access may have recorded the ${direction}.`
+const offlineAdmitText = /Admit per venue offline policy/
 
-type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void }
+type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void; reject: (cause: unknown) => void }
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((res) => { resolve = res })
-  return { promise, resolve }
+  let reject!: (cause: unknown) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
 }
 
 function advance(monotonic: number, wall = monotonic) {
@@ -96,14 +111,68 @@ function advance(monotonic: number, wall = monotonic) {
 
 const acceptedResponse = () => new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-10-16T20:00:01Z' }), { status: 200 })
 
+// Access records every reconciled row, so a test sees each one that was sent.
 function stubScans(scan: () => Promise<Response>) {
-  vi.stubGlobal('fetch', vi.fn((url: string) => String(url).includes('voided-tickets')
-    ? Promise.resolve(new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 }))
-    : scan()))
+  vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+    if (String(url).includes('voided-tickets')) {
+      return Promise.resolve(new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 }))
+    }
+    if (String(url).endsWith('/reconciliations')) {
+      const sent = JSON.parse(String(init?.body)) as { occurrences: Array<{ occurrence_id: string }> }
+      const results = sent.occurrences.map((row) => ({ occurrence_id: row.occurrence_id, result: 'recorded' }))
+      return Promise.resolve(new Response(JSON.stringify({ results }), { status: 200 }))
+    }
+    return scan()
+  }))
 }
 
 function scanRequests() {
   return vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/scans'))
+}
+
+function reconcileRequests() {
+  return vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/reconciliations'))
+}
+
+// Every occurrence id that any reconciliation request sent to Access.
+function reconciledIds(): string[] {
+  return reconcileRequests().flatMap(([, init]) =>
+    (JSON.parse(String((init as RequestInit).body)) as { occurrences: Array<{ occurrence_id: string }> })
+      .occurrences.map((row) => row.occurrence_id))
+}
+
+// A row that another page queued earlier. A sync must send it, so a test that
+// asserts what a sync left out also sees that the sync ran.
+async function seedQueuedRow(): Promise<string> {
+  const seeder = await openOccurrenceStore(DB, { ownerId: 'seeder' })
+  const row = await seeder.mint('seeded-ticket', '2026-10-16T19:00:00Z', 'entry')
+  await seeder.markQueued(row.occurrenceId)
+  seeder.close()
+  return row.occurrenceId
+}
+
+// Runs one sync, as the online event does, and waits for its request.
+async function syncOnce() {
+  const before = reconcileRequests().length
+  act(() => { window.dispatchEvent(new Event('online')) })
+  await waitFor(() => expect(reconcileRequests().length).toBeGreaterThan(before))
+}
+
+// The IndexedDB write that closes a row fails once, as a full or broken disk
+// does. Only the write of that terminal state fails, so the test can arm it
+// before the scan and every other write still succeeds.
+const terminalWrite = { failures: 0 }
+function failNextTerminalWrite() {
+  terminalWrite.failures = 1
+  const put = IDBObjectStore.prototype.put
+  vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, value: unknown, key?: IDBValidKey) {
+    const state = (value as { state?: unknown } | null)?.state
+    if (this.name === 'occurrences' && state === 'RESOLVED' && terminalWrite.failures > 0) {
+      terminalWrite.failures -= 1
+      throw new DOMException('the disk is full', 'QuotaExceededError')
+    }
+    return put.call(this, value, key)
+  })
 }
 
 function scan(value = 'signed-ticket') {
@@ -169,7 +238,10 @@ afterEach(() => {
   hooks.beforeRecover = undefined
   hooks.afterIsRevoked = undefined
   hooks.afterMint = undefined
+  hooks.afterMintRefusal = undefined
   hooks.afterActuate = undefined
+  hooks.beforeMarkQueued = undefined
+  terminalWrite.failures = 0
   clock.monotonic = 0
   clock.wall = 1_760_000_000_000
   localStorage.clear()
@@ -538,5 +610,192 @@ describe('the scan limits on the camera path (TKT-399 D27)', () => {
     expect(await screen.findByRole('heading', { name: 'Gate not opened' })).toBeDefined()
     expect(screen.queryByRole('heading', { name: 'Accepted' })).toBeNull()
     expect(await rowsFor('camera-ticket')).toEqual([expect.objectContaining({ state: 'RESOLVED', actuated: false })])
+  })
+})
+
+// The owner's decision D30 (2026-10-17): a scan that the time limit stopped is
+// never synced to Access, and the scanner never tells staff to admit after the
+// limit. Each test has a row from another page in the queue, so its sync does
+// send a request, and the test sees what that request left out.
+describe('a scan that the time limit stopped is never synced (TKT-399 D30)', () => {
+  it('never reconciles a scan stopped after its mint, when the write that closes its row fails', async () => {
+    const seeded = await seedQueuedRow()
+    hooks.afterMint = () => {
+      advance(3_000)
+      failNextTerminalWrite()
+    }
+    render(<App />)
+    scan()
+
+    expect(await screen.findByRole('heading', { name: 'Scan stopped' })).toBeDefined()
+    expect(await screen.findByText(/cannot save scans right now/)).toBeDefined()
+    await expectIdleButton()
+    expect(scanRequests()).toHaveLength(0)
+
+    await syncOnce()
+    expect(reconciledIds()).toEqual([seeded])
+    // The sync closed the row on its next try.
+    expect(await rowsFor('signed-ticket')).toEqual([expect.objectContaining({
+      state: 'RESOLVED', actuated: false, result: 'late_not_sent',
+    })])
+  })
+
+  it('never reconciles a scan that Access accepted too late, when the write that closes its row fails', async () => {
+    const seeded = await seedQueuedRow()
+    const reply = deferred<Response>()
+    stubScans(() => reply.promise)
+    render(<App />)
+    scan()
+    await waitFor(() => expect(scanRequests()).toHaveLength(1))
+    advance(30_000)
+    failNextTerminalWrite()
+    reply.resolve(acceptedResponse())
+
+    expect(await screen.findByRole('heading', { name: 'Gate not opened' })).toBeDefined()
+    expect(await screen.findByText(/could not save the server result/)).toBeDefined()
+    await expectIdleButton()
+
+    await syncOnce()
+    expect(reconciledIds()).toEqual([seeded])
+    expect(await rowsFor('signed-ticket')).toEqual([expect.objectContaining({
+      state: 'RESOLVED', actuated: false, result: 'late_accepted',
+    })])
+  })
+
+  // The failure came at the limit, so the scanner may not tell staff to admit.
+  // Access may have the scan from the live request; nothing else sends it.
+  it('shows no offline admission, and closes the row, when the scan fails 30 000 ms after it started', async () => {
+    const seeded = await seedQueuedRow()
+    const reply = deferred<Response>()
+    stubScans(() => reply.promise)
+    render(<App />)
+    scan()
+    await waitFor(() => expect(scanRequests()).toHaveLength(1))
+    advance(30_000)
+    reply.reject(new TypeError('Failed to fetch'))
+
+    const heading = await screen.findByRole('heading', { name: 'Gate not opened' })
+    expect(heading.parentElement?.textContent).toBe(`Gate not opened${unconfirmedLateText('entry')}A new scan of this ticket may be refused as already used.`)
+    expect(heading.parentElement?.getAttribute('role')).toBe('alert')
+    await expectIdleButton()
+    expect(screen.queryByText(offlineAdmitText)).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Queued offline' })).toBeNull()
+    expect(await rowsFor('signed-ticket')).toEqual([expect.objectContaining({
+      state: 'RESOLVED', actuated: false, result: 'late_unconfirmed',
+    })])
+
+    await syncOnce()
+    expect(reconciledIds()).toEqual([seeded])
+  })
+
+  it('never reconciles a scan that failed 30 000 ms after it started, when the write that closes its row fails', async () => {
+    const seeded = await seedQueuedRow()
+    const reply = deferred<Response>()
+    stubScans(() => reply.promise)
+    render(<App />)
+    scan()
+    await waitFor(() => expect(scanRequests()).toHaveLength(1))
+    advance(30_000)
+    failNextTerminalWrite()
+    reply.reject(new TypeError('Failed to fetch'))
+
+    expect(await screen.findByRole('heading', { name: 'Gate not opened' })).toBeDefined()
+    expect((await screen.findByText(/could not save the result of this scan/)).textContent)
+      .toBe('This device could not save the result of this scan. Try again after restoring browser storage.')
+    await expectIdleButton()
+    expect(screen.queryByText(offlineAdmitText)).toBeNull()
+
+    await syncOnce()
+    expect(reconciledIds()).toEqual([seeded])
+    expect(await rowsFor('signed-ticket')).toEqual([expect.objectContaining({
+      state: 'RESOLVED', actuated: false, result: 'late_unconfirmed',
+    })])
+  })
+
+  it('shows the offline result, and queues the row, when the scan fails 29 999 ms after it started', async () => {
+    const seeded = await seedQueuedRow()
+    const reply = deferred<Response>()
+    stubScans(() => reply.promise)
+    render(<App />)
+    scan()
+    await waitFor(() => expect(scanRequests()).toHaveLength(1))
+    advance(29_999)
+    reply.reject(new TypeError('Failed to fetch'))
+
+    expect(await screen.findByText(offlineAdmitText)).toBeDefined()
+    await expectIdleButton()
+    const [row] = await rowsFor('signed-ticket')
+    expect(row).toEqual(expect.objectContaining({ state: 'QUEUED', actuated: false }))
+
+    await syncOnce()
+    expect(reconciledIds().sort()).toEqual([seeded, row.occurrenceId].sort())
+  })
+
+  // The result is decided at a checked moment and shown before the queue write.
+  // The write only records it, so its time cannot make the admission late.
+  it('shows the offline result before the queue write, so a queue write that ends at 30 000 ms cannot decide it late', async () => {
+    const reply = deferred<Response>()
+    stubScans(() => reply.promise)
+    const queueWrite = deferred<void>()
+    hooks.beforeMarkQueued = () => queueWrite.promise
+    render(<App />)
+    scan()
+    await waitFor(() => expect(scanRequests()).toHaveLength(1))
+    advance(29_999)
+    reply.reject(new TypeError('Failed to fetch'))
+
+    // The queue write still waits.
+    expect(await screen.findByText(offlineAdmitText)).toBeDefined()
+    expect(screen.getByRole('button', { name: 'Checking…' })).toBeDefined()
+    advance(1)
+    queueWrite.resolve()
+
+    await expectIdleButton()
+    expect(screen.getByText(offlineAdmitText)).toBeDefined()
+    expect(screen.queryByRole('heading', { name: 'Gate not opened' })).toBeNull()
+    expect(await rowsFor('signed-ticket')).toEqual([expect.objectContaining({ state: 'QUEUED' })])
+  })
+
+  // An exit is never refused (D7), so the holder may leave. The scan is still
+  // stopped like an entry and never synced: D30 does not depend on the direction.
+  it('in Exit mode, closes a scan that fails 30 000 ms after it started, and says that the holder may leave', async () => {
+    const reply = deferred<Response>()
+    stubScans(() => reply.promise)
+    render(<App />)
+    fireEvent.click(screen.getByRole('radio', { name: 'Exit' }))
+    scan()
+    await waitFor(() => expect(scanRequests()).toHaveLength(1))
+    advance(30_000)
+    reply.reject(new TypeError('Failed to fetch'))
+
+    const heading = await screen.findByRole('heading', { name: 'Gate not opened' })
+    expect(heading.parentElement?.textContent).toBe(`Gate not opened${unconfirmedLateText('exit')}The holder may leave.`)
+    expect(heading.parentElement?.getAttribute('role')).toBe('status')
+    expect(screen.queryByRole('heading', { name: 'Queued offline' })).toBeNull()
+    expect(await rowsFor('signed-ticket')).toEqual([expect.objectContaining({
+      state: 'RESOLVED', actuated: false, result: 'late_unconfirmed', direction: 'exit',
+    })])
+  })
+
+  // A revoked ticket must never read as admissible, so the screen still refuses.
+  it('never syncs a local refusal whose mint took until 3000 ms, and still says not valid for entry', async () => {
+    const seeded = await seedQueuedRow()
+    const ticketID = '0b5d6a8e-1c2f-4e3a-9b7d-2f6c8e1a4b3c'
+    const seeder = await openOccurrenceStore(DB, { ownerId: 'revocation-seeder' })
+    await seeder.mergeRevoked([ticketID])
+    seeder.close()
+    hooks.afterMintRefusal = () => advance(3_000)
+
+    render(<App />)
+    scan(credentialFor(ticketID))
+
+    const heading = await screen.findByRole('heading', { name: 'Not valid for entry' })
+    expect(heading.parentElement?.getAttribute('role')).toBe('alert')
+    await expectIdleButton()
+    const refusals = (await storedRows()).filter((row) => row.localDecision === 'revocation_refused')
+    expect(refusals).toEqual([expect.objectContaining({ state: 'RESOLVED', result: 'late_not_sent' })])
+
+    await syncOnce()
+    expect(reconciledIds()).toEqual([seeded])
   })
 })

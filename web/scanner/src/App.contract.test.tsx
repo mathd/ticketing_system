@@ -25,7 +25,7 @@ function fakeStore(queued: OccurrenceRecord[] = []) {
     // The fake keeps the direction it was given: a fake that supplied its own would
     // hide a submit path that forgets the mode.
     mint: vi.fn(async (_qrPayload: string, _occurredAt: string, direction: ScanDirection) => ({ ...record, state: 'PENDING' as const, direction })),
-    mintRefusal: vi.fn().mockResolvedValue({ ...record, state: 'QUEUED', localDecision: 'revocation_refused' }),
+    mintRefusal: vi.fn().mockResolvedValue({ ...record, state: 'PENDING', localDecision: 'revocation_refused' }),
     isRevoked: vi.fn().mockResolvedValue(false),
     mergeRevoked: vi.fn().mockResolvedValue(undefined),
     completeRevocationPull: vi.fn().mockResolvedValue(undefined),
@@ -33,6 +33,7 @@ function fakeStore(queued: OccurrenceRecord[] = []) {
     actuate: vi.fn().mockResolvedValue(true),
     markQueued: vi.fn().mockResolvedValue(undefined),
     markSynced: vi.fn().mockResolvedValue(undefined),
+    closeLate: vi.fn().mockResolvedValue(undefined),
     queued: vi.fn().mockResolvedValue(queued),
     get: vi.fn().mockResolvedValue(undefined),
     close: vi.fn(),

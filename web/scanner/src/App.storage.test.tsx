@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ScanDirection } from './access-contract'
-import type { OccurrenceRecord, OccurrenceStore } from './occurrences'
+import { LateScans, type OccurrenceRecord, type OccurrenceStore } from './occurrences'
 
 const openStore = vi.hoisted(() => vi.fn())
 
@@ -41,7 +41,7 @@ function fakeStore() {
   const store: OccurrenceStore = {
     // The fake keeps the direction it was given, so it cannot supply one itself.
     mint: vi.fn(async (_qrPayload: string, _occurredAt: string, direction: ScanDirection) => ({ ...record, direction })),
-    mintRefusal: vi.fn().mockResolvedValue({ ...record, state: 'QUEUED', localDecision: 'revocation_refused' }),
+    mintRefusal: vi.fn().mockResolvedValue({ ...record, localDecision: 'revocation_refused' }),
     isRevoked: vi.fn(async (ticketID) => revokedIDs.has(ticketID.toLowerCase())),
     mergeRevoked: vi.fn(async (ticketIDs) => {
       for (const ticketID of ticketIDs) revokedIDs.add(ticketID.toLowerCase())
@@ -54,6 +54,7 @@ function fakeStore() {
     actuate: vi.fn().mockResolvedValue(true),
     markQueued: vi.fn().mockResolvedValue(undefined),
     markSynced: vi.fn().mockResolvedValue(undefined),
+    closeLate: vi.fn().mockResolvedValue(undefined),
     queued: vi.fn().mockResolvedValue([]),
     get: vi.fn().mockResolvedValue(undefined),
     close: vi.fn(),
@@ -104,6 +105,7 @@ describe('Scanner storage failures', () => {
     expect(openStore).toHaveBeenCalledWith('gate-occurrences', {
       ownerId: 'current-page-owner',
       recoverOwnerId: 'previous-page-owner',
+      lateScans: expect.any(LateScans),
     })
     view.unmount()
     await waitFor(() => expect(store.close).toHaveBeenCalledOnce())
@@ -174,7 +176,11 @@ describe('Scanner storage failures', () => {
     expect(openStore).toHaveBeenLastCalledWith('gate-occurrences', {
       ownerId: 'replacement-page-owner',
       recoverOwnerId: 'current-page-owner',
+      lateScans: expect.any(LateScans),
     })
+    // One record of late scans for the page, given to the store that replaced
+    // the failed one (TKT-399 D30).
+    expect(openStore.mock.calls[1][1].lateScans).toBe(openStore.mock.calls[0][1].lateScans)
     expect(vi.mocked(store.close).mock.invocationCallOrder[0]).toBeLessThan(
       openStore.mock.invocationCallOrder[1],
     )
@@ -404,9 +410,12 @@ describe('Scanner storage failures', () => {
     const tid = 'a8e94ed1-a02b-4cb7-a47b-a607f7b3872d'
     await store.mergeRevoked([tid])
     vi.mocked(store.mintRefusal).mockImplementation(async (qrPayload, occurredAt) => {
-      const row = { ...storedOccurrence(), qrPayload, occurredAt, localDecision: 'revocation_refused' as const, state: 'QUEUED' as const }
+      const row: OccurrenceRecord = { ...storedOccurrence(), qrPayload, occurredAt, localDecision: 'revocation_refused' }
       rows.push(row)
       return row
+    })
+    vi.mocked(store.markQueued).mockImplementation(async (occurrenceId) => {
+      for (const row of rows) if (row.occurrenceId === occurrenceId) row.state = 'QUEUED'
     })
     vi.mocked(store.queued).mockImplementation(async () => showSeededQueue
       ? [storedOccurrence()]
@@ -433,7 +442,8 @@ describe('Scanner storage failures', () => {
     expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/scans'))).toHaveLength(0)
     expect(store.actuate).not.toHaveBeenCalled()
     expect(store.mintRefusal).toHaveBeenCalledOnce()
-    expect(store.markQueued).not.toHaveBeenCalled()
+    // Minted PENDING, then queued after the time check (TKT-399 D30).
+    expect(store.markQueued).toHaveBeenCalledExactlyOnceWith(rows[0].occurrenceId)
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ state: 'QUEUED', actuated: false, localDecision: 'revocation_refused' })
     await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/reconciliations'))).toHaveLength(1))
@@ -441,7 +451,7 @@ describe('Scanner storage failures', () => {
     expect(request.occurrences[0].local_decision).toBe('revocation_refused')
   })
 
-  it('shows a listed refusal when the one-step refusal write fails', async () => {
+  it('shows a listed refusal when the refusal write fails', async () => {
     const { store } = fakeStore()
     vi.mocked(store.isRevoked).mockResolvedValue(true)
     vi.mocked(store.mintRefusal).mockRejectedValue(new Error('transaction failed'))
@@ -459,5 +469,38 @@ describe('Scanner storage failures', () => {
     expect((await screen.findByText(/could not save the refusal/i)).textContent).toMatch(/could not save the refusal/i)
     expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/scans'))).toHaveLength(0)
     expect(store.actuate).not.toHaveBeenCalled()
+  })
+})
+
+// A response for a row that this device already handled opens nothing. An exit
+// is never refused (D7), so in Exit mode the screen says that the holder may
+// leave, as every other Exit result does, and is not an alert.
+describe('a response this device already handled (TKT-399)', () => {
+  it('in Exit mode, says that the exit is not counted twice and that the holder may leave', async () => {
+    const { store } = fakeStore()
+    vi.mocked(store.actuate).mockResolvedValue(false)
+    openStore.mockResolvedValue(store)
+    render(<App />)
+    await waitFor(() => expect(openStore).toHaveBeenCalledOnce())
+    fireEvent.click(screen.getByRole('radio', { name: 'Exit' }))
+    checkTicket()
+
+    const heading = await screen.findByRole('heading', { name: 'Already processed' })
+    expect(heading.parentElement?.textContent).toBe('Already processedThis scan was already handled on this device, so the exit is not counted twice.The holder may leave.')
+    expect(heading.parentElement?.getAttribute('role')).toBe('status')
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('in Entry mode, keeps the alert that there is no second entry', async () => {
+    const { store } = fakeStore()
+    vi.mocked(store.actuate).mockResolvedValue(false)
+    openStore.mockResolvedValue(store)
+    render(<App />)
+    await waitFor(() => expect(openStore).toHaveBeenCalledOnce())
+    checkTicket()
+
+    const heading = await screen.findByRole('heading', { name: 'Already processed' })
+    expect(heading.parentElement?.textContent).toBe('Already processedThis scan was already handled on this device — no second entry.')
+    expect(heading.parentElement?.getAttribute('role')).toBe('alert')
   })
 })
