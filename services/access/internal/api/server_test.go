@@ -319,6 +319,8 @@ func TestReconcileContractAcceptsEventTypePerOccurrence(t *testing.T) {
 // through, so the refusal of the "sideways" row comes from the event_type check.
 // It is a separate request and not a second row, because an exit row in the same
 // batch would reach the store and panic before the sideways row is handled.
+// D8 also adds eight unmutated runs to the mutation check of this test, so the
+// control must reach recording on every run, not only once.
 func TestReconcileUnknownEventTypeRejectsOnlyItsItem(t *testing.T) {
 	organizer := uuid.New()
 	verifier, payload := signedFor(t, organizer)
