@@ -1,6 +1,8 @@
 import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  OccurrenceStoreBlockedError,
+  OccurrenceStoreClosedError,
   openOccurrenceStore,
   type OccurrenceStore,
   type OccurrenceStoreOptions,
@@ -399,5 +401,158 @@ describe('offline queue', () => {
     expect(after?.state).toBe('RESOLVED')
     // A conflict result must never become actuatable.
     expect(await store.actuate(record.occurrenceId)).toBe(false)
+  })
+})
+
+// Opens a raw connection the way a test or another tab does, with no handlers.
+function rawOpen(dbName: string, version: number, upgrade?: (db: IDBDatabase) => void): Promise<IDBDatabase> {
+  const open = indexedDB.open(dbName, version)
+  if (upgrade) open.onupgradeneeded = () => upgrade(open.result)
+  return new Promise((resolve, reject) => {
+    open.onsuccess = () => resolve(open.result)
+    open.onerror = () => reject(open.error)
+  })
+}
+
+// Opens a later version and reports which event came first: blocked, or success.
+function openLaterVersion(dbName: string, version: number): Promise<{ kind: 'blocked' } | { kind: 'opened'; db: IDBDatabase }> {
+  const open = indexedDB.open(dbName, version)
+  return new Promise((resolve, reject) => {
+    open.onblocked = () => resolve({ kind: 'blocked' })
+    open.onsuccess = () => resolve({ kind: 'opened', db: open.result })
+    open.onerror = () => reject(open.error)
+  })
+}
+
+function allRows(db: IDBDatabase): Promise<Array<Record<string, unknown>>> {
+  const request = db.transaction('occurrences', 'readonly').objectStore('occurrences').getAll()
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+}
+
+describe('version 3 barrier between scanner versions (TKT-399)', () => {
+  // A tab still on the pre-TKT-399 code opens version 2 and has no versionchange
+  // handler, so it never closes for an upgrade. It reconciles every QUEUED row
+  // without a direction, so it would send this code's queued exits as entries.
+  it('reports a blocked open while an older tab holds version 2, and keeps every row after it closes', async () => {
+    const dbName = `barrier-${crypto.randomUUID()}`
+    const olderTab = await rawOpen(dbName, 2, (db) => {
+      db.createObjectStore('occurrences', { keyPath: 'occurrenceId' })
+      db.createObjectStore('revocations', { keyPath: 'ticketID' })
+      db.createObjectStore('revocation_meta', { keyPath: 'key' })
+    })
+    const legacy = {
+      occurrenceId: crypto.randomUUID(), qrPayload: 'legacy-qr', occurredAt: '2026-10-01T18:00:00Z',
+      state: 'QUEUED', actuated: false, createdAt: '2026-10-01T18:00:00Z',
+    }
+    const tx = olderTab.transaction('occurrences', 'readwrite')
+    tx.objectStore('occurrences').put(legacy)
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+
+    await expect(openStore(dbName)).rejects.toBeInstanceOf(OccurrenceStoreBlockedError)
+    // A second open while the first still waits must not queue behind it. It would
+    // wait until the older tab closes and then let a scan through late.
+    const retry = openStore(dbName)
+    olderTab.close()
+    await expect(retry).rejects.toBeInstanceOf(OccurrenceStoreBlockedError)
+
+    // The open that was reported blocked completes once the older tab closes. An
+    // open queues behind it, so this one succeeds only after it has finished.
+    const afterUpgrade = await rawOpen(dbName, 3)
+    expect(afterUpgrade.version).toBe(3)
+    expect([...afterUpgrade.objectStoreNames].sort()).toEqual(['occurrences', 'revocation_meta', 'revocations'])
+    afterUpgrade.close()
+
+    const reopened = await openStore(dbName)
+    const queued = await reopened.queued()
+    expect(queued).toEqual([legacy])
+    // No own direction: the reconciliation omits event_type and Access reads an entry.
+    expect(Object.hasOwn(queued[0], 'direction')).toBe(false)
+    reopened.close()
+
+    // The open that was reported blocked closed its own connection, so it does not
+    // block a later version, and no open wrote a row.
+    const later = await openLaterVersion(dbName, 4)
+    expect(later.kind).toBe('opened')
+    if (later.kind !== 'opened') return
+    expect(await allRows(later.db)).toEqual([legacy])
+    later.db.close()
+  })
+
+  it('closes itself when a later version opens, and then refuses every use', async () => {
+    const dbName = `versionchange-${crypto.randomUUID()}`
+    const current = await openStore(dbName, { ownerId: 'current-owner' })
+    const inFlight = await current.mint('in-flight-qr', '2026-10-16T19:00:00Z', 'exit')
+
+    const later = await openLaterVersion(dbName, 4)
+    expect(later.kind).toBe('opened')
+    if (later.kind !== 'opened') return
+    // The row stays for the next page to recover and reconcile.
+    expect(await allRows(later.db)).toEqual([expect.objectContaining({
+      occurrenceId: inFlight.occurrenceId, state: 'PENDING', direction: 'exit',
+    })])
+    later.db.close()
+
+    // The owner is released, so another page can recover the in-flight row.
+    expect(await ownerLiveness.runIfOwnerAbsent('current-owner', async () => {})).toBe(true)
+    const uses: Array<() => Promise<unknown>> = [
+      () => current.mint('after-close-qr', '2026-10-16T19:01:00Z', 'entry'),
+      () => current.mintRefusal('after-close-qr', '2026-10-16T19:01:00Z'),
+      () => current.isRevoked(ticketIDForStore),
+      () => current.mergeRevoked([ticketIDForStore]),
+      () => current.completeRevocationPull('fingerprint', '2026-10-16T19:01:00Z'),
+      () => current.revocationPull('fingerprint'),
+      () => current.actuate(inFlight.occurrenceId),
+      () => current.markQueued(inFlight.occurrenceId),
+      () => current.markSynced(inFlight.occurrenceId, 'recorded'),
+      () => current.queued(),
+      () => current.get(inFlight.occurrenceId),
+    ]
+    for (const use of uses) await expect(use()).rejects.toBeInstanceOf(OccurrenceStoreClosedError)
+  })
+
+  it('refuses to open, and releases its owner, when a later version opens during the owner lock', async () => {
+    const dbName = `during-hold-${crypto.randomUUID()}`
+    let later: Awaited<ReturnType<typeof openLaterVersion>> | undefined
+    const racing: OwnerLiveness = {
+      async hold(ownerId) {
+        later = await openLaterVersion(dbName, 4)
+        return ownerLiveness.hold(ownerId)
+      },
+      runIfOwnerAbsent: (ownerId, task) => ownerLiveness.runIfOwnerAbsent(ownerId, task),
+    }
+
+    await expect(openOccurrenceStore(dbName, { ownerId: 'racing-owner', ownerLiveness: racing }))
+      .rejects.toBeInstanceOf(OccurrenceStoreClosedError)
+    expect(later?.kind).toBe('opened')
+    if (later?.kind === 'opened') later.db.close()
+    expect(await ownerLiveness.runIfOwnerAbsent('racing-owner', async () => {})).toBe(true)
+  })
+
+  it('refuses to open when a later version opens while it recovers rows', async () => {
+    const dbName = `during-recovery-${crypto.randomUUID()}`
+    const otherPage = await openStore(dbName, { ownerId: 'other-page' })
+    await otherPage.mint('other-page-qr', '2026-10-16T19:00:00Z', 'entry')
+    otherPage.close()
+    let later: Awaited<ReturnType<typeof openLaterVersion>> | undefined
+    const racing: OwnerLiveness = {
+      hold: (ownerId) => ownerLiveness.hold(ownerId),
+      async runIfOwnerAbsent(ownerId, task) {
+        const ran = await ownerLiveness.runIfOwnerAbsent(ownerId, task)
+        later = await openLaterVersion(dbName, 4)
+        return ran
+      },
+    }
+
+    await expect(openOccurrenceStore(dbName, { ownerId: 'recovering-page', ownerLiveness: racing }))
+      .rejects.toBeInstanceOf(OccurrenceStoreClosedError)
+    expect(later?.kind).toBe('opened')
+    if (later?.kind === 'opened') later.db.close()
+    expect(await ownerLiveness.runIfOwnerAbsent('recovering-page', async () => {})).toBe(true)
   })
 })

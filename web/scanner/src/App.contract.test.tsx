@@ -4,7 +4,10 @@ import type { ScanDirection } from './access-contract'
 import type { OccurrenceRecord, OccurrenceStore } from './occurrences'
 
 const openStore = vi.hoisted(() => vi.fn())
-vi.mock('./occurrences', () => ({ openOccurrenceStore: openStore }))
+vi.mock('./occurrences', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./occurrences')>(),
+  openOccurrenceStore: openStore,
+}))
 
 import App from './App'
 

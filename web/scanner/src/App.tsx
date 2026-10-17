@@ -9,7 +9,13 @@ import {
   type ScanRequest,
 } from './access-contract'
 import { createOccurrenceOwner, replaceOccurrenceOwner } from './occurrence-owner'
-import { openOccurrenceStore, type MintedOccurrence, type OccurrenceRecord, type OccurrenceStore } from './occurrences'
+import {
+  OccurrenceStoreBlockedError,
+  openOccurrenceStore,
+  type MintedOccurrence,
+  type OccurrenceRecord,
+  type OccurrenceStore,
+} from './occurrences'
 import { decodeTicketID } from './revocation'
 
 // Every result carries the direction of the scan it describes, taken from the
@@ -78,6 +84,13 @@ const revocationsURL = '/api/access/scans/voided-tickets'
 const storageBeforeScanMessage = 'This device cannot save scans right now. No ticket was checked. Try again after restoring browser storage.'
 const storageAfterResponseMessage = 'This device could not save the server result. Do not rescan until browser storage is restored.'
 const storageRefusalMessage = 'This device could not save the refusal. Do not admit this ticket.'
+const storageBlockedMessage = 'Another scanner tab is open on this device. Close the other scanner tabs, then try again. No ticket was checked.'
+
+// A tab on the older scanner code keeps the queue open and blocks this one
+// (TKT-399). The operator can fix that at once, so the screen says how.
+function openFailureMessage(cause: unknown): string {
+  return cause instanceof OccurrenceStoreBlockedError ? storageBlockedMessage : storageBeforeScanMessage
+}
 
 // The enrolled device's credential.
 //
@@ -258,8 +271,8 @@ function App() {
         setQueuedCount(queue.length)
         setStorageFailure(null)
       }
-    } catch {
-      reportStorageFailure()
+    } catch (cause) {
+      reportStorageFailure(openFailureMessage(cause))
     }
   }
 
@@ -349,12 +362,12 @@ function App() {
         // Commit the occurrence, with its direction, before sending the request (ADR-025 §D3).
         record = await store.mint(value.trim(), new Date().toISOString(), scanDirection)
         reportStorageReady()
-      } catch {
+      } catch (cause) {
         if (listed) {
           setOutcome({ kind: 'revocation-refused', direction: 'entry' })
           reportStorageFailure(storageRefusalMessage)
         } else {
-          reportStorageFailure()
+          reportStorageFailure(openFailureMessage(cause))
         }
         return
       }
@@ -481,8 +494,8 @@ function App() {
       store = await getStore()
       queue = await store.queued()
       reportStorageReady()
-    } catch {
-      reportStorageFailure()
+    } catch (cause) {
+      reportStorageFailure(openFailureMessage(cause))
       return
     }
     if (!queue.length) {
@@ -701,8 +714,8 @@ function App() {
     try {
       const pull = await (await getStore()).revocationPull(fingerprint)
       setHasRevocationPull(!!pull.completedAt)
-    } catch {
-      reportStorageFailure()
+    } catch (cause) {
+      reportStorageFailure(openFailureMessage(cause))
       return
     }
     try {

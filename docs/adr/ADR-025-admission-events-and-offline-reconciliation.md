@@ -207,6 +207,19 @@ conflicts. Together every physical admission that Access learns about is represe
    without session storage, or a second tab left open after the first crashes, a bounded recovery
    path. Actuation still requires `PENDING`, `actuated:false`, and the current owner id in one
    IndexedDB transaction. Recovery can therefore make a request retryable, never gate-opening.
+
+   **Amended by TKT-399: the `gate-occurrences` database is at version 3, as a barrier.** The
+   upgrade from version 2 changes no store, index or row. It exists because a tab on the
+   pre-TKT-399 code opens version 2, reads every `QUEUED` row and reconciles it with no
+   `event_type`, so Access would record this code's queued exit as an entry. That older code has
+   no `versionchange` handler, so while its tab is open, a new tab's open is blocked. The new tab
+   then refuses to scan and tells the operator to close the other scanner tabs. The new code
+   closes its own connection on `versionchange` and then refuses every store operation, so a
+   later version is never blocked by it. The cost is a one-way door: once version 3 exists on a
+   device, a rolled-back pre-TKT-399 scanner gets `VersionError` when it opens the database.
+   That scanner fails closed: it shows its storage failure, mints nothing and sends no scan. Rows
+   already queued on that device stay there unsent until a TKT-399 or later scanner opens the
+   database.
 4. **Idempotency stays outside the append path.** Event-id replay is resolved *before*
    `appendLifecycle`, under the ticket lock — the append module is never invoked for an
    already-recorded occurrence (its documented contract at

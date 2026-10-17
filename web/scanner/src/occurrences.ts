@@ -145,6 +145,64 @@ function transactionDone(tx: IDBTransaction): Promise<void> {
   })
 }
 
+// Version 3 changes no store or index. It is a barrier (TKT-399): a tab on the
+// older code opens version 2, reconciles every QUEUED row and sends none with a
+// direction, so it would send a queued exit as an entry. That tab never closes
+// for a version change, so this version cannot open while it is open, and once
+// this version has opened, the older code cannot open the database at all.
+const DB_VERSION = 3
+
+/** The open waits for another tab, on older code, to close its connection. */
+export class OccurrenceStoreBlockedError extends Error {
+  constructor() {
+    super('another scanner tab holds the occurrence database open')
+    this.name = 'OccurrenceStoreBlockedError'
+  }
+}
+
+/** The store was closed, by this page or by a later version in another tab. */
+export class OccurrenceStoreClosedError extends Error {
+  constructor() {
+    super('the occurrence store is closed')
+    this.name = 'OccurrenceStoreClosedError'
+  }
+}
+
+// Names of databases with an open request that was reported blocked and still
+// waits. A new open request would queue behind it without an event of its own.
+const blockedOpens = new Set<string>()
+
+function openDatabase(dbName: string): Promise<IDBDatabase> {
+  if (blockedOpens.has(dbName)) return Promise.reject(new OccurrenceStoreBlockedError())
+  return new Promise((resolve, reject) => {
+    let blocked = false
+    const open = indexedDB.open(dbName, DB_VERSION)
+    open.onupgradeneeded = () => {
+      // From 2 to 3 nothing changes, so every row stays as it is.
+      const db = open.result
+      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'occurrenceId' })
+      if (!db.objectStoreNames.contains(REVOCATIONS)) db.createObjectStore(REVOCATIONS, { keyPath: 'ticketID' })
+      if (!db.objectStoreNames.contains(REVOCATION_META)) db.createObjectStore(REVOCATION_META, { keyPath: 'key' })
+    }
+    open.onblocked = () => {
+      // The caller fails closed now. The request still waits, so when the other
+      // tab closes, the success handler below closes the connection it gets.
+      blocked = true
+      blockedOpens.add(dbName)
+      reject(new OccurrenceStoreBlockedError())
+    }
+    open.onsuccess = () => {
+      if (!blocked) return resolve(open.result)
+      blockedOpens.delete(dbName)
+      open.result.close()
+    }
+    open.onerror = () => {
+      if (blocked) blockedOpens.delete(dbName)
+      reject(open.error)
+    }
+  })
+}
+
 export async function openOccurrenceStore(
   dbName = 'gate-occurrences',
   options: OccurrenceStoreOptions = {},
@@ -156,14 +214,26 @@ export async function openOccurrenceStore(
   if (!ownerId || !Number.isSafeInteger(pendingLeaseMs) || pendingLeaseMs <= 0) {
     throw new TypeError('occurrence owner and pending lease must be valid')
   }
-  const open = indexedDB.open(dbName, 2)
-  open.onupgradeneeded = () => {
-    const db = open.result
-    if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'occurrenceId' })
-    if (!db.objectStoreNames.contains(REVOCATIONS)) db.createObjectStore(REVOCATIONS, { keyPath: 'ticketID' })
-    if (!db.objectStoreNames.contains(REVOCATION_META)) db.createObjectStore(REVOCATION_META, { keyPath: 'key' })
+  const db = await openDatabase(dbName)
+
+  // Set by close(), and by a later version that asks this connection to close.
+  // Every operation checks it, so a closed store refuses with one known error.
+  let closed = false
+  let heartbeat: ReturnType<typeof globalThis.setInterval> | undefined
+  let releaseOwner: (() => void) | undefined
+  const close = () => {
+    if (closed) return
+    closed = true
+    globalThis.clearInterval(heartbeat)
+    db.close()
+    releaseOwner?.()
   }
-  const db = await requestDone(open as IDBRequest<IDBDatabase>)
+  // A later version cannot open while this connection stays open. Close at once,
+  // so that version is never blocked by this tab; this tab then fails closed.
+  db.onversionchange = close
+  const assertOpen = () => {
+    if (closed) throw new OccurrenceStoreClosedError()
+  }
 
   const recoverRecord = async (occurrenceId: string, recoverOwnerId?: string): Promise<void> => {
     const tx = db.transaction(STORE, 'readwrite')
@@ -182,6 +252,7 @@ export async function openOccurrenceStore(
   }
 
   const recoverPending = async (recoverOwnerId?: string): Promise<void> => {
+    assertOpen()
     const tx = db.transaction(STORE, 'readonly')
     const existing = await requestDone(tx.objectStore(STORE).getAll() as IDBRequest<OccurrenceRecord[]>)
     for (const record of existing) {
@@ -195,12 +266,16 @@ export async function openOccurrenceStore(
     }
   }
 
-  let releaseOwner: () => void
   try {
     releaseOwner = await ownerLiveness.hold(ownerId)
   } catch (cause) {
-    db.close()
+    close()
     throw cause
+  }
+  // A version change during hold() closed the store before it held the owner.
+  if (closed) {
+    releaseOwner()
+    throw new OccurrenceStoreClosedError()
   }
 
   // A reload gets a new page-owner id but carries the old id through
@@ -208,13 +283,12 @@ export async function openOccurrenceStore(
   // A foreign row needs an expired lease and an absent browser lock.
   try {
     await recoverPending(options.recoverOwnerId)
+    assertOpen()
   } catch (cause) {
-    releaseOwner()
-    db.close()
+    close()
     throw cause
   }
 
-  let closed = false
   const renewOwnedPending = async (): Promise<void> => {
     if (closed) return
     const tx = db.transaction(STORE, 'readwrite')
@@ -229,7 +303,7 @@ export async function openOccurrenceStore(
     }
     await done
   }
-  const heartbeat = globalThis.setInterval(() => {
+  heartbeat = globalThis.setInterval(() => {
     void renewOwnedPending().catch(() => {
       // Foreground operations report IndexedDB failures. The browser lock still
       // prevents another tab from taking this owner's row after a missed renewal.
@@ -237,11 +311,13 @@ export async function openOccurrenceStore(
   }, Math.max(1, Math.floor(pendingLeaseMs / 3)))
 
   const put = async (record: OccurrenceRecord): Promise<void> => {
+    assertOpen()
     const tx = db.transaction(STORE, 'readwrite')
     tx.objectStore(STORE).put(record)
     await transactionDone(tx)
   }
   const read = async (occurrenceId: string): Promise<OccurrenceRecord | undefined> => {
+    assertOpen()
     const tx = db.transaction(STORE, 'readonly')
     return requestDone(tx.objectStore(STORE).get(occurrenceId) as IDBRequest<OccurrenceRecord | undefined>)
   }
@@ -252,6 +328,7 @@ export async function openOccurrenceStore(
     // One readwrite transaction covers the get and the put: IDB serializes
     // same-store readwrite transactions, so two racers cannot both see the
     // pre-transition record.
+    assertOpen()
     const tx = db.transaction(STORE, 'readwrite')
     const os = tx.objectStore(STORE)
     const record = (await requestDone(os.get(occurrenceId) as IDBRequest<OccurrenceRecord | undefined>)) ?? null
@@ -291,21 +368,25 @@ export async function openOccurrenceStore(
       return record
     },
     async isRevoked(ticketID) {
+      assertOpen()
       const tx = db.transaction(REVOCATIONS, 'readonly')
       return (await requestDone(tx.objectStore(REVOCATIONS).get(ticketID.toLowerCase()) as IDBRequest<unknown>)) !== undefined
     },
     async mergeRevoked(ticketIDs) {
+      assertOpen()
       const tx = db.transaction(REVOCATIONS, 'readwrite')
       for (const ticketID of ticketIDs) tx.objectStore(REVOCATIONS).put({ ticketID: ticketID.toLowerCase() })
       await transactionDone(tx)
     },
     async completeRevocationPull(fingerprint, completedAt) {
+      assertOpen()
       const tx = db.transaction(REVOCATION_META, 'readwrite')
       const os = tx.objectStore(REVOCATION_META)
       os.put({ key: `pull:${fingerprint}`, completedAt } satisfies RevocationMeta)
       await transactionDone(tx)
     },
     async revocationPull(fingerprint) {
+      assertOpen()
       const tx = db.transaction(REVOCATION_META, 'readonly')
       const meta = await requestDone(tx.objectStore(REVOCATION_META).get(`pull:${fingerprint}`) as IDBRequest<RevocationMeta | undefined>)
       await transactionDone(tx)
@@ -332,12 +413,6 @@ export async function openOccurrenceStore(
       return all.filter((record) => record.state === 'QUEUED')
     },
     get: read,
-    close() {
-      if (closed) return
-      closed = true
-      globalThis.clearInterval(heartbeat)
-      db.close()
-      releaseOwner()
-    },
+    close,
   }
 }
