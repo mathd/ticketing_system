@@ -18,7 +18,7 @@ import {
   type OccurrenceStore,
 } from './occurrences'
 import { decodeTicketID } from './revocation'
-import { readScanClock, scanStillInTime } from './scan-clock'
+import { readScanClock, SCAN_OPEN_LIMIT_MS, SCAN_SEND_LIMIT_MS, scanStillInTime } from './scan-clock'
 
 // Every result carries the direction of the scan it describes, taken from the
 // committed occurrence, never from the mode the screen shows later (TKT-399).
@@ -92,11 +92,13 @@ const storageBlockedMessage = 'Another scanner tab is open on this device. Close
 const storageOpenTimeoutMessage = 'Scan storage did not open in time. If another scanner tab is open on this device, close it, then try again. No ticket was checked.'
 
 // What the operator is told when a scan runs out of time (D27). The scanner
-// knows only that it could not confirm the 3 second limit: the clocks may show
-// a long wait, or disagree, or give no usable time. It does not know the cause.
+// knows only that it could not confirm the limit of that step: the clocks may
+// show a long wait, or disagree, or give no usable time. It does not know the
+// cause. A scan is stopped against the 3 second limit to send, and a gate is
+// left shut against the 30 second limit to open, so each message names its own.
 const scanStoppedMessage = 'The scanner could not confirm that this scan finished within 3 seconds, so it stopped the scan. No ticket was checked. If another scanner tab is open on this device, close it, then try again.'
 const answeredLateMessage = (direction: ScanDirection) =>
-  `Access accepted this ticket and recorded the ${direction}, but the scanner could not confirm that the answer came within 3 seconds, so it did not open the gate.`
+  `Access accepted this ticket and recorded the ${direction}, but the scanner could not confirm that the scan was still within 30 seconds, so it did not open the gate.`
 
 // A tab on the older scanner code keeps the queue open and blocks this one
 // (TKT-399). The operator can fix that at once, so the screen says how. An open
@@ -355,11 +357,13 @@ function App() {
     if (!value.trim() || submitting) return
     // Captured before the first await, so the scan keeps the mode it started in.
     const scanDirection = directionRef.current
-    // The 3 second limit counts from here, for the button and the camera alike
-    // (D27). The scan checks it before each step that would mint, send or open the
-    // gate, so no wait anywhere before that step can let a scan through late.
+    // Both limits count from here, for the button and the camera alike (D27).
+    // The scan checks the 3 second limit before it mints and before it sends, and
+    // the 30 second limit before it marks the row actuated and before it opens
+    // the gate. So no wait anywhere before a step can let a scan through late.
     const scanStart = readScanClock()
-    const inTime = () => scanStillInTime(scanStart, readScanClock())
+    const inTimeToSend = () => scanStillInTime(scanStart, readScanClock(), SCAN_SEND_LIMIT_MS)
+    const inTimeToOpen = () => scanStillInTime(scanStart, readScanClock(), SCAN_OPEN_LIMIT_MS)
     setSubmitting(true)
     setOutcome(null)
     try {
@@ -378,7 +382,7 @@ function App() {
           setOutcome({ kind: 'revocation-refused', direction: 'exit' })
           return
         }
-        if (!inTime()) {
+        if (!inTimeToSend()) {
           // Nothing is minted and nothing is sent. The store itself is fine.
           reportStorageReady()
           setOutcome({ kind: 'too-late', direction: scanDirection, answered: false })
@@ -405,7 +409,7 @@ function App() {
         return
       }
 
-      if (!inTime()) {
+      if (!inTimeToSend()) {
         // The mint itself took too long. Nothing was sent, so the row is closed
         // and never reconciled: a reconciliation would record a scan that the
         // operator was told did not happen. If the write fails, the row stays
@@ -449,7 +453,7 @@ function App() {
         const result = decodeScanResponse(response.status, body)
         cause = 'local'
         if (result.decision === 'accepted') {
-          if (!inTime()) {
+          if (!inTimeToOpen()) {
             // Access has recorded the scan, but the answer came too late, so the
             // gate stays shut. The row is closed and never actuated. If the write
             // fails, the row stays PENDING; recovery can only queue it, and the
@@ -464,7 +468,7 @@ function App() {
           }
           // A response opens the gate only through this device's pending record.
           const opened = await store.actuate(record.occurrenceId)
-          if (opened && !inTime()) {
+          if (opened && !inTimeToOpen()) {
             // The row is marked before the gate opens, and the mark came too late.
             // The gate stays shut: the same stranded admission as a crash between
             // marking and opening (ADR-025 §3), never a late opening.

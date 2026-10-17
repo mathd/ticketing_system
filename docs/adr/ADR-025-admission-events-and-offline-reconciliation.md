@@ -220,26 +220,36 @@ conflicts. Together every physical admission that Access learns about is represe
    connection on `versionchange` and then refuses every new store operation. A later version can
    still wait until the transactions that were already running on that connection finish.
 
-   **Amended by TKT-399: no scan may be minted, sent or open the gate after the operator was left
-   waiting 3 seconds or more since the scan started** (decision D27). 3 seconds is a policy limit,
-   not a measured value: we assume that the ticket holder is still at the gate when the scanner
-   refuses. The rule is checked at the scan, not at each wait, because a scan waits on more than
-   one thing. Before the store can be used, it opens the database, takes the page owner lock and
+   **Amended by TKT-399: nothing is minted or sent 3 seconds or more after the scan started, and
+   the gate never opens 30 seconds or more after the scan started** (decision D27; the 30 second
+   limit is the owner's decision of 2026-10-16). Both are policy limits, not measured values: we
+   assume that the ticket holder is still at the gate when the scanner refuses. The danger the
+   rule stops is a scan that sits on the device for minutes, for example behind a blocked store,
+   and then sends and opens the gate for whoever stands there. A slow answer while the holder
+   waits is not that danger. The first version used 3 seconds for every step, and that counted
+   the network round trip: any accepted answer slower than 3 seconds left the gate shut although
+   Access had recorded the scan, and a new scan of that ticket could then be refused as already
+   used. So the limit to send stays at 3 seconds, and the limit to open the gate is 30 seconds.
+   The rule is checked at the scan, not at each wait, because a scan waits on more than one
+   thing. Before the store can be used, it opens the database, takes the page owner lock and
    recovers `PENDING` rows, and every caller of the store (scan, revocation pull, queue sync)
    shares that one startup. A scan starts when the operator presses Check ticket, or when the
    camera detects a code; the time the camera ran before the detection does not count. At that
    moment, before its first wait, the scan reads two clocks: a monotonic clock
    (`performance.now()`) and the wall clock (`Date.now()`). Each can be wrong in a way the other
    shows: some browsers stop the monotonic clock while the device sleeps (WebKit bug 225610), and
-   the wall clock jumps when the device time is set. The scan is in time only if all four readings are finite
-   numbers, the monotonic clock did not go back, less than 3000 ms passed on each clock, and the
-   two elapsed times differ by 1000 ms or less. Every other case refuses, because the scanner
-   cannot tell which clock is true. 1000 ms is well below the limit, and we assume it is far
-   above what a healthy device shows: we expect browsers to round these clocks by 100 ms or less,
-   and clock correction to move the wall clock by a few milliseconds in 3 seconds. We have not
+   the wall clock jumps when the device time is set. A step is in time only if all four readings
+   are finite numbers, the monotonic clock did not go back, less than the limit of that step
+   (3000 ms or 30 000 ms) passed on each clock, and the two elapsed times differ by 1000 ms or
+   less. One function makes this check for both limits, so only the limit changes between steps.
+   Every other case refuses, because the scanner cannot tell which clock is true. 1000 ms is
+   below both limits, and we assume it is far above what a healthy device shows: we expect
+   browsers to round these clocks by 100 ms or less, and clock correction to move the wall clock
+   by some tens of milliseconds at most in 30 seconds. We have not
    measured this on every browser; a device above it refuses scans, it never lets one through. The check does not catch
    faults that cancel out: a monotonic clock that stops while the wall clock is set back by about
-   the same time. The scan checks the limit at four points:
+   the same time. The scan checks a limit at four points, the 3 second limit at the first two and
+   the 30 second limit at the last two:
 
    - Before it mints its occurrence, or the local refusal of a ticket on the revocation list. A
      late scan mints nothing and sends nothing. The screen says that the scanner could not
@@ -249,13 +259,16 @@ conflicts. Together every physical admission that Access learns about is represe
      `late_not_sent`), so it is never reconciled: a reconciliation would record a scan that the
      operator was told did not happen. If that write fails, the row stays `PENDING` and is
      recovered like the row of a page that crashed between mint and send.
-   - After Access accepts the scan and before the row is marked actuated. The gate does not
-     open. Access has already recorded the scan, so the screen says that Access recorded it and
-     that the gate was not opened. The row is marked `RESOLVED` (result `late_accepted`) and is
+   - After Access accepts the scan and before the row is marked actuated. If the check fails
+     here, for example because the answer came 30 seconds or more after the scan started, the
+     gate does not open. Access has already recorded the scan, so the screen says that Access recorded it, that
+     the scanner could not confirm that the scan was still within 30 seconds, and that the gate
+     was not opened. The row is marked `RESOLVED` (result `late_accepted`) and is
      never actuated. If that write fails, the row stays `PENDING`. Recovery can only queue it, and
      its reconciliation finds the scan that Access already recorded (a replay, §4).
    - After the row is marked actuated and before the screen shows the accepted result, because
-     the mark is a wait too. The gate does not open, and the row stays `ACTUATED`: the stranded
+     the mark is a wait too. If the check fails here, the gate does not open, the screen says the
+     same as at the point before, and the row stays `ACTUATED`: the stranded
      admission of a crash between marking and opening, as above, never a late opening.
 
    A rejected answer, a `401`, and an Exit-mode scan of a ticket on the revocation list open
@@ -281,7 +294,8 @@ conflicts. Together every physical admission that Access learns about is represe
    If it succeeds later, or if its success comes too late, the tab closes that connection at once
    and uses it for nothing. Until then, a new open in that tab refuses at once with the error
    that request gave; each later scan tries to open again. This limit covers the open request
-   only, not the owner lock and the recovery after it; the scan limit above covers those.
+   only, not the owner lock and the recovery after it; the 3 second limit to send above covers
+   those.
 4. **Idempotency stays outside the append path.** Event-id replay is resolved *before*
    `appendLifecycle`, under the ticket lock — the append module is never invoked for an
    already-recorded occurrence (its documented contract at

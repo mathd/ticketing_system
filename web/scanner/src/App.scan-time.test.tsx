@@ -3,9 +3,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { IDBFactory } from 'fake-indexeddb'
 import type { OccurrenceStore, OccurrenceStoreOptions, OwnerLiveness } from './occurrences'
 
-// The rule (TKT-399 D27, ADR-025 §3): no scan may be minted, sent or open the
-// gate after the operator was left waiting 3 seconds or more since the scan
-// started. These tests run the production store over a real (fake) IndexedDB.
+// The rule (TKT-399 D27, ADR-025 §3): no scan may be minted or sent 3 seconds
+// or more after it started, and no scan may open the gate 30 seconds or more
+// after it started. These tests run the production store over a real (fake) IndexedDB.
 // The test holds the clocks, and can hold the owner lock and the row recovery
 // that the store runs after the database opens. It can also move the clocks
 // right after a store step, to stand for a step that took that long.
@@ -80,7 +80,7 @@ import { openOccurrenceStore } from './occurrences'
 const DB = 'gate-occurrences'
 const scanStoppedText = 'The scanner could not confirm that this scan finished within 3 seconds, so it stopped the scan. No ticket was checked. If another scanner tab is open on this device, close it, then try again.'
 const answeredLateText = (direction: 'entry' | 'exit') =>
-  `Access accepted this ticket and recorded the ${direction}, but the scanner could not confirm that the answer came within 3 seconds, so it did not open the gate.`
+  `Access accepted this ticket and recorded the ${direction}, but the scanner could not confirm that the scan was still within 30 seconds, so it did not open the gate.`
 
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void }
 function deferred<T>(): Deferred<T> {
@@ -178,7 +178,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('the 3 second limit of one scan (TKT-399 D27)', () => {
+describe('the 3 second limit to mint and send a scan (TKT-399 D27)', () => {
   it('refuses a scan whose store waited for its owner lock until 3000 ms had passed, and mints, sends and opens nothing', async () => {
     await scanWhileOwnerLockWaits(() => advance(3_000))
 
@@ -216,62 +216,6 @@ describe('the 3 second limit of one scan (TKT-399 D27)', () => {
     expect((await storedRows()).map((row) => row.occurrenceId)).toEqual([crashed.occurrenceId])
   })
 
-  // The answer comes late. Access has recorded the scan by then, so the screen
-  // says so, and the gate does not open. The row is closed and never sent again.
-  it('does not open the gate when the answer arrives after 3000 ms', async () => {
-    const reply = deferred<Response>()
-    stubScans(() => reply.promise)
-    render(<App />)
-    scan()
-    await waitFor(() => expect(scanRequests()).toHaveLength(1))
-
-    advance(3_000)
-    reply.resolve(acceptedResponse())
-
-    const heading = await screen.findByRole('heading', { name: 'Gate not opened' })
-    expect(heading.parentElement?.textContent).toBe(`Gate not opened${answeredLateText('entry')}A new scan of this ticket may be refused as already used.`)
-    expect(heading.parentElement?.getAttribute('role')).toBe('alert')
-    await expectIdleButton()
-    expect(screen.queryByRole('heading', { name: 'Accepted' })).toBeNull()
-    expect(await rowsFor('signed-ticket')).toEqual([expect.objectContaining({
-      state: 'RESOLVED', actuated: false, result: 'late_accepted', direction: 'entry',
-    })])
-    expect(screen.queryByText(/queued offline scan/)).toBeNull()
-  })
-
-  it('in Exit mode, says that Access recorded the exit and that the holder may leave', async () => {
-    const reply = deferred<Response>()
-    stubScans(() => reply.promise)
-    render(<App />)
-    fireEvent.click(screen.getByRole('radio', { name: 'Exit' }))
-    scan()
-    await waitFor(() => expect(scanRequests()).toHaveLength(1))
-
-    advance(3_000)
-    reply.resolve(acceptedResponse())
-
-    const heading = await screen.findByRole('heading', { name: 'Gate not opened' })
-    expect(heading.parentElement?.textContent).toBe(`Gate not opened${answeredLateText('exit')}The holder may leave.`)
-    expect(heading.parentElement?.getAttribute('role')).toBe('status')
-    expect(await rowsFor('signed-ticket')).toEqual([expect.objectContaining({
-      state: 'RESOLVED', actuated: false, result: 'late_accepted', direction: 'exit',
-    })])
-  })
-
-  // The gate opens when the screen shows the result. The row is marked first
-  // (ADR-025 §3), so a late mark leaves it ACTUATED with the gate not opened:
-  // the same stranded admission as a crash between marking and opening.
-  it('does not open the gate when marking the row took until 3000 ms', async () => {
-    hooks.afterActuate = () => advance(3_000)
-    render(<App />)
-    scan()
-
-    expect(await screen.findByRole('heading', { name: 'Gate not opened' })).toBeDefined()
-    await expectIdleButton()
-    expect(screen.queryByRole('heading', { name: 'Accepted' })).toBeNull()
-    expect(await rowsFor('signed-ticket')).toEqual([expect.objectContaining({ state: 'ACTUATED', actuated: true })])
-  })
-
   // Nothing was sent, so the row is closed and never reconciled: a reconciliation
   // would record an entry the operator was told did not happen.
   it('does not send a scan whose mint took until 3000 ms', async () => {
@@ -286,6 +230,16 @@ describe('the 3 second limit of one scan (TKT-399 D27)', () => {
       state: 'RESOLVED', actuated: false, result: 'late_not_sent',
     })])
     expect(screen.queryByText(/queued offline scan/)).toBeNull()
+  })
+
+  it('sends a scan whose mint took until 2999 ms', async () => {
+    hooks.afterMint = () => advance(2_999)
+    render(<App />)
+    scan()
+
+    expect(await screen.findByRole('heading', { name: 'Accepted' })).toBeDefined()
+    expect(scanRequests()).toHaveLength(1)
+    expect(await rowsFor('signed-ticket')).toEqual([expect.objectContaining({ state: 'ACTUATED', actuated: true })])
   })
 
   it('in Exit mode, says that the exit was not recorded and that the holder may leave', async () => {
@@ -382,7 +336,158 @@ describe('the 3 second limit of one scan (TKT-399 D27)', () => {
   })
 })
 
-describe('the 3 second limit on the camera path (TKT-399 D27)', () => {
+// The holder is still at the gate while the answer travels, so a scan sent in
+// time may open the gate until 30 seconds after it started (owner decision,
+// 2026-10-16). A shorter limit here left the gate shut for a slow answer that
+// Access had already recorded, and the next scan then read "already used".
+describe('the 30 second limit to open the gate (TKT-399 D27)', () => {
+  // Sends the scan in time, then moves the clocks before the answer arrives.
+  async function answerAfter(monotonic: number, wall = monotonic) {
+    const reply = deferred<Response>()
+    stubScans(() => reply.promise)
+    render(<App />)
+    scan()
+    await waitFor(() => expect(scanRequests()).toHaveLength(1))
+    advance(monotonic, wall)
+    reply.resolve(acceptedResponse())
+  }
+
+  async function expectGateOpened() {
+    expect(await screen.findByRole('heading', { name: 'Accepted' })).toBeDefined()
+    await expectIdleButton()
+    expect(screen.queryByRole('heading', { name: 'Gate not opened' })).toBeNull()
+    expect(await rowsFor('signed-ticket')).toEqual([expect.objectContaining({ state: 'ACTUATED', actuated: true })])
+  }
+
+  async function expectGateNotOpenedBeforeMark() {
+    expect(await screen.findByRole('heading', { name: 'Gate not opened' })).toBeDefined()
+    await expectIdleButton()
+    expect(screen.queryByRole('heading', { name: 'Accepted' })).toBeNull()
+    expect(await rowsFor('signed-ticket')).toEqual([expect.objectContaining({
+      state: 'RESOLVED', actuated: false, result: 'late_accepted',
+    })])
+  }
+
+  it.each([3_000, 15_000, 29_999])('opens the gate when the answer arrives after %i ms', async (elapsed) => {
+    await answerAfter(elapsed)
+    await expectGateOpened()
+  })
+
+  // The answer comes late. Access has recorded the scan by then, so the screen
+  // says so, and the gate does not open. The row is closed and never sent again.
+  it('does not open the gate when the answer arrives after 30 000 ms', async () => {
+    const reply = deferred<Response>()
+    stubScans(() => reply.promise)
+    render(<App />)
+    scan()
+    await waitFor(() => expect(scanRequests()).toHaveLength(1))
+
+    advance(30_000)
+    reply.resolve(acceptedResponse())
+
+    const heading = await screen.findByRole('heading', { name: 'Gate not opened' })
+    expect(heading.parentElement?.textContent).toBe(`Gate not opened${answeredLateText('entry')}A new scan of this ticket may be refused as already used.`)
+    expect(heading.parentElement?.getAttribute('role')).toBe('alert')
+    await expectIdleButton()
+    expect(screen.queryByRole('heading', { name: 'Accepted' })).toBeNull()
+    expect(await rowsFor('signed-ticket')).toEqual([expect.objectContaining({
+      state: 'RESOLVED', actuated: false, result: 'late_accepted', direction: 'entry',
+    })])
+    expect(screen.queryByText(/queued offline scan/)).toBeNull()
+  })
+
+  it('in Exit mode, says that Access recorded the exit and that the holder may leave', async () => {
+    const reply = deferred<Response>()
+    stubScans(() => reply.promise)
+    render(<App />)
+    fireEvent.click(screen.getByRole('radio', { name: 'Exit' }))
+    scan()
+    await waitFor(() => expect(scanRequests()).toHaveLength(1))
+
+    advance(30_000)
+    reply.resolve(acceptedResponse())
+
+    const heading = await screen.findByRole('heading', { name: 'Gate not opened' })
+    expect(heading.parentElement?.textContent).toBe(`Gate not opened${answeredLateText('exit')}The holder may leave.`)
+    expect(heading.parentElement?.getAttribute('role')).toBe('status')
+    expect(await rowsFor('signed-ticket')).toEqual([expect.objectContaining({
+      state: 'RESOLVED', actuated: false, result: 'late_accepted', direction: 'exit',
+    })])
+  })
+
+  // The gate opens when the screen shows the result. The row is marked first
+  // (ADR-025 §3), so a late mark leaves it ACTUATED with the gate not opened:
+  // the same stranded admission as a crash between marking and opening.
+  it('does not open the gate when marking the row took until 30 000 ms', async () => {
+    hooks.afterActuate = () => advance(30_000)
+    render(<App />)
+    scan()
+
+    expect(await screen.findByRole('heading', { name: 'Gate not opened' })).toBeDefined()
+    await expectIdleButton()
+    expect(screen.queryByRole('heading', { name: 'Accepted' })).toBeNull()
+    expect(await rowsFor('signed-ticket')).toEqual([expect.objectContaining({ state: 'ACTUATED', actuated: true })])
+  })
+
+  it('opens the gate when marking the row took until 29 999 ms', async () => {
+    hooks.afterActuate = () => advance(29_999)
+    render(<App />)
+    scan()
+    await expectGateOpened()
+  })
+
+  // The 30 seconds count from the scan start, not from the answer.
+  it('does not open the gate when the answer came after 15 000 ms and marking the row took 15 000 ms more', async () => {
+    hooks.afterActuate = () => advance(15_000)
+    await answerAfter(15_000)
+
+    expect(await screen.findByRole('heading', { name: 'Gate not opened' })).toBeDefined()
+    await expectIdleButton()
+    expect(screen.queryByRole('heading', { name: 'Accepted' })).toBeNull()
+    expect(await rowsFor('signed-ticket')).toEqual([expect.objectContaining({ state: 'ACTUATED', actuated: true })])
+  })
+
+  // The literal limit from the requirement, on each clock.
+  it.each([
+    { monotonic: 30_000, wall: 29_999 },
+    { monotonic: 29_999, wall: 30_000 },
+  ])('does not open the gate for an answer after $monotonic ms monotonic and $wall ms wall', async ({ monotonic, wall }) => {
+    await answerAfter(monotonic, wall)
+    await expectGateNotOpenedBeforeMark()
+  })
+
+  // Every other arm of the check is the same as before the send, so each one
+  // still refuses well below 30 000 ms.
+  it.each([
+    { name: 'the wall clock jumped forward by 1001 ms', monotonic: 15_000, wall: 16_001, opened: false },
+    { name: 'the wall clock jumped back by 1001 ms', monotonic: 15_000, wall: 13_999, opened: false },
+    { name: 'the wall clock jumped forward by 1000 ms', monotonic: 15_000, wall: 16_000, opened: true },
+    { name: 'the wall clock jumped back by 1000 ms', monotonic: 15_000, wall: 14_000, opened: true },
+    { name: 'the monotonic clock stopped for the whole wait', monotonic: 0, wall: 15_000, opened: false },
+    { name: 'the monotonic clock stopped for 500 ms of a 30 000 ms wait', monotonic: 29_500, wall: 30_000, opened: false },
+    { name: 'the monotonic clock went back', monotonic: -1, wall: -1, opened: false },
+  ])('an answer after $name: gate opened=$opened', async ({ monotonic, wall, opened }) => {
+    await answerAfter(monotonic, wall)
+    if (opened) await expectGateOpened()
+    else await expectGateNotOpenedBeforeMark()
+  })
+
+  it.each([
+    { name: 'NaN', value: Number.NaN },
+    { name: 'Infinity', value: Number.POSITIVE_INFINITY },
+  ])('does not open the gate when the wall clock gives $name before the answer', async ({ value }) => {
+    const reply = deferred<Response>()
+    stubScans(() => reply.promise)
+    render(<App />)
+    scan()
+    await waitFor(() => expect(scanRequests()).toHaveLength(1))
+    clock.wall = value
+    reply.resolve(acceptedResponse())
+    await expectGateNotOpenedBeforeMark()
+  })
+})
+
+describe('the scan limits on the camera path (TKT-399 D27)', () => {
   function stubCameraWith(detection: Promise<Array<{ rawValue?: string }>>) {
     vi.stubGlobal('BarcodeDetector', class {
       detect = vi.fn().mockReturnValueOnce(detection).mockResolvedValue([])
@@ -412,7 +517,7 @@ describe('the 3 second limit on the camera path (TKT-399 D27)', () => {
     expect(await rowsFor('camera-ticket')).toEqual([expect.objectContaining({ state: 'ACTUATED' })])
   })
 
-  it('does not open the gate when the answer to a camera scan arrives 3000 ms after the detection', async () => {
+  it('does not open the gate when the answer to a camera scan arrives 30 000 ms after the detection', async () => {
     const detection = deferred<Array<{ rawValue?: string }>>()
     stubCameraWith(detection.promise)
     const reply = deferred<Response>()
@@ -427,7 +532,7 @@ describe('the 3 second limit on the camera path (TKT-399 D27)', () => {
       await detection.promise
     })
     await waitFor(() => expect(scanRequests()).toHaveLength(1))
-    advance(3_000)
+    advance(30_000)
     reply.resolve(acceptedResponse())
 
     expect(await screen.findByRole('heading', { name: 'Gate not opened' })).toBeDefined()
