@@ -213,15 +213,22 @@ conflicts. Together every physical admission that Access learns about is represe
    pre-TKT-399 code opens version 2, reads every `QUEUED` row and reconciles it with no
    `event_type`, so Access would record this code's queued exit as an entry. That older code has
    no `versionchange` handler, so while its tab is open, no new tab can open the database. The
-   browser keeps one queue of open requests for the origin. The first request in it is reported
+   browser keeps one queue of open requests for each storage key and database name; for the
+   scanner, that is its origin and `gate-occurrences`. The first request in it is reported
    `blocked`; every request behind it, from the same tab or from any other, waits with no event of
    its own. A tab cannot see the requests of other tabs, so every open request has a time limit
-   of 3 seconds (`OPEN_TIMEOUT_MS`; a healthy open takes milliseconds). A request reported `blocked` refuses at once, and the tab
-   tells the operator to close the other scanner tabs. A request that has not succeeded within 3
-   seconds refuses, and the tab says that scan storage did not open in time and to close any other
-   scanner tab. In both cases nothing is minted and nothing is sent. A request that the tab
-   gave up on stays in the queue. If it succeeds later, the tab closes that connection at once and
-   uses it for nothing, so a refused scan is never sent late. Until then, a new open in that tab
+   of 3 seconds (`OPEN_TIMEOUT_MS`). That is a policy limit, not a measured value: we assume that
+   an open with nothing in front of it takes much less time, and that the ticket holder is still
+   at the gate when the scanner refuses. The tab measures the limit as elapsed time on a
+   monotonic clock (`performance.now()`) from the moment it sends the request. A request reported
+   `blocked` refuses at once, and the tab tells the operator to close the other scanner tabs. A
+   request that has not succeeded before 3 seconds have passed refuses, and the tab says that scan
+   storage did not open in time and to close any other scanner tab. The refusal comes when the
+   tab's timer runs, or when the late success arrives if that is first. A browser can run a timer
+   late, so the refusal can come after 3 seconds; the clock, not the timer, decides that a success
+   is too late. In both cases nothing is minted and nothing is sent. A request that the tab
+   gave up on stays in the queue. If it succeeds later, or if its success comes too late, the tab
+   closes that connection at once and uses it for nothing, so a refused scan is never sent late. Until then, a new open in that tab
    refuses at once with the error that request gave; each later scan tries to open again. The new
    code closes its own connection on `versionchange` and then refuses every store operation, so a
    later version is never blocked by it. The cost is a one-way door: once version 3 exists on a

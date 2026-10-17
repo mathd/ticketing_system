@@ -71,8 +71,10 @@ export type OccurrenceStoreOptions = {
   pendingLeaseMs?: number
   now?: () => number
   ownerLiveness?: OwnerLiveness
-  /** Limits how long the database open may wait. Tests replace the clock. */
+  /** Lets a caller that waits for the database open learn early that it ran out of time. */
   openTimer?: OpenTimer
+  /** Monotonic milliseconds. Decides if the database open ran out of time. */
+  openClock?: () => number
 }
 
 /**
@@ -178,8 +180,9 @@ export class OccurrenceStoreClosedError extends Error {
   }
 }
 
-// A healthy open takes milliseconds. Three seconds is far above that, and short
-// enough that the ticket holder is still at the gate when the scanner refuses.
+// A policy limit, not a measured value: we assume that an open with nothing in
+// front of it takes much less time, and the ticket holder is still at the gate
+// when the scanner refuses.
 export const OPEN_TIMEOUT_MS = 3_000
 
 /** Starts the time limit of one open and returns a function that stops it. */
@@ -190,14 +193,19 @@ const defaultOpenTimer: OpenTimer = (onTimeout) => {
   return () => globalThis.clearTimeout(timer)
 }
 
+// Read through globalThis at each call, so a test that replaces the clock
+// replaces it here too.
+const defaultOpenClock = () => globalThis.performance.now()
+
 // Databases with an open request that this page gave up on and that still
 // waits, with the error that request gave. The browser keeps one queue of open
-// requests for each origin, so a new request would wait behind it. This page
-// cannot see the requests of other tabs, so the time limit is what stops a
-// request that waits behind theirs.
+// requests for each storage key (the origin, for this page) and database name,
+// so a new request for that database would wait behind it. This page cannot
+// see the requests of other tabs, so the time limit is what stops a request
+// that waits behind theirs.
 const abandonedOpens = new Map<string, () => Error>()
 
-function openDatabase(dbName: string, openTimer: OpenTimer): Promise<IDBDatabase> {
+function openDatabase(dbName: string, openTimer: OpenTimer, openClock: () => number): Promise<IDBDatabase> {
   const abandoned = abandonedOpens.get(dbName)
   if (abandoned) return Promise.reject(abandoned())
   return new Promise((resolve, reject) => {
@@ -211,8 +219,12 @@ function openDatabase(dbName: string, openTimer: OpenTimer): Promise<IDBDatabase
       abandonedOpens.set(dbName, error)
       reject(error())
     }
+    const timeout = () => new OccurrenceStoreOpenTimeoutError()
+    // Elapsed time decides the limit. A browser may run the timer callback late,
+    // so the timer only lets a waiting caller learn early.
+    const expiresAt = openClock() + OPEN_TIMEOUT_MS
     const open = indexedDB.open(dbName, DB_VERSION)
-    stopTimer = openTimer(() => giveUp(() => new OccurrenceStoreOpenTimeoutError()))
+    stopTimer = openTimer(() => giveUp(timeout))
     open.onupgradeneeded = () => {
       // From 2 to 3 nothing changes, so every row stays as it is.
       const db = open.result
@@ -224,6 +236,9 @@ function openDatabase(dbName: string, openTimer: OpenTimer): Promise<IDBDatabase
     open.onblocked = () => giveUp(() => new OccurrenceStoreBlockedError())
     open.onsuccess = () => {
       stopTimer()
+      // A success at or after the limit is a timeout, also when the timer has
+      // not fired yet. A clock value that is not a number refuses too.
+      if (!gaveUp && !(openClock() < expiresAt)) giveUp(timeout)
       if (!gaveUp) return resolve(open.result)
       abandonedOpens.delete(dbName)
       open.result.close()
@@ -247,7 +262,7 @@ export async function openOccurrenceStore(
   if (!ownerId || !Number.isSafeInteger(pendingLeaseMs) || pendingLeaseMs <= 0) {
     throw new TypeError('occurrence owner and pending lease must be valid')
   }
-  const db = await openDatabase(dbName, options.openTimer ?? defaultOpenTimer)
+  const db = await openDatabase(dbName, options.openTimer ?? defaultOpenTimer, options.openClock ?? defaultOpenClock)
 
   // Set by close(), and by a later version that asks this connection to close.
   // Every operation checks it, so a closed store refuses with one known error.

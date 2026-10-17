@@ -3,8 +3,10 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { IDBFactory } from 'fake-indexeddb'
 
 // These tests run the production open path over a real (fake) IndexedDB. Only
-// the time limit of each open is in the test's hands: the test fires it.
+// the time limit of each open is in the test's hands: the test fires the timer
+// and moves the clock.
 const openTimers = vi.hoisted(() => [] as Array<{ fire: () => void }>)
+const openClock = vi.hoisted(() => ({ now: 0 }))
 
 vi.mock('./occurrences', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./occurrences')>()
@@ -18,6 +20,7 @@ vi.mock('./occurrences', async (importOriginal) => {
           openTimers.push({ fire: () => { if (!stopped) onTimeout() } })
           return () => { stopped = true }
         },
+        openClock: () => openClock.now,
       }),
   }
 })
@@ -51,24 +54,37 @@ function openOlderTab(): Promise<IDBDatabase> {
   })
 }
 
+// Waits for a promise during a fixed number of task turns. A promise that does
+// not settle in that time fails the test with its name, instead of hanging it.
+async function within<T>(what: string, promise: Promise<T>): Promise<T> {
+  let settled = false
+  promise.then(() => { settled = true }, () => { settled = true })
+  const { setImmediate } = await vi.importActual<{ setImmediate(callback: () => void): void }>('node:timers')
+  for (let i = 0; i < 500 && !settled; i++) await new Promise<void>((resolve) => setImmediate(resolve))
+  if (!settled) throw new Error(`${what} did not settle`)
+  return promise
+}
+
 // Another new tab whose version 3 open is reported blocked. It waits first in
 // the queue, so this page's open waits behind it and gets no event.
 async function openWaitingNewTab(): Promise<void> {
   const open = indexedDB.open(DB, 3)
   open.onsuccess = () => open.result.close()
-  await new Promise<void>((resolve) => { open.onblocked = () => resolve() })
+  await within('the blocked event of the other new tab', new Promise<void>((resolve) => { open.onblocked = () => resolve() }))
 }
 
 // Opens after every request queued before it has finished, and reads the rows.
 async function rowsOnceQueueDrains(): Promise<Array<Record<string, unknown>>> {
-  const db = await rawOpen(3)
-  const request = db.transaction('occurrences', 'readonly').objectStore('occurrences').getAll()
-  const rows = await new Promise<Array<Record<string, unknown>>>((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error)
-  })
-  db.close()
-  return rows
+  return within('the open after the queue drains', (async () => {
+    const db = await rawOpen(3)
+    const request = db.transaction('occurrences', 'readonly').objectStore('occurrences').getAll()
+    const rows = await new Promise<Array<Record<string, unknown>>>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    db.close()
+    return rows
+  })())
 }
 
 function enterTicket() {
@@ -96,6 +112,7 @@ afterEach(() => {
   cleanup()
   for (const db of connections.splice(0)) db.close()
   openTimers.splice(0)
+  openClock.now = 0
   localStorage.clear()
   sessionStorage.clear()
   vi.restoreAllMocks()
@@ -163,6 +180,36 @@ describe('Scanner storage open (TKT-399 version 3 barrier)', () => {
     expect(await screen.findByRole('heading', { name: 'Accepted' })).toBeDefined()
     expect(scanRequests()).toHaveLength(1)
     expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  // A browser may run the timer callback late. The limit is decided by elapsed
+  // time, so an open that succeeds 3 seconds after it started is refused even
+  // though its timer has not fired. Here the timer never fires.
+  it('refuses a scan whose open succeeds after the time limit, before the timer fires', async () => {
+    const olderTab = await openOlderTab()
+    await openWaitingNewTab()
+
+    render(<App />)
+    await waitFor(() => expect(openTimers).toHaveLength(1))
+    fireEvent.click(screen.getByRole('radio', { name: 'Exit' }))
+    enterTicket()
+    fireEvent.click(screen.getByRole('button', { name: 'Check ticket' }))
+    expect(screen.getByRole('button', { name: 'Checking…' })).toBeDefined()
+
+    openClock.now += 3_000
+    olderTab.close()
+    expect((await screen.findByRole('alert')).textContent).toBe(timeoutText)
+    await expectIdleButton()
+    expect(screen.queryByRole('heading', { level: 2 })).toBeNull()
+    expect(fetch).not.toHaveBeenCalled()
+    // Nothing was minted, so nothing was actuated.
+    expect(await rowsOnceQueueDrains()).toEqual([])
+    expect(fetch).not.toHaveBeenCalled()
+
+    // The late request is finished. The next click opens storage again.
+    fireEvent.click(screen.getByRole('button', { name: 'Check ticket' }))
+    expect(await screen.findByRole('heading', { name: 'Accepted' })).toBeDefined()
+    expect(scanRequests()).toHaveLength(1)
   })
 
   // The revocation pull swallows its own failure. Its failed open must not stay

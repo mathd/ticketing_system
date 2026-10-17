@@ -4,7 +4,6 @@ import {
   OccurrenceStoreBlockedError,
   OccurrenceStoreClosedError,
   OccurrenceStoreOpenTimeoutError,
-  OPEN_TIMEOUT_MS,
   openOccurrenceStore,
   type OccurrenceStore,
   type OpenTimer,
@@ -470,15 +469,25 @@ function manualOpenTimer() {
   return state
 }
 
-// Says whether a promise has settled once every task queued so far has run.
-// It never waits for the promise itself, so a promise that hangs fails the
-// assertion instead of the test timing out.
+// Says whether a promise has settled within a fixed number of task turns. It
+// never waits for the promise itself, so a promise that hangs fails the
+// assertion instead of the test timing out. It stops early once the promise
+// settles, so a 'pending' answer means it ran every turn.
 async function settledState(promise: Promise<unknown>): Promise<'pending' | 'resolved' | unknown> {
   let state: unknown = 'pending'
   promise.then(() => { state = 'resolved' }, (cause: unknown) => { state = cause })
   const { setImmediate } = await vi.importActual<{ setImmediate(callback: () => void): void }>('node:timers')
-  for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve))
+  for (let i = 0; i < 200 && state === 'pending'; i++) await new Promise<void>((resolve) => setImmediate(resolve))
   return state
+}
+
+// Another new tab whose version 3 open is reported blocked by the older tab. It
+// is first in the queue, so a later open waits behind it and gets no event.
+async function openBlockedNewTab(dbName: string): Promise<void> {
+  const otherTab = indexedDB.open(dbName, 3)
+  otherTab.onsuccess = () => otherTab.result.close()
+  const blocked = new Promise<void>((resolve) => { otherTab.onblocked = () => resolve() })
+  expect(await settledState(blocked)).toBe('resolved')
 }
 
 describe('version 3 barrier between scanner versions (TKT-399)', () => {
@@ -533,7 +542,8 @@ describe('version 3 barrier between scanner versions (TKT-399)', () => {
     later.db.close()
   })
 
-  // IndexedDB keeps one queue of open requests for each origin, not for each tab.
+  // IndexedDB keeps one queue of open requests for each storage key and database
+  // name, not for each tab.
   // Tab A's open is reported blocked. Tab B's open waits in the queue behind it
   // and gets no event of its own, and B cannot see what A knows. Only a time
   // bound stops B from waiting until the older tab closes and then scanning late.
@@ -584,17 +594,18 @@ describe('version 3 barrier between scanner versions (TKT-399)', () => {
     later.db.close()
   })
 
-  it(`gives up on a waiting open after ${OPEN_TIMEOUT_MS} ms by default`, async () => {
+  // The limit is 3 seconds (ADR-025 §3). The expected values come from that
+  // number, not from OPEN_TIMEOUT_MS, so a change to the constant shows here.
+  it('gives up on a waiting open after 3000 ms by default', async () => {
     const dbName = `default-bound-${crypto.randomUUID()}`
     const olderTab = await openOlderTab(dbName)
-    const otherTab = indexedDB.open(dbName, 3)
-    await new Promise<void>((resolve) => { otherTab.onblocked = () => resolve() })
-    otherTab.onsuccess = () => otherTab.result.close()
+    await openBlockedNewTab(dbName)
 
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    // The default timer and the default clock both run on fake time.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
     try {
       const waiting = openStore(dbName)
-      vi.advanceTimersByTime(OPEN_TIMEOUT_MS - 1)
+      vi.advanceTimersByTime(2_999)
       expect(await settledState(waiting)).toBe('pending')
       vi.advanceTimersByTime(1)
       expect(await settledState(waiting)).toBeInstanceOf(OccurrenceStoreOpenTimeoutError)
@@ -605,6 +616,85 @@ describe('version 3 barrier between scanner versions (TKT-399)', () => {
     olderTab.close()
     const drained = await rawOpen(dbName, 3)
     drained.close()
+    const later = await openLaterVersion(dbName, 4)
+    expect(later.kind).toBe('opened')
+    if (later.kind === 'opened') later.db.close()
+  })
+
+  // A browser may run a timer callback late. So the limit is decided by elapsed
+  // time: an open that succeeds at or after the limit is refused even when the
+  // timer has not fired yet. Here the timer is held and never fires.
+  it('refuses an open that succeeds after its time limit, before the timer fires, and closes its connection', async () => {
+    const dbName = `late-success-${crypto.randomUUID()}`
+    const olderTab = await openOlderTab(dbName)
+    const legacy = await putLegacyRow(olderTab)
+    await openBlockedNewTab(dbName)
+
+    const timer = manualOpenTimer()
+    let now = 50_000
+    const opening = openStore(dbName, { openTimer: timer.timer, openClock: () => now })
+    expect(await settledState(opening)).toBe('pending')
+    expect(timer.started).toBe(1)
+
+    now += 3_000
+    olderTab.close()
+    expect(await settledState(opening)).toBeInstanceOf(OccurrenceStoreOpenTimeoutError)
+
+    // The late connection was closed, so a later version is not blocked by it.
+    const later = await openLaterVersion(dbName, 4)
+    expect(later.kind).toBe('opened')
+    if (later.kind !== 'opened') return
+    expect(await allRows(later.db)).toEqual([legacy])
+    later.db.close()
+  })
+
+  // The request is finished and its connection is closed, so nothing waits in
+  // the queue any more. The next open in this tab is a new attempt.
+  it('opens again after an open that succeeded late was refused', async () => {
+    const dbName = `late-then-retry-${crypto.randomUUID()}`
+    const olderTab = await openOlderTab(dbName)
+    await openBlockedNewTab(dbName)
+
+    let now = 0
+    const late = openStore(dbName, { openTimer: manualOpenTimer().timer, openClock: () => now })
+    expect(await settledState(late)).toBe('pending')
+    now = 3_000
+    olderTab.close()
+    expect(await settledState(late)).toBeInstanceOf(OccurrenceStoreOpenTimeoutError)
+
+    const retry = await openStore(dbName, { openTimer: manualOpenTimer().timer, openClock: () => now })
+    const record = await retry.mint('retry-qr', '2026-10-16T19:00:00Z', 'exit')
+    expect(await retry.actuate(record.occurrenceId)).toBe(true)
+  })
+
+  // The same rule with the default clock. The timer is held, so only the clock
+  // can refuse. A success at 2999 ms opens, a success at 3000 ms does not.
+  it.each([
+    { elapsed: 2_999, refused: false },
+    { elapsed: 3_000, refused: true },
+  ])('decides the limit by the default clock: a success after $elapsed ms refused=$refused', async ({ elapsed, refused }) => {
+    const dbName = `default-clock-${crypto.randomUUID()}`
+    const olderTab = await openOlderTab(dbName)
+    await openBlockedNewTab(dbName)
+
+    vi.useFakeTimers({ toFake: ['performance'] })
+    const opening = openStore(dbName, { openTimer: manualOpenTimer().timer })
+    expect(await settledState(opening)).toBe('pending')
+    vi.advanceTimersByTime(elapsed)
+    olderTab.close()
+    const outcome = await settledState(opening)
+    if (refused) {
+      expect(outcome).toBeInstanceOf(OccurrenceStoreOpenTimeoutError)
+    } else {
+      expect(outcome).toBe('resolved')
+    }
+  })
+
+  // A clock that gives no usable time cannot show the open is in time.
+  it('refuses an open when the clock gives no usable time', async () => {
+    const dbName = `no-clock-${crypto.randomUUID()}`
+    await expect(openStore(dbName, { openTimer: manualOpenTimer().timer, openClock: () => Number.NaN }))
+      .rejects.toBeInstanceOf(OccurrenceStoreOpenTimeoutError)
     const later = await openLaterVersion(dbName, 4)
     expect(later.kind).toBe('opened')
     if (later.kind === 'opened') later.db.close()
