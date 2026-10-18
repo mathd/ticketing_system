@@ -197,3 +197,20 @@ it('queue-latch-no-storage-api at the actual App classification boundary', async
   await scan(); await screen.findByRole('heading', { name: 'Offline decision' })
   expect(events[0]).toBe('latch')
 })
+
+it('keeps the captured credential when the rendered field changes during mint', async () => {
+  render(<App />)
+  const instrument=instrumentTransactions();const held=instrument.hold({mode:'readwrite',durability:'strict'})
+  scanReply=async()=>{throw new TypeError('Failed to fetch')}
+  try {
+    await scan();const call=await held.started
+    await waitFor(()=>expect(call.events).toContain('write-success'))
+    fireEvent.change(screen.getByLabelText('Ticket credential'),{target:{value:'different-ui-credential'}})
+    expect(scans).toEqual([]);held.release('commit')
+    await screen.findByRole('heading',{name:'Offline decision'})
+    const row=await rawGet(dbName,STORE.occurrences,scans[0].occurrence_id as string) as Record<string,unknown>
+    expect(scans).toStrictEqual([{qr_payload:'credential',occurrence_id:row.occurrenceId,occurred_at:row.occurredAt,direction:'entry'}])
+    fireEvent.click(await screen.findByRole('button',{name:'Sync queued scans'}));await screen.findByText('Synced 1 offline scan(s).')
+    expect(batches).toStrictEqual([[{qr_payload:'credential',occurrence_id:row.occurrenceId,occurred_at:row.occurredAt,event_type:'entry'}]])
+  }finally{held.release();instrument.restore()}
+})
