@@ -22,6 +22,7 @@ export type EntryScannerOptions = {
   busy(value: boolean): void
   diagnostic(): void
   authRefused(pairing: Pairing): void
+  refusalQueued?(): void
 }
 
 type Execution = {
@@ -121,6 +122,7 @@ export function createEntryScanner(options: EntryScannerOptions) {
             outcome: { family: 'queue', cause: 'local_refusal' }, decidedAt: new Date().toISOString() })
           publish(execution, { kind: 'revocation-refused' })
           await persist(execution)
+          if (current(execution) && !execution.cancelled) options.refusalQueued?.()
           return
         }
         const body: ScanRequest = { qr_payload: execution.captured.qrPayload, occurrence_id: id,

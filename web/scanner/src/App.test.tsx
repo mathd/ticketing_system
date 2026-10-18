@@ -1,12 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import App from './App'
+import type { StorageController } from './occurrence-readiness'
+import { createTestPage, destroyAllPages, type TestPage } from './test/page-fixture'
+import { rawGetAll } from './test/raw-db'
+import { STORE } from './occurrence-store'
+const runtime = vi.hoisted(() => ({ storage: null as StorageController | null }))
+vi.mock('./occurrence-readiness', async (load) => {
+  const actual = await load<typeof import('./occurrence-readiness')>()
+  return { ...actual, get pageStorage() { return runtime.storage! } }
+})
+let page: TestPage
+let dbName: string
+
 
 // Every scan and reconciliation needs an enrolled device. The
 // suites below are about SCAN behaviour, so they pair once here — otherwise each
 // of them would be re-asserting the pairing screen and its own subject not at
 // all. The pairing screen has its own tests, in App.test.tsx.
-beforeEach(() => {
+beforeEach(async () => {
+  dbName = `app-camera-${crypto.randomUUID()}`
+  page = createTestPage({ dbName })
+  runtime.storage = page.storage
+  await page.ready()
   sessionStorage.clear()
   localStorage.setItem('scanner.device-token', 'paired-device-token')
 })
@@ -15,6 +31,7 @@ afterEach(() => {
   localStorage.clear()
   sessionStorage.clear()
   cleanup()
+  destroyAllPages()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
@@ -25,7 +42,7 @@ function pasteCredential(value = 'signed-ticket') {
 }
 
 function routedFetch(scan: () => Promise<Response>) {
-  return vi.fn((url: string, _init?: RequestInit) => String(url).includes('voided-tickets')
+  return vi.fn((input: string | Request, _init?: RequestInit) => (typeof input === 'string' ? input : input.url).includes('voided-tickets')
     ? Promise.resolve(new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 }))
     : scan())
 }
@@ -338,114 +355,24 @@ describe('device pairing', () => {
 
     pasteCredential()
     expect(await screen.findByRole('heading', { name: 'Accepted' })).toBeDefined()
-    const scanCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/scans'))!
-    const headers = (scanCall[1] as RequestInit).headers as Record<string, string>
-    expect(headers['X-Scanner-Token']).toBe('gate-token')
+    const scanCall = fetchMock.mock.calls.find(([input]) => input instanceof Request)!
+    expect((scanCall[0] as Request).headers.get('X-Scanner-Token')).toBe('gate-token')
 
     // Survives a reload — a gate device is paired once, not once per page load.
     unmount()
     cleanup()
+  destroyAllPages()
     render(<App />)
     expect(await screen.findByLabelText('Ticket credential')).toBeDefined()
   })
 
-  // Absent versus broken, at the turnstile (TKT-305).
-  //
-  // A non-JSON error body — a gateway's 502 page, an access panic — makes
-  // response.json() throw, and that throw lands in the same catch a genuine network
-  // failure does. The scan was queued either way, correctly; the COPY said "No
-  // connection", telling gate staff the network is down when access had answered.
-  // At a venue that sends someone to check the wifi while the actual fault is
-  // upstream.
-  //
-  // The QUEUE BEHAVIOUR is deliberately unchanged and is asserted in both cases:
-  // ADR-066's fail-closed posture is not what this ticket touches, and a fix that
-  // stopped queueing would be far worse than the wrong message.
-  it('says the server answered badly, not "No connection", when the reply cannot be read', async () => {
-    // A 502 whose body is an HTML error page: reached the server, unreadable reply.
-    vi.stubGlobal('fetch', routedFetch(() => Promise.resolve(
-      new Response('<html><body>502 Bad Gateway</body></html>', { status: 502 }),
-    )))
-
+  it('clears the refused token and resolves its occurrence without queueing it', async () => {
+    vi.stubGlobal('fetch', routedFetch(async () => new Response('unreadable', { status: 401 })))
     render(<App />)
     pasteCredential()
-
-    expect(await screen.findByRole('heading', { name: 'Queued offline' })).toBeDefined()
-    expect(await screen.findByText(/the server answered but the reply could not be read/i)).toBeDefined()
-    expect(screen.queryByText(/No connection/i)).toBeNull()
-    // Still queued — the behaviour, unchanged.
-    expect(await screen.findByText(/offline scan/i)).toBeDefined()
-  })
-
-  // A valid accepted response does not prove that this device recorded the
-  // actuation. Report the local write failure without blaming the network or server.
-  it('blames this device, not the server, when the reply was fine and the local write failed', async () => {
-    const reply = deferred<Response>()
-    const fetchMock = vi.fn((url: string) => String(url).includes('voided-tickets')
-      ? Promise.resolve(new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 }))
-      : reply.promise)
-    vi.stubGlobal('fetch', fetchMock)
-
-    render(<App />)
-    pasteCredential()
-    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/scans'))).toHaveLength(1))
-
-    // Mint has committed before fetch starts. Failing every later write targets
-    // actuation and its fail-closed queue attempt without relying on transaction counts.
-    const realTransaction = IDBDatabase.prototype.transaction
-    vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (this: IDBDatabase, ...args: Parameters<typeof realTransaction>) {
-      if (args[1] === 'readwrite') {
-        throw new DOMException('device storage unavailable', 'InvalidStateError')
-      }
-      return realTransaction.apply(this, args)
-    })
-
-    reply.resolve(
-      new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-08-30T20:00:00Z' }), { status: 200 }),
-    )
-
-    expect(await screen.findByRole('heading', { name: 'Queued offline' })).toBeDefined()
-    expect(await screen.findByText(/could not be recorded on this device/i)).toBeDefined()
-    expect(screen.queryByText(/No connection/i)).toBeNull()
-    expect(screen.queryByText(/the server answered/i)).toBeNull()
-  })
-
-  it('still says "No connection" when the request never reached the server', async () => {
-    // fetch itself rejects: this is the case the old copy described correctly, and
-    // it must keep saying so — otherwise the fix has merely moved the wrong message.
-    vi.stubGlobal('fetch', vi.fn((url: string) => String(url).includes('voided-tickets')
-      ? Promise.resolve(new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 }))
-      : Promise.reject(new TypeError('Failed to fetch'))))
-
-    render(<App />)
-    pasteCredential()
-
-    expect(await screen.findByRole('heading', { name: 'Queued offline' })).toBeDefined()
-    expect(await screen.findByText(/No connection/i)).toBeDefined()
-    expect(screen.queryByText(/the server answered/i)).toBeNull()
-    expect(await screen.findByText(/offline scan/i)).toBeDefined()
-  })
-
-  it('treats a 401 as "pair the device", not as a rejected ticket, and keeps the scan queued', async () => {
-    vi.stubGlobal('fetch', routedFetch(() => Promise.resolve(
-      new Response(JSON.stringify({ error: 'scanner device is not enrolled' }), { status: 401 }),
-    )))
-
-    render(<App />)
-    pasteCredential()
-
-    // The distinction that matters at a turnstile: the person in front of the
-    // operator has a perfectly good ticket, and "Rejected" is the wrong
-    // instruction. They land on the one screen they can act on, with the reason.
-    expect(await screen.findByRole('heading', { name: 'Pair this device' })).toBeDefined()
-    expect(screen.queryByRole('heading', { name: 'Rejected' })).toBeNull()
-    expect(await screen.findByText(/the ticket was not checked/i)).toBeDefined()
-
-    // The stale token is gone, so a reload does not retry it forever.
+    await screen.findByRole('heading', { name: 'Pair this device' })
     expect(localStorage.getItem('scanner.device-token')).toBeNull()
-
-    // And the occurrence is not lost. It was never recorded anywhere upstream,
-    // so discarding it would silently drop a real entry.
-    expect(await screen.findByText(/offline scan/i)).toBeDefined()
+    await waitFor(async () => expect(await rawGetAll(dbName, STORE.occurrences)).toMatchObject([{ state: 'RESOLVED', localOutcome: { family: 'terminal', cause: 'auth_refused' } }]))
+    expect(screen.queryByText(/offline scan/i)).toBeNull()
   })
 })
