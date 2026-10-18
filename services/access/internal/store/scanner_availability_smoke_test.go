@@ -1112,3 +1112,34 @@ func TestTouchTableLockIsAdvisory(t *testing.T) {
 	}
 	t.Logf("TKT557-TOUCH table-lock elapsed_ms=%d stats=%+v", elapsed.Milliseconds(), h.f.Stats())
 }
+
+// A stale idle connection reaches Touch: past pgx's one-second ping threshold
+// reuse pings first, and the proxy holds the ping's reply. Touch's own step
+// bounds that phase too, Touch stays advisory, and a later read works. The
+// discard and dial effects are recorded, not assumed.
+func TestTouchStaleIdlePingIsBoundedByItsStep(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newScannerHarness(t, ctx, testdb.Options{Proxy: true})
+	if _, err := h.st.AuthenticateScannerDevice(ctx, h.token); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1200 * time.Millisecond)
+	fired := h.f.CutOn("-- ping", testdb.Withhold)
+	before := h.f.Stats()
+	start := time.Now()
+	h.st.TouchScannerDevice(ctx, h.device.ID)
+	elapsed := time.Since(start)
+	requireFired(t, fired)
+	if elapsed < touchStepBound || elapsed >= 750*time.Millisecond {
+		t.Fatalf("Touch returned after %s, want within [%s, 750ms)", elapsed, touchStepBound)
+	}
+	if got := readLastSeen(t, ctx, h.f.Admin, h.device.ID); got != nil {
+		t.Fatalf("a Touch held at the ping still updated last_seen_at: %v", got)
+	}
+	if _, err := h.st.AuthenticateScannerDevice(ctx, h.token); err != nil {
+		t.Fatalf("healthy read after the held ping: %v", err)
+	}
+	after := h.f.Stats()
+	t.Logf("TKT557-TOUCH stale-ping elapsed_ms=%d dials %d->%d attempts %d->%d", elapsed.Milliseconds(), before.Dials, after.Dials, before.Attempts, after.Attempts)
+}
