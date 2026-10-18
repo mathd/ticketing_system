@@ -1,7 +1,6 @@
 # Release tag and sprint close
 
-This file applies to a sprint with `release: true`. A planning-only sprint (`release: false`) has no
-report, no tag and no closure task. It closes under `lifecycle.md` § Close a planning-only sprint.
+This file applies to a sprint with `release: true`. `release: false` skips this tag procedure. A full-review sprint still needs its report, closure task and exact close approval under `lifecycle.md`.
 
 Use only the candidate and the report that the named human approved. The close approval names:
 

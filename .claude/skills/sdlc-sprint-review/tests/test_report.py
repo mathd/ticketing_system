@@ -349,7 +349,7 @@ class FieldTests(RuleCase):
 
     OBJECTS = (
         ("top level", lambda d: d, "validate_identity", set()),
-        ("report", lambda d: d["report"], "validate_identity", {"fictional"}),
+        ("report", lambda d: d["report"], "validate_identity", {"fictional", "packetDigest"}),
         ("project", lambda d: d["project"], "validate_identity", set()),
         ("sprint", lambda d: d["sprint"], "validate_identity", set()),
         ("release", lambda d: d["release"], "validate_identity", set()),

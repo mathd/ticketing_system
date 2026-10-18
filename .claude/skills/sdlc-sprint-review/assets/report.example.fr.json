@@ -6,9 +6,13 @@
     "language": "fr",
     "generatedAt": "2026-10-27T16:10:00-04:00",
     "preparedBy": "example-author-model",
-    "fictional": true
+    "fictional": true,
+    "packetDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
   },
-  "project": {"key": "DEMO", "name": "Espace démo fictif"},
+  "project": {
+    "key": "DEMO",
+    "name": "Espace démo fictif"
+  },
   "sprint": {
     "vault": "demo",
     "key": "S-3",
@@ -22,7 +26,10 @@
   },
   "release": {
     "repository": "https://git.example.com/demo/invitations",
-    "base": {"ref": "v1.3.0", "sha": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"},
+    "base": {
+      "ref": "v1.3.0",
+      "sha": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"
+    },
     "candidate": {
       "sha": "9c8b7a6f5e4d3c2b1a0918273645546372819aab",
       "url": "https://git.example.com/demo/invitations/commit/9c8b7a6f5e4d3c2b1a0918273645546372819aab"
@@ -76,14 +83,23 @@
       "status": "incomplete",
       "decision": "REVIEW_AGAIN",
       "round": 1,
-      "reviewers": ["example-reviewer-a"],
-      "findings": {"raised": 3, "resolved": 2, "deferred": 0},
+      "reviewers": [
+        "example-reviewer-a"
+      ],
+      "findings": {
+        "raised": 3,
+        "resolved": 2,
+        "deferred": 0
+      },
       "summary": "Le tour 1 a trouvé le défaut de cache à la révocation (R1). Il faut un nouveau tour complet après la correction.",
       "evidence": [
         {
           "label": "Revue du tour 1",
           "url": null,
-          "ref": {"key": "S-3", "digest": "86def6a8c112b12a79c3d00d2881ea1de6e556da913791d31cb0dd9888001035"}
+          "ref": {
+            "key": "S-3",
+            "digest": "86def6a8c112b12a79c3d00d2881ea1de6e556da913791d31cb0dd9888001035"
+          }
         }
       ]
     },
@@ -91,14 +107,23 @@
       "status": "incomplete",
       "decision": "FIX",
       "round": 1,
-      "reviewers": ["example-reviewer-b"],
-      "findings": {"raised": 2, "resolved": 0, "deferred": 0},
+      "reviewers": [
+        "example-reviewer-b"
+      ],
+      "findings": {
+        "raised": 2,
+        "resolved": 0,
+        "deferred": 0
+      },
       "summary": "L'évaluation du courriel échoue (C4) et le parcours de bout en bout n'a pas été exécuté (C3). La revue ne peut pas conclure sans ces résultats.",
       "evidence": [
         {
           "label": "Revue du tour 1",
           "url": null,
-          "ref": {"key": "S-3", "digest": "c268b6940c61eb1e35ccc0e9014761430558d1130503e7f0ac7873e5fb0437c4"}
+          "ref": {
+            "key": "S-3",
+            "digest": "c268b6940c61eb1e35ccc0e9014761430558d1130503e7f0ac7873e5fb0437c4"
+          }
         }
       ]
     },
@@ -115,14 +140,23 @@
       "status": "passed",
       "decision": "HUMAN_REVIEW",
       "round": 1,
-      "reviewers": ["example-reviewer-a"],
-      "findings": {"raised": 0, "resolved": 0, "deferred": 0},
+      "reviewers": [
+        "example-reviewer-a"
+      ],
+      "findings": {
+        "raised": 0,
+        "resolved": 0,
+        "deferred": 0
+      },
       "summary": "Un motif répété, présenté plus bas avec ses preuves. Ce résultat sera revu au prochain tour.",
       "evidence": [
         {
           "label": "Rétrospective",
           "url": null,
-          "ref": {"key": "S-3", "digest": "1561d6b775d51dbb867bf3fe28e2ac78b7da18fc073e983c8991702fcbe11e04"}
+          "ref": {
+            "key": "S-3",
+            "digest": "1561d6b775d51dbb867bf3fe28e2ac78b7da18fc073e983c8991702fcbe11e04"
+          }
         }
       ]
     }
@@ -156,7 +190,10 @@
         {
           "label": "Reçu d'exécution",
           "url": null,
-          "ref": {"key": "DEMO-2", "digest": "8b80a7787bcb001055c824929b32b821d577f0c7d94588a13c24b6667a08d90d"}
+          "ref": {
+            "key": "DEMO-2",
+            "digest": "8b80a7787bcb001055c824929b32b821d577f0c7d94588a13c24b6667a08d90d"
+          }
         }
       ],
       "cost": null
@@ -186,7 +223,13 @@
           "url": "https://git.example.com/demo/invitations/blob/9c8b7a6f5e4d3c2b1a0918273645546372819aab/docs/sprints/S-3/evidence/email-eval-traces.json"
         }
       ],
-      "cost": {"amount": 1.92, "currency": "USD", "budget": 5.0, "calls": 60, "model": "example-llm-2026-06"}
+      "cost": {
+        "amount": 1.92,
+        "currency": "USD",
+        "budget": 5.0,
+        "calls": 60,
+        "model": "example-llm-2026-06"
+      }
     }
   ],
   "measurements": [
@@ -221,7 +264,10 @@
         {
           "label": "Constat R1",
           "url": null,
-          "ref": {"key": "S-3", "digest": "93c645bc9e4b1c031c65589a0d14cc202617634734ffc2f05ba60b91af8a3c02"}
+          "ref": {
+            "key": "S-3",
+            "digest": "93c645bc9e4b1c031c65589a0d14cc202617634734ffc2f05ba60b91af8a3c02"
+          }
         }
       ]
     },
@@ -242,7 +288,13 @@
       ]
     }
   ],
-  "followups": [{"key": "DEMO-8", "title": "Courriel d'invitation en français", "reason": "Portée reportée (DEMO-4)."}],
+  "followups": [
+    {
+      "key": "DEMO-8",
+      "title": "Courriel d'invitation en français",
+      "reason": "Portée reportée (DEMO-4)."
+    }
+  ],
   "retrospective": {
     "summary": "La question de l'invalidation du cache est arrivée tard dans trois récits sur quatre.",
     "candidates": [
@@ -258,7 +310,10 @@
           {
             "label": "Clôture de DEMO-3",
             "url": null,
-            "ref": {"key": "DEMO-3", "digest": "fa2a12d44a6653f3329279d4638d3428d510862d0ad09d710dbf61fefff2cdfd"}
+            "ref": {
+              "key": "DEMO-3",
+              "digest": "fa2a12d44a6653f3329279d4638d3428d510862d0ad09d710dbf61fefff2cdfd"
+            }
           }
         ]
       }
@@ -278,6 +333,13 @@
       "tag": null,
       "note": "Aucune demande tant que le candidat est bloqué."
     },
-    "tagPublication": {"status": "not_published", "tag": null, "candidate": null, "object": null, "verifiedAt": null, "evidence": []}
+    "tagPublication": {
+      "status": "not_published",
+      "tag": null,
+      "candidate": null,
+      "object": null,
+      "verifiedAt": null,
+      "evidence": []
+    }
   }
 }

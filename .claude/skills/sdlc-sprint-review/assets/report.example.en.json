@@ -6,9 +6,13 @@
     "language": "en",
     "generatedAt": "2026-10-29T15:40:00-04:00",
     "preparedBy": "example-author-model",
-    "fictional": true
+    "fictional": true,
+    "packetDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
   },
-  "project": {"key": "DEMO", "name": "Fictional Demo Workspace"},
+  "project": {
+    "key": "DEMO",
+    "name": "Fictional Demo Workspace"
+  },
   "sprint": {
     "vault": "demo",
     "key": "S-3",
@@ -22,7 +26,10 @@
   },
   "release": {
     "repository": "https://git.example.com/demo/invitations",
-    "base": {"ref": "v1.3.0", "sha": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"},
+    "base": {
+      "ref": "v1.3.0",
+      "sha": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"
+    },
     "candidate": {
       "sha": "f1e2d3c4b5a6978877665544332211ffeeddccbb",
       "url": "https://git.example.com/demo/invitations/commit/f1e2d3c4b5a6978877665544332211ffeeddccbb"
@@ -76,14 +83,23 @@
       "status": "passed",
       "decision": "HUMAN_REVIEW",
       "round": 2,
-      "reviewers": ["example-reviewer-a"],
-      "findings": {"raised": 3, "resolved": 3, "deferred": 0},
+      "reviewers": [
+        "example-reviewer-a"
+      ],
+      "findings": {
+        "raised": 3,
+        "resolved": 3,
+        "deferred": 0
+      },
       "summary": "Round 1 found the revoke cache defect (R1). Round 2 confirmed the fix. The three stories share one token service, and the reviewer found no duplicate mechanism.",
       "evidence": [
         {
           "label": "Round 2 review record",
           "url": null,
-          "ref": {"key": "S-3", "digest": "88e6b14e31ada2c3edfb9ba0efb6ffaa3d7732121677129c0f23f8d965a17ac1"}
+          "ref": {
+            "key": "S-3",
+            "digest": "88e6b14e31ada2c3edfb9ba0efb6ffaa3d7732121677129c0f23f8d965a17ac1"
+          }
         },
         {
           "label": "Correction diff for R1",
@@ -95,14 +111,23 @@
       "status": "passed",
       "decision": "HUMAN_REVIEW",
       "round": 2,
-      "reviewers": ["example-reviewer-b"],
-      "findings": {"raised": 2, "resolved": 1, "deferred": 1},
+      "reviewers": [
+        "example-reviewer-b"
+      ],
+      "findings": {
+        "raised": 2,
+        "resolved": 1,
+        "deferred": 1
+      },
       "summary": "The integration and end-to-end tests exercise the real database and the staging build. The email evaluation ran against the live model inside the approved budget. It uses only English fixtures (R2).",
       "evidence": [
         {
           "label": "Round 2 review record",
           "url": null,
-          "ref": {"key": "S-3", "digest": "44e5c4aad7487a3288958beb4689dd4107654d9b4f30737cc85d9e55b97a9abc"}
+          "ref": {
+            "key": "S-3",
+            "digest": "44e5c4aad7487a3288958beb4689dd4107654d9b4f30737cc85d9e55b97a9abc"
+          }
         }
       ]
     },
@@ -110,19 +135,31 @@
       "status": "passed",
       "decision": "HUMAN_REVIEW",
       "round": 2,
-      "reviewers": ["example-reviewer-b"],
-      "findings": {"raised": 2, "resolved": 1, "deferred": 1},
+      "reviewers": [
+        "example-reviewer-b"
+      ],
+      "findings": {
+        "raised": 2,
+        "resolved": 1,
+        "deferred": 1
+      },
       "summary": "The admin guide and release notes match the delivered behavior, including the hourly limit. One screenshot still shows the old menu (R3).",
       "evidence": [
         {
           "label": "Round 2 review record",
           "url": null,
-          "ref": {"key": "S-3", "digest": "2efee297df27ae37d4215fbf89b79dc3c52d23c9524e39d995a6b5f8161b8e10"}
+          "ref": {
+            "key": "S-3",
+            "digest": "2efee297df27ae37d4215fbf89b79dc3c52d23c9524e39d995a6b5f8161b8e10"
+          }
         },
         {
           "label": "Report fidelity check",
           "url": null,
-          "ref": {"key": "S-3", "digest": "47fb4621067d59ce820c629e18b291ed02b931f0f8f1cf66eb29599ebbd3772f"}
+          "ref": {
+            "key": "S-3",
+            "digest": "47fb4621067d59ce820c629e18b291ed02b931f0f8f1cf66eb29599ebbd3772f"
+          }
         }
       ]
     },
@@ -130,14 +167,23 @@
       "status": "passed",
       "decision": "HUMAN_REVIEW",
       "round": 2,
-      "reviewers": ["example-reviewer-a"],
-      "findings": {"raised": 0, "resolved": 0, "deferred": 0},
+      "reviewers": [
+        "example-reviewer-a"
+      ],
+      "findings": {
+        "raised": 0,
+        "resolved": 0,
+        "deferred": 0
+      },
       "summary": "One repeated pattern and one ADR candidate. Both are below, with the evidence that supports them.",
       "evidence": [
         {
           "label": "Retrospective record",
           "url": null,
-          "ref": {"key": "S-3", "digest": "1561d6b775d51dbb867bf3fe28e2ac78b7da18fc073e983c8991702fcbe11e04"}
+          "ref": {
+            "key": "S-3",
+            "digest": "1561d6b775d51dbb867bf3fe28e2ac78b7da18fc073e983c8991702fcbe11e04"
+          }
         }
       ]
     }
@@ -171,7 +217,10 @@
         {
           "label": "Run receipt",
           "url": null,
-          "ref": {"key": "DEMO-2", "digest": "8b80a7787bcb001055c824929b32b821d577f0c7d94588a13c24b6667a08d90d"}
+          "ref": {
+            "key": "DEMO-2",
+            "digest": "8b80a7787bcb001055c824929b32b821d577f0c7d94588a13c24b6667a08d90d"
+          }
         }
       ],
       "cost": null
@@ -188,7 +237,10 @@
         {
           "label": "Run receipt",
           "url": null,
-          "ref": {"key": "DEMO-2", "digest": "c745e0d10a182dd0a496847c674ebf6ab2910f8afedfdc8b987ed5870800300c"}
+          "ref": {
+            "key": "DEMO-2",
+            "digest": "c745e0d10a182dd0a496847c674ebf6ab2910f8afedfdc8b987ed5870800300c"
+          }
         }
       ],
       "cost": null
@@ -207,7 +259,13 @@
           "url": "https://git.example.com/demo/invitations/blob/f1e2d3c4b5a6978877665544332211ffeeddccbb/docs/sprints/S-3/evidence/email-eval-traces.json"
         }
       ],
-      "cost": {"amount": 1.86, "currency": "USD", "budget": 5.0, "calls": 60, "model": "example-llm-2026-06"}
+      "cost": {
+        "amount": 1.86,
+        "currency": "USD",
+        "budget": 5.0,
+        "calls": 60,
+        "model": "example-llm-2026-06"
+      }
     },
     {
       "id": "C5",
@@ -272,7 +330,10 @@
         {
           "label": "Finding R1",
           "url": null,
-          "ref": {"key": "S-3", "digest": "93c645bc9e4b1c031c65589a0d14cc202617634734ffc2f05ba60b91af8a3c02"}
+          "ref": {
+            "key": "S-3",
+            "digest": "93c645bc9e4b1c031c65589a0d14cc202617634734ffc2f05ba60b91af8a3c02"
+          }
         }
       ]
     },
@@ -305,8 +366,16 @@
       "title": "French invitation email and evaluation fixtures",
       "reason": "Deferred scope (DEMO-4) and finding R2."
     },
-    {"key": "DEMO-9", "title": "Load test for concurrent invitations", "reason": "Optional check C6 was not run."},
-    {"key": "DEMO-11", "title": "Update the admin guide screenshot", "reason": "Finding R3."}
+    {
+      "key": "DEMO-9",
+      "title": "Load test for concurrent invitations",
+      "reason": "Optional check C6 was not run."
+    },
+    {
+      "key": "DEMO-11",
+      "title": "Update the admin guide screenshot",
+      "reason": "Finding R3."
+    }
   ],
   "retrospective": {
     "summary": "Cache invalidation came up late in three of four stories. The evaluation budget was right on the first estimate.",
@@ -323,7 +392,10 @@
           {
             "label": "DEMO-3 closeout",
             "url": null,
-            "ref": {"key": "DEMO-3", "digest": "fa2a12d44a6653f3329279d4638d3428d510862d0ad09d710dbf61fefff2cdfd"}
+            "ref": {
+              "key": "DEMO-3",
+              "digest": "fa2a12d44a6653f3329279d4638d3428d510862d0ad09d710dbf61fefff2cdfd"
+            }
           }
         ]
       },
@@ -339,7 +411,10 @@
           {
             "label": "Implementation review",
             "url": null,
-            "ref": {"key": "S-3", "digest": "88e6b14e31ada2c3edfb9ba0efb6ffaa3d7732121677129c0f23f8d965a17ac1"}
+            "ref": {
+              "key": "S-3",
+              "digest": "88e6b14e31ada2c3edfb9ba0efb6ffaa3d7732121677129c0f23f8d965a17ac1"
+            }
           }
         ]
       }
@@ -350,7 +425,10 @@
       "status": "pending",
       "approver": null,
       "decidedAt": null,
-      "ref": {"key": "S-3", "digest": "9c89e413d3108383b31f5728e8a59110c848079e2349a54ccb2c355d58342475"},
+      "ref": {
+        "key": "S-3",
+        "digest": "9c89e413d3108383b31f5728e8a59110c848079e2349a54ccb2c355d58342475"
+      },
       "sprint": null,
       "scopeDigest": null,
       "candidate": null,
@@ -359,6 +437,13 @@
       "tag": null,
       "note": "Approval requested from the product owner."
     },
-    "tagPublication": {"status": "not_published", "tag": null, "candidate": null, "object": null, "verifiedAt": null, "evidence": []}
+    "tagPublication": {
+      "status": "not_published",
+      "tag": null,
+      "candidate": null,
+      "object": null,
+      "verifiedAt": null,
+      "evidence": []
+    }
   }
 }

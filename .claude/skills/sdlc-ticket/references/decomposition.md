@@ -85,7 +85,7 @@ For each child, **once at creation**, resolve relevance from the services and pa
 
 A ticket is **claimable** only when it sits in `Ready` (priority) **and** has zero open blockers. **Never claim with open blockers**, even if a human moved it to `Ready` — surface the conflict in a `kind=blocker` comment and leave it. Selection when several are claimable: in-flight first (resume), then priority (P0→), then unblocking power (blocks the most others), tie-break lowest key. State the reason in the claim comment.
 
-At closure, recompute claimability for everything this ticket blocked; list the **newly unblocked** in the metrics comment. Don't auto-move them — `Backlog → Ready` stays human.
+At closure, recompute claimability for everything this ticket blocked; list the **newly unblocked** in the metrics comment. Use `sprints.md` § Gate 1 from a named owner decision for any Ready transition. Without that exact recorded priority approval, leave them in place for the human.
 
 ## Spike-amended scope — re-sync the dependent ticket's ACs
 

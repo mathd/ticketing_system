@@ -1,12 +1,11 @@
 ---
 name: sdlc-sprint-review
-description: Validate a complete sprint release with four independent area reviews, real integration and LLM evidence, a cross-story retrospective, and a French or English HTML report that is committed to the repository. Use when you prepare a sprint closure or review a release candidate. Requires the sdlc-ticket and sdlc-sprint skills.
+description: Validate a complete sprint outcome, with or without a Git tag with four independent area reviews, real integration and LLM evidence, a cross-story retrospective, and a French or English HTML report that is committed to the repository. Use when you prepare a sprint closure or review a release candidate. Requires the sdlc-ticket and sdlc-sprint skills.
 ---
 
 # Sprint release review and report
 
-Validate the combined outcome of the release. Produce the report that the human reads. The human
-starts a closure through `sdlc-sprint`. This skill does not start or close a sprint, merge code,
+Validate the combined outcome of the release. Produce the report that the human reads. With an approved `continuation: "autonomous"` brief, invoke this skill as soon as all functional members are Done. With `continuation: "manual"`, wait for the owner request. A manual close request also invokes it through `sdlc-sprint`. This skill does not start or close a sprint, merge product code,
 publish a Git tag or deploy.
 
 ## Inputs and ownership
@@ -28,7 +27,7 @@ render and commit the report, and talk to the human. Reviewers have read-only ac
 findings. The actual model of a reviewer must differ from every author of the work it reviews. The
 report author is one of them, and it is you. Do not let the writer of the report approve it.
 
-## Freeze the release packet
+## Freeze the review packet
 
 The packet is one text. Collect these facts for it:
 
@@ -54,8 +53,7 @@ readiness.
 
 Then post the packet as a `sprint-review` / `summary` record on the sprint note. Its identity is
 `<S-n>:packet:sha256:<digest>`. The digest is the SHA-256 of the record's body as the board returns
-it. Give the reviewers that same body. A new candidate or a changed input is a new packet with a new
-identity.
+it. Give the reviewers that same body. A material candidate or input change needs a new packet and round. After a permitted non-material correction below the repeat threshold, preserve the original packet and append a correction-verification record naming both commits, the exact correction diff digest and fresh required check receipts. Do not rewrite the reviewed packet.
 
 ## Specialized review
 
@@ -81,7 +79,7 @@ A value follows the table in `sdlc-ticket/SKILL.md` § `config.models`: the runn
 each in its own context. Before the first call, check every area. Its model must differ from:
 
 - `models.implement`,
-- every author of the code and of the fixes of the members (read the stage comments),
+- every author contributing member code or fixes to the reviewed candidate (read the stage comments and trace the actual changes; apply `sdlc-ticket/references/reviews.md` § Inputs and identity for discarded attempts),
 - the implementer of the closure task,
 - you, the report author.
 
@@ -100,6 +98,8 @@ never approve.
 shows. Set `stage` to `sprint-review` and `area` to the area on the record and on both lens results.
 Set `artifact` to the packet identity. Prefix every finding ID with the area (`IMPL-1`, `VER-1`,
 `DOC-1`, `RETRO-1`).
+
+Run implementation, verification and retrospective concurrently where the runner supports it. Documentation initial inspection can run concurrently. Run its decision audit after the other three areas have final results and the report draft is assembled. Give it those results and the source and HTML draft as audit supplements, while both documentation lenses retain the same frozen product packet. Do not edit that packet or the candidate while any lens is running. Record the supplement digests in the documentation area record.
 
 **One round is four pairs.** A round holds the four complete area pairs on one packet. It has one round
 number. The cap is four rounds for the whole sprint. Count the distinct `round` values among the
@@ -138,12 +138,11 @@ and the combined decision. The combined decision is the most restrictive of the 
 - An area that did not run is not an approval.
 
 **Fixes.** A defect in correctness, in security or in release acceptance must be fixed. An
-incidental improvement becomes a follow-up ticket (`POST /ticket/new`, with a minimal context memo).
+incidental improvement becomes a follow-up ticket (`POST /ticket/new`, with a minimal context memo). A product correction to a Done story needs a new member ticket. Prepare the correction and revised brief, then stop for owner approval of the new scope and priority before adding or starting it. The initial named-scope approval does not cover extra tickets. Report-only factual fixes stay on the closure task.
 A Critical or High finding, or a material change, needs another full round. A Medium correction needs
 verification only. Use the refutation and cap rules of `reviews.md`, and keep earlier refusals.
 Compare the whole diff from the reviewed packet to the final candidate with the exact diff of each
-correction. Any further merge or change of material input needs another round. Old evidence never
-covers another candidate.
+correction. Any further merge or change of material input needs another round. Old evidence never proves new checks on another candidate. A permitted correction amendment must name the reviewed and final candidates and contain fresh check receipts for the final candidate.
 
 ## Report and hand-off
 
@@ -158,7 +157,7 @@ Put these in the report:
 - the conclusion of every area,
 - the tests and the measurements,
 - the unresolved risks and the follow-ups,
-- the retrospective selections,
+- the retrospective selections and the observed cost of implementation, reviews, verification, CI wait and unexplained idle; put these observations in `retrospective.summary`, give the data cutoff and exclude closure-task work after that cutoff; use `n/a` when timing cannot be separated,
 - the exact candidate,
 - the actual state of the human decision and of the tag.
 
@@ -180,3 +179,13 @@ python3 -B -m unittest discover -s .claude/skills/sdlc-sprint-review/tests -v
 ```
 
 They are not part of `make check`.
+
+## Full review without a tag
+
+`review: "full", release: false` runs this entire review and publication procedure. Set
+`release.publishTag: false`, `release.tag: null` and `decision.tagPublication.status: "not_required"`
+in the report source. Keep candidate, report and close approval targets. Do not invent a tag or
+skip the report because the sprint publishes none. The final close approval still belongs to the owner.
+
+Freeze the product candidate before report publication. A report-only merge can follow it. Verify
+that intervening changes are only the cited report artifacts, including an inert renderer runtime archived under the report evidence directory when needed; a production change needs a new packet.

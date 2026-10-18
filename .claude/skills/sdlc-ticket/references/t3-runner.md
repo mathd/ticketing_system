@@ -119,3 +119,15 @@ provider error there.
 
 A **provider-level** failure (quota, revoked credentials) probably hits the other runner too: skip
 rung 2.
+
+## Continuation ownership
+
+The primary agent keeps each task ID and owns the next step after its completion. Prefer the
+app completion notification over a polling loop. Record the pending operation before yielding.
+If independent work remains, continue it. If only a child result is pending, yield and resume on its
+notification. Read the final message with `task_status`; a plan-mode provider may not write files.
+A completed reviewer task is evidence to process, not a completed ticket or sprint.
+
+Do not launch a second orchestrator to watch the first one. On handoff, name the new owner, pending
+task IDs, current gate or CI watcher and exact next operation. Never leave two agents writing the
+same board records or working tree.

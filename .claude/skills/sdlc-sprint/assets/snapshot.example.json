@@ -16,18 +16,36 @@
   "unreadable": [],
   "historyGaps": [],
   "members": [
-    {"key": "DEMO-1", "status": "Ready", "blocked": false},
-    {"key": "DEMO-2", "status": "Ready", "blocked": false},
-    {"key": "DEMO-3", "status": "Backlog", "blocked": false}
+    {
+      "key": "DEMO-1",
+      "status": "Ready",
+      "blocked": false
+    },
+    {
+      "key": "DEMO-2",
+      "status": "Ready",
+      "blocked": false
+    },
+    {
+      "key": "DEMO-3",
+      "status": "Backlog",
+      "blocked": false
+    }
   ],
   "brief": {
     "digest": "43b4d29806dd12d299e7e8d85905b51daa8db65be69ad522373cfafa38969ad2",
     "sprint": "S-3",
     "release": true,
     "closureTask": "DEMO-3",
-    "members": ["DEMO-1", "DEMO-2", "DEMO-3"],
+    "members": [
+      "DEMO-1",
+      "DEMO-2",
+      "DEMO-3"
+    ],
     "scopeDigest": "b86d243be72aaac94e315dca2ea1e4459b91fd049a10266c17fffb641ecf3f56",
-    "approvedBy": "Fictional Human"
+    "approvedBy": "Fictional Human",
+    "review": "full",
+    "continuation": "autonomous"
   },
   "startRequest": {
     "digest": "6d921d0d2fcd1a834370bc18e0a310d63cc6030cb28dd2a812d8115a4c7ce758",
@@ -35,5 +53,18 @@
     "briefDigest": "43b4d29806dd12d299e7e8d85905b51daa8db65be69ad522373cfafa38969ad2",
     "scopeDigest": "b86d243be72aaac94e315dca2ea1e4459b91fd049a10266c17fffb641ecf3f56",
     "requestedBy": "Fictional Human"
+  },
+  "priorityApproval": {
+    "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sprint": "S-3",
+    "briefDigest": "43b4d29806dd12d299e7e8d85905b51daa8db65be69ad522373cfafa38969ad2",
+    "scopeDigest": "b86d243be72aaac94e315dca2ea1e4459b91fd049a10266c17fffb641ecf3f56",
+    "members": [
+      "DEMO-1",
+      "DEMO-2",
+      "DEMO-3"
+    ],
+    "approvedBy": "Fictional Human",
+    "approvedAt": "2026-10-18T12:00:00-04:00"
   }
 }

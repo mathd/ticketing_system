@@ -155,7 +155,9 @@ def validate_identity(data: dict[str, Any]) -> None:
         "unsupported schemaVersion",
     )
     report = data["report"]
-    fields(report, "id version language generatedAt preparedBy", "fictional")
+    fields(report, "id version language generatedAt preparedBy", "fictional packetDigest")
+    if "packetDigest" in report:
+        digest(report["packetDigest"])
     strings(report, "id preparedBy")
     choice(report["language"], ("fr", "en"))
     require(
@@ -184,7 +186,8 @@ def validate_identity(data: dict[str, Any]) -> None:
     )
     digest(sprint["scopeDigest"])
     release = data["release"]
-    fields(release, "repository base candidate tag")
+    fields(release, "repository base candidate tag", "publishTag")
+    require(type(release.get("publishTag", True)) is bool, "publishTag must be boolean")
     url(release["repository"])
     fields(release["base"], "ref sha")
     strings(release["base"], "ref", nullable=True)
@@ -192,7 +195,10 @@ def validate_identity(data: dict[str, Any]) -> None:
     url(release["candidate"]["url"])
     for key in ("base", "candidate"):
         digest(release[key]["sha"], commit=True)
-    strings(release, "tag")
+    if release.get("publishTag", True):
+        strings(release, "tag")
+    else:
+        require(release["tag"] is None, "no-tag report must have a null tag")
     fields(data["outcome"], "readiness headline summary")
     strings(data["outcome"], "headline summary")
     choice(data["outcome"]["readiness"], "ready incomplete blocked")
@@ -464,7 +470,12 @@ def validate_decision(data: dict[str, Any]) -> None:
         )
     publication = decision["tagPublication"]
     fields(publication, "status object verifiedAt tag candidate evidence")
-    choice(publication["status"], "not_published published")
+    publish_tag = data["release"].get("publishTag", True)
+    choice(publication["status"], "not_published published not_required")
+    require(
+        (publication["status"] != "not_required") == publish_tag,
+        "publication status must match the tag plan",
+    )
     evidence(publication["evidence"])
     if publication["status"] == "published":
         digest(publication["object"], commit=True)
@@ -489,8 +500,9 @@ def validate_decision(data: dict[str, Any]) -> None:
             "unpublished tag cannot claim verification",
         )
     require(
-        data["sprint"]["state"] != "closed" or publication["status"] == "published",
-        "closed sprint requires verified publication",
+        data["sprint"]["state"] != "closed"
+        or (publication["status"] == "published" if publish_tag else approval["status"] == "approved"),
+        "closed sprint requires verified publication or exact no-tag approval",
     )
 
 
@@ -890,9 +902,10 @@ def render(
             "candidate_code_html": code_link(
                 release["candidate"]["sha"], release["candidate"]["url"]
             ),
-            "release_tag": esc(release["tag"]),
+            "release_tag": esc(release["tag"] or labels["no_tag"]),
             "report_identity": esc(f"{report['id']} · v{report['version']}"),
             "source_digest": source_digest,
+            "packet_digest_html": code(report.get("packetDigest")),
             "scope_summary_html": paragraphs(data["scope"]["summary"]),
             "checks_summary": esc(
                 labels["checks_summary"].format(
@@ -1021,7 +1034,7 @@ def render(
                 + "</dd></div><div><dt>"
                 + esc(labels["proposed_tag"])
                 + "</dt><dd>"
-                + code(release["tag"])
+                + (code(release["tag"]) if release["tag"] else esc(labels["no_tag"]))
                 + '</dd></div><div class="wide"><dt>'
                 + esc(labels["candidate"])
                 + "</dt><dd>"
@@ -1051,7 +1064,7 @@ def render(
             + '</div><div class="sign"><p class="sign-label">'
             + esc(labels["tag_publication"])
             + " "
-            + code(release["tag"])
+            + (code(release["tag"]) if release["tag"] else esc(labels["no_tag"]))
             + '</p><p class="sign-line">'
             + chip(publication["status"])
             + (
