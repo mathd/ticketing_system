@@ -26,11 +26,11 @@ Git keeps the older versions. Commit the evidence files with the report that cit
 ## Steps
 
 1. **Assemble the source.** Write `docs/sprints/S-3/report.<lang>.json` in the report language
-   (`sprints.reportLanguage`, `en` by default). Use only facts you have: the packet, the four area
-   results, the check receipts and the board's data. Set `report.version`. A new candidate, new
+   (`sprints.reportLanguage`, `en` by default). Pin the renderer runtime before rendering. Record SHA-256 and repository path for `scripts/render_report.py`, `assets/report.html` and `assets/report.labels.json`. Use the same files for the independent documentation check. If the prepared runtime is not committed on this branch, copy those three files, preserving their scripts/assets layout, to `docs/sprints/S-3/evidence/report-renderer/`. Run that archived script, commit the runtime with the report, and verify its file hashes after merge. The report must be reproducible from its report commit without the author's working copy. Record the actual script path and exact command, not a stock command that used another renderer. Use only facts you have: the packet, the four area
+   results, the check receipts and the board's data. Set `report.packetDigest` from the exact posted review packet body and `report.version`. The packet identity is part of the source bytes and appears in the HTML. A new candidate, new
    evidence, a factual correction or a recorded decision needs a new version. Link evidence with a
    board reference (key and digest) or with a URL that holds the full commit ID.
-2. **Render to a new path outside the repository.**
+2. **Render to a new path outside the repository.** In the example below, replace the script path with the pinned archive path when step 1 required an archive.
 
    ```sh
    mkdir -p /tmp/sprint-S-3
@@ -73,18 +73,21 @@ Git keeps the older versions. Commit the evidence files with the report that cit
    The two digests must equal `htmlDigest` and `sourceDigest`. If they differ, something rewrote the
    files, for example a formatter. Do not record the renderer's digests. Find the cause and fix it
    before you publish.
+   Parse the committed JSON read back in this step. Take the pointer's `packetDigest` from its `report.packetDigest`, never from a remembered value or a proposed pointer. Require it to equal the digest of the actual frozen review packet used by all four areas. Take the candidate from `release.candidate.sha` in the same committed source. A missing or mismatched identity blocks publication.
 8. **Post the record.** Post a `report-artifact` record on the sprint note and on the closure task
    (`sdlc-sprint/references/records.md`):
 
    ```json
    {"sprint": "S-3", "closureTask": "TKT-512", "reportVersion": 1, "language": "en",
-    "candidate": "<full commit ID>", "commit": "<commit that holds the report>",
+    "candidate": "<full commit ID>", "packetDigest": "<review packet digest>", "commit": "<commit that holds the report>",
     "path": "docs/sprints/S-3/report.en.html", "sourcePath": "docs/sprints/S-3/report.en.json",
     "htmlDigest": "<64 hex>", "sourceDigest": "<64 hex>", "approval": "pending",
-    "renderer": "python3 -B .claude/skills/sdlc-sprint-review/scripts/render_report.py ...",
+    "renderer": "<exact command and actual script path>",
+    "rendererFiles": [{"path": "<committed runtime file path>", "digest": "<SHA-256>"}],
     "verification": "<what you checked in step 3 and step 4>", "supersedes": []}
    ```
 
+   `rendererFiles` names all three runtime files verified after merge. Run the recorded renderer against the committed source and compare the output receipt again.
    `approval` is the state that the report shows. `supersedes` lists the commits that held earlier
    versions. This record is the current report pointer. A missing record, or a read-back that did not
    match, is an incomplete publication. It is not a ready hand-off.
@@ -101,8 +104,15 @@ publish a tag and does not close the sprint.
 - An optional status edition records the human's decision on the earlier report. It is a new version
   and a new commit. Keep the digest and the commit of the approved report as the release target.
   Mark the difference in the page (the `approval_prior_note` label does it). Commit a status edition
-  after the tag is verified. Without it, the repository copy keeps reading `pending`.
+  only after `POST /sprint/close` succeeds. Without it, the repository copy keeps reading `pending`.
 - Never amend, squash, rebase away or force-push a commit that holds a report version that a human
   approval names. The approval's `reportUrl` pins that commit. Later versions are new commits.
 - A new fact or a candidate change needs the affected review and a new human approval.
 - Do not get new credentials, and do not use another client, to get around a refused push.
+
+## No-tag hand-off
+
+Run the same publication and read-back steps when `release: false`. Return the verified report and
+candidate to `sdlc-sprint` for exact close approval. A tag is not a publication prerequisite for the
+report. Include `packetDigest` in each `report-artifact` record so the closure snapshot can bind the
+report to its four-area review packet. Record both board pointers after read-back.

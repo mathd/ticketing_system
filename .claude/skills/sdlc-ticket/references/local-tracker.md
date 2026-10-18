@@ -163,13 +163,13 @@ checks:
 ## The one-ticket run
 
 > In `config.gates: "autonomous"` the ⛔ Gate 2–4 steps below are agent transitions per the skill's
-> § Autonomous mode: don't set `needs:human` at those points; Gate 1 still waits for the human.
+> § Autonomous mode: don't set `needs:human` at those points; Gate 1 follows the owner priority rule in `sprints.md` § Gate 1 from a named owner decision, including the recorded named-scope exception.
 
 1. **Backlog** — shape per `shaping.md`: COS + the 8-item `readiness` object on the ticket (incl. `context_memo`),
    spikes (`type:"Spike"`, parent `blocked-by` them) for investigations, `owner:"human"` items for
    pending decisions; append a `kind=decision` comment for each settled material choice;
    `kind=readiness` verdict comment with the shaping decision IDs; suggest `risk:low` if trivial.
-2. ⛔ Gate 1 — human prioritizes → `Ready`. The board **hard-blocks** the drag while any
+2. ⛔ Gate 1 — record the owner priority decision → `Ready`, under the rule in `sprints.md` § Gate 1 from a named owner decision. The board **hard-blocks** the drag while any
    `readiness` item is `open` or a blocker is open (`deferred` passes).
 3. **Ready** — verify no open blockers, claim: `assignee`, `kind=claim`, → `Planning` + `agent:planning`.
    In sprint mode, claim only a member of the active sprint (`sprints.md`).
@@ -213,3 +213,14 @@ API token's vault allowlist, write `_board/config.md` (schema, project name, sta
 wip), set `"tracker": "local"` in `.claude/sdlc.config.json`, start the server, create the first
 tickets (§ Operations). One board install serves several projects — `?vault=` selects between them and the
 switcher appears once there is more than one.
+
+## Recording an owner sprint-priority decision
+
+The owner may approve Gate 1 once for the exact named sprint scope. This is a priority decision,
+not an agent waiver. `sdlc-sprint/references/records.md` defines `sprint-priority`. Read its returned
+body and verify its digest, sprint, approved brief digest, scope digest and member list. Before each
+Backlog or unblocked BLOCKED member moves to Ready, read the ticket again, check all DoR items and
+all blocked-by links, and confirm the approved scope still matches. Record the approval reference
+on that ticket, and use the normal board transition with your real role/model/effort. Do not claim
+`role=human`. A changed member list or brief invalidates this authorization. Claim only after the
+board reads Ready. No authorization permits Ready with an open blocker.

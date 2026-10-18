@@ -19,7 +19,9 @@ the fix authors of every member ticket, the implementer of the closure task and 
 for `sprint-review`. When you fixed
 findings yourself, you are an author too — `main-agent` and a named model can be the same model
 (SKILL.md § config.models). Different runner names, providers or effort settings do not prove
-independence.
+independence. Normalize model aliases to the actual full model ID before recording authors and invoking the contract. For example, `opus-5.5` and `claude-opus-5-5` are one identity. An unresolved identity blocks the call. Keep historical comments unchanged; record the normalized identity and its source in the new review record.
+
+For a restarted implementation, retain all earlier rounds and their findings. Derive the author set from contributions to the reviewed artifact. An abandoned, unmerged implementation contributes no author only when none of its code or fixes is reused. Record that exclusion and its evidence. A copied fix makes its original author part of the current author set. This rule never resets a round cap.
 
 The **initial** lens never sees author rationale:
 

@@ -104,7 +104,7 @@ def rebuild(data, approve=True, **changes):
         [member["key"] for member in data["members"]],
     )
     if approve:
-        for record in ("brief", "startRequest", "closeApproval"):
+        for record in ("brief", "startRequest", "closeApproval", "priorityApproval"):
             if data.get(record):
                 data[record]["scopeDigest"] = data["scopeDigest"]
     return data
@@ -348,9 +348,9 @@ class SnapshotValidationTests(unittest.TestCase):
                 lambda b: b.update(release="true"),
             ),
             (
-                "planning-only closure task",
-                "planning-only brief",
-                lambda b: b.update(release=False),
+                "invalid review policy",
+                "review must be full or none",
+                lambda b: b.update(review="skip"),
             ),
             (
                 "closure task type",
@@ -475,7 +475,7 @@ class StartTests(unittest.TestCase):
 
     def test_each_rule_stops_the_start_with_its_own_reason(self):
         def empty_sprint(data):
-            data["brief"].update(release=False, closureTask=None, members=[])
+            data["brief"].update(release=False, review="none", reviewReason="Planning exercise approved by owner.", closureTask=None, members=[])
             rebuild(data, members=[])
 
         added = [
@@ -626,7 +626,7 @@ class CloseTests(unittest.TestCase):
     @staticmethod
     def planning_only():
         data = close_snapshot()
-        data["brief"].update(release=False, closureTask=None)
+        data["brief"].update(release=False, review="none", reviewReason="Owner approved a planning exercise.", closureTask=None)
         del data["release"]
         for field in ("candidate", "reportDigest", "tag"):
             del data["closeApproval"][field]
@@ -896,6 +896,8 @@ class CloseTests(unittest.TestCase):
         data = close_snapshot()
         long_id = "c" * 64
         data["release"]["candidate"] = long_id
+        data["release"]["report"]["candidate"] = long_id
+        data["release"]["review"]["candidate"] = long_id
         data["release"]["publication"]["candidate"] = long_id
         data["closeApproval"]["candidate"] = long_id
         self.assertEqual(decide(data, "close"), ("CLOSE", []))

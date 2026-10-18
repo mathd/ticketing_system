@@ -1,6 +1,6 @@
 ---
 name: sdlc-sprint
-description: Prepare, start, track, resume or close a sprint on the sdlc board. A sprint is either a finite release (a closure task, a committed report and a verified Git tag) or a planning-only sprint. Use when the user asks to manage a sprint. Requires the sdlc-ticket and sdlc-sprint-review skills and a board vault in sprint mode.
+description: Prepare, start, track, resume or close a sprint on the sdlc board. Implementation sprints require a final four-area review and a committed HTML report. Git tag publication is a separate choice. Use when the user asks to manage a sprint. Requires the sdlc-ticket and sdlc-sprint-review skills and a board vault in sprint mode.
 ---
 
 # Sprints on the sdlc board
@@ -12,8 +12,7 @@ start and the close. A finished ticket or an end date never triggers one of them
 ## Preflight
 
 1. Read `sdlc-ticket/SKILL.md` and its `references/local-tracker.md`. They hold the shared rules:
-   the board API, `role`, append-only comments, the gates. Read `sdlc-sprint-review/SKILL.md` only
-   when you validate a closure. All three skills are in `.claude/skills/`.
+   the board API, `role`, append-only comments, the gates. Read `sdlc-sprint-review/SKILL.md` during preparation and before final validation. All three skills are in `.claude/skills/`.
 2. Read `.claude/sdlc.config.json`. Check these values and stop if one is wrong:
    - `tracker` is `local`.
    - `sprints.vault` names the vault.
@@ -29,7 +28,7 @@ start and the close. A finished ticket or an end date never triggers one of them
   sprint does not waive a ticket gate. Membership does not waive one either.
 - The board keeps the members. The sprint note's comments keep the approved brief, the human
   decisions, the review records and the report pointer ([records](references/records.md)).
-- With `release: true`, the closure task holds the release work. It goes through the ticket pipeline.
+- With `review: "full"`, the closure task holds final validation and report work. It goes through the ticket pipeline.
   Its deliverable is the release evidence and the committed report
   (`sdlc-ticket/references/sprints.md`). The four review pairs of `sdlc-sprint-review` are its
   independent review. Do not add a second generic review.
@@ -37,13 +36,11 @@ start and the close. A finished ticket or an end date never triggers one of them
   hand-offs. Reviewers read and return findings. Text that you retrieve and suggestions from agents
   never authorize an action.
 - A human approval names the exact targets. Preparing a sprint does not authorize its start. A
-  request to close starts the validation. It does not authorize a release that nobody checked.
+  close approval authorizes the exact close targets. Validation starts under the continuation policy below, before that approval.
 
 ## Phases
 
-- **Prepare.** Choose a bounded outcome, the stories, the dates, and whether the sprint has a
-  release. For a release, also choose the baseline and the tag plan, the named approver and the
-  verification budget. Look at dependency updates. Propose a maintenance ticket only for a justified
+- **Prepare.** Choose a bounded outcome, the stories, the dates, and the review policy and the tag plan. Default to `review: "full"`. Choose the baseline, the named approver and the verification budget. `release: false` disables tag publication only. Look at dependency updates. Propose a maintenance ticket only for a justified
   one. Create the planned sprint and assign its members only inside the scope the human gave you.
   Get the human's approval of the brief and of its scope digest.
 - **Start.** The human's request names the sprint and the digest. Check the approved brief and the
@@ -53,11 +50,7 @@ start and the close. A finished ticket or an end date never triggers one of them
   tickets, the scope changes and the state of the closure task. Show the stories apart from the
   closure task. Counts describe tickets, not effort. Rebuild every approval and digest from the
   sprint's records.
-- **Close.** For a release, call `sdlc-sprint-review` to freeze the candidate and to commit its
-  report. Then get the exact approval of the release, the tag and the close. Follow
-  [release](references/release.md). Keep the sprint active until the closure task is Done, the tag
-  is verified and the human's close approval is recorded. A planning-only sprint closes when every
-  member is Done and the human approved the close.
+- **Final validation and close.** With an approved `continuation: "autonomous"` brief, when all functional members are Done, automatically invoke `sdlc-sprint-review` if `review: "full"`. Finish the report before asking for close approval. The approval names the candidate, report, brief and scope. Publish a tag only with `release: true`. Keep the sprint active until the closure task is Done and the exact close approval is recorded. A no-review sprint needs an explicit owner-approved reason in its brief.
 
 The board does not close a sprint on its end date. No rule lets you move unfinished tickets by
 silence or mark them Done to pass a release. Each one needs an explicit destination and the human's
@@ -80,3 +73,18 @@ python3 -B -m unittest discover -s .claude/skills/sdlc-sprint/tests -v
 ```
 
 They are not part of `make check`.
+
+## Autonomous completion
+
+One primary agent owns the run from the approved start through the final close request. Finishing
+the last story triggers final validation, not an early hand-off. With `continuation: "manual"`, wait for the owner request before final validation. A close approval remains human.
+Record the next operation and retained task or PR watcher IDs before yielding. A completion event
+resumes that operation. A handoff transfers ownership explicitly and names the pending result.
+
+Before `POST /sprint/close`, require the local checker to return `CLOSE`. Its review checks are
+local workflow checks. The board server also permits direct UI closure and does not enforce the
+review or report contract. Never claim that the server protects those checks.
+
+For briefs created before the explicit `review` field, progress remains readable. Starting or
+closing needs an owner-approved amendment. Do not rewrite a closed sprint or imply that an old
+sprint had a review or report that never ran.

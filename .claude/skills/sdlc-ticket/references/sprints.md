@@ -43,7 +43,7 @@ Do not move a ticket into or out of a sprint yourself. `sdlc-sprint` does it. `P
 
 ## The closure task
 
-A sprint with `release: true` has one closure task. It is a member that holds the release work. It
+A sprint with `review: "full"` has one closure task, including when `release: false`. It is a member that holds the release work. It
 follows the normal ticket flow: shaping, planning, plan review, the plan gate, labels, the PR and
 acceptance. `config.gates` decides who takes each gate. The task's deliverable is the release packet
 and the report under `docs/sprints/<S-n>/`, delivered on the task's own PR.
@@ -55,10 +55,34 @@ and the report under `docs/sprints/<S-n>/`, delivered on the task's own PR.
   lets the board move the task to `PO Review`; no `override` is needed. A correction that changes
   product code or its tests uses a linked ticket with the usual gates and PR.
 - The human's decision for this task is the **close approval** that is recorded on the sprint. It
-  names the exact report digest, the candidate, the digests of the brief and of the scope, the tag and
+  names the exact report digest, the candidate, the digests of the brief and of the scope, any planned tag and
   the sprint key. Both gate modes need it from a human, in addition to the task's normal gates.
-- After the approval, `sdlc-sprint` publishes and verifies the tag. That is the only action after the
-  hand-off. A material change to the deliverable goes back to review and to a new approval.
+- After the approval, `sdlc-sprint` publishes and verifies a tag only when `release: true`. A material change to the deliverable goes back to review and to a new approval.
 - The task is Done when its PR is merged and the report read back on the default branch, the
-  evidence is complete, the close approval is recorded and the tag is verified. Post the `kind=metrics` closeout before the move to Done,
+  evidence is complete, the close approval is recorded and any planned tag is verified. Post the `kind=metrics` closeout before the move to Done,
   as for any ticket. `sdlc-sprint` then reads the members again and closes the sprint.
+
+## Keep ticket work bounded
+
+Ticket reviews cover correctness, security, COS, affected integration and material choices. Broad
+architecture cleanup, cross-story test quality, documentation consistency and the process retrospective
+belong to the final sprint review. Create linked Backlog tickets for incidental issues that final review must read. A Critical or High finding is never deferred to final review; fix it in the ticket or escalate to the owner. A known defect
+in this ticket's correctness, security or COS still needs a fix before merge, at any severity.
+
+Use the existing two lenses and repeat threshold. Do not add routine checkpoints between work units.
+An extra checkpoint needs a named unresolved risk, the missing evidence and the decision its result
+will change. Record that reason and its cost. A milestone alone is not a reason.
+
+After each member reaches Done, the primary agent reads the remaining members. When only the closure
+task remains, continue into `sdlc-sprint-review` automatically under an approved `continuation: "autonomous"`, `review: "full"` brief. With `continuation: "manual"`, wait for the owner request.
+Never present the sprint as complete while its required review or report is missing.
+
+## Gate 1 from a named owner decision
+
+The owner may approve priorities for the exact brief and member scope once. `sdlc-sprint` records
+it as `sprint-priority`. This exception was approved by the owner on October 18, 2026. It lets the
+agent record the owner's Ready transition, not choose or expand the priorities. Preparation does
+not approve them. Re-read the approval and current scope before each such transition. Each member,
+including the closure task, still waits until its DoR and blockers pass. Then record the reference,
+transition through the legal board path and read Ready back before claim. A full automatic run
+needs this approval for members that will become eligible later.

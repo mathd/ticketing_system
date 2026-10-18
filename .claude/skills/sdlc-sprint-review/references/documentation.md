@@ -33,9 +33,7 @@ or its layout.
 - **Decision audit:** the approved brief, the effective decisions and the assembled report, against
   the evidence of all areas.
 
-If the report is assembled after an area's audit, ask for a bounded independent check of its source
-and of the rendered page before the hand-off. Record that check with the packet. Do not call narrative
-that nobody reviewed "approved".
+Run this decision audit after the other three areas have final results and the report draft exists. Both lenses retain the same frozen product packet. Add the other results and the exact source and HTML draft as audit supplements, with their digests in the area record. If a later edit changes the report, run a bounded independent check of the changed source and rendered page. Post its receipt as a new `sprint-review` / `report-check` comment referencing the documentation record. Do not edit that earlier comment. It does not replace either lens. Do not call narrative that nobody reviewed "approved".
 
 ## What you return
 

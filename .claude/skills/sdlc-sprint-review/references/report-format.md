@@ -118,6 +118,7 @@ General rules:
 | `language` | `fr` or `en` |
 | `generatedAt` | The time the author assembled the source data |
 | `preparedBy` | The actual model or person that assembled the source |
+| `packetDigest` | SHA-256 of the frozen review packet. Required for a new full-review closure. Optional only to render legacy reports, which cannot supply new closure evidence without it |
 | `fictional` | Optional boolean, default `false`. `true` shows the banner for a fictional example |
 
 The source never holds its own SHA-256 or its own HTML digest. The HTML digest goes in the
@@ -142,7 +143,8 @@ The source never holds its own SHA-256 or its own HTML digest. The HTML digest g
 | `repository` | Repository URL |
 | `base` | `{"ref", "sha"}`. The previous release baseline. `ref` can be `null` |
 | `candidate` | `{"sha", "url"}`. The full commit ID (40 or 64 lowercase hex characters) of the exact candidate, and a link to it |
-| `tag` | Proposed release tag name |
+| `publishTag` | Optional boolean. Defaults to `true` for existing reports. Set `false` when the approved brief has `release: false` |
+| `tag` | Proposed tag name when publishing, otherwise `null` |
 
 ### `outcome`
 
@@ -329,7 +331,7 @@ link.
 
 | Field | Meaning |
 |---|---|
-| `status` | `not_published` or `published` |
+| `status` | `not_published`, `published` or `not_required` |
 | `tag` | The published tag name |
 | `candidate` | The commit ID that the tag points to |
 | `object` | The annotated tag object ID, 40 or 64 lowercase hex characters |
@@ -340,7 +342,7 @@ link.
 - `published`: `approval.status` is `approved`. `tag` equals `release.tag` and `candidate` equals
   `release.candidate.sha`. `object` and `verifiedAt` are set. `verifiedAt` is not before
   `approval.decidedAt`. `evidence` has a linked item.
-- `sprint.state: closed` needs `published`.
+- `sprint.state: closed` needs `published` when a tag is planned, or exact `approved` close targets when no tag is planned.
 
 ## Readiness rules
 
@@ -449,3 +451,11 @@ names that `report.html` styles. This snippet is only an illustration:
 - Below 40 rem, the tables become labelled records.
 - The renderer's tests prove the mapping and the escaping. They do not prove that the facts of one
   report are true. The documentation review checks that.
+
+## No-tag sprint reports
+
+Full review and HTML publication apply with either tag plan. With `release.publishTag: false`,
+`release.tag` and the approval's tag are `null`, and `tagPublication.status` is `not_required`.
+Its object, verification time, tag and candidate fields remain `null`, and its evidence is empty.
+The page states that no tag is planned. A closed no-tag sprint still requires exact human approval
+of a ready candidate, scope and report. Existing reports without `publishTag` retain tag semantics.

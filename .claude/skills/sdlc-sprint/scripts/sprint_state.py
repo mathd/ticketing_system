@@ -122,10 +122,10 @@ def validate_brief(brief: Any) -> None:
     require(type(brief.get("release")) is bool, "brief release must be true or false")
     closure = brief.get("closureTask")
     require(closure is None or present(closure), "closureTask must be a key or null")
-    require(
-        brief["release"] or closure is None,
-        "a planning-only brief cannot name a closure task",
-    )
+    if "continuation" in brief:
+        require(isinstance(brief["continuation"], str) and brief["continuation"] in {"autonomous", "manual"}, "continuation must be autonomous or manual")
+    if "review" in brief:
+        require(isinstance(brief["review"], str) and brief["review"] in {"full", "none"}, "review must be full or none")
     require(key_list(brief.get("members")), "brief members must be unique keys")
     require(present(brief.get("scopeDigest")), "brief must carry its scope digest")
     require(present(brief.get("approvedBy")), "brief approver required")
@@ -260,7 +260,18 @@ def brief_reasons(
             + (", ".join(counts["removed"]) or "none")
             + ")"
         )
-    if brief["release"] and brief.get("closureTask") not in {
+    if "continuation" not in brief:
+        reasons.append("brief needs an explicit continuation policy approved by the owner")
+    if "review" not in brief:
+        reasons.append("brief needs an explicit review policy approved by the owner")
+    if brief.get("review") == "none":
+        if not present(brief.get("reviewReason")):
+            reasons.append("skipping review needs an owner-approved reason")
+        if brief["release"]:
+            reasons.append("tag publication requires full review")
+        if brief.get("closureTask") is not None:
+            reasons.append("a no-review brief cannot name a closure task")
+    if brief.get("review") == "full" and brief.get("closureTask") not in {
         item["key"] for item in record["members"]
     }:
         reasons.append("closure task is not a member")
@@ -279,6 +290,25 @@ def start_reasons(
         reasons.append("no member")
     if not present(sprint.get("goal")):
         reasons.append("goal required")
+    brief = record.get("brief")
+    if brief and brief.get("continuation") == "autonomous" and any(
+        member["status"] in {"Backlog", "BLOCKED"} for member in record["members"]
+    ):
+        priority = record.get("priorityApproval")
+        if not (
+            isinstance(priority, dict)
+            and hex_text(priority.get("digest"))
+            and priority.get("sprint") == sprint_key
+            and priority.get("briefDigest") == brief["digest"]
+            and priority.get("scopeDigest") == counts["scopeDigest"]
+            and key_list(priority.get("members"))
+            and sorted(priority["members"]) == sorted(brief["members"])
+            and present(priority.get("approvedBy"))
+            and present(priority.get("approvedAt"))
+        ):
+            reasons.append("autonomous continuation needs exact owner priority approval for unready members")
+        elif timestamp(priority["approvedAt"]) > timestamp(record["observedAt"]):
+            reasons.append("observation precedes owner priority approval")
     start, end = sprint.get("startDate"), sprint.get("endDate")
     require(start and end, "startDate and endDate are required to start")
     require(timestamp(end) > timestamp(start), "endDate must follow startDate")
@@ -308,20 +338,78 @@ def release_reasons(
     release = record.get("release")
     if not isinstance(release, dict):
         return ["release evidence missing"]
-    for field, pattern in (
-        ("candidate", COMMIT),
-        ("reportDigest", SHA256),
-        ("tagObject", COMMIT),
-    ):
+    publish_tag = record["brief"]["release"]
+    for field, pattern in (("candidate", COMMIT), ("reportDigest", SHA256)):
         require(hex_text(release.get(field), pattern), f"invalid {field}")
-    require(present(release.get("tag")), "release tag required")
+    if publish_tag:
+        require(hex_text(release.get("tagObject"), COMMIT), "invalid tagObject")
+        require(present(release.get("tag")), "release tag required")
     reasons = []
     if release.get("ready") is not True:
         reasons.append("release is not ready")
+    review = release.get("review")
+    areas = {"implementation", "verification", "documentation", "retrospective"}
+    if not isinstance(review, dict):
+        reasons.append("full sprint review evidence missing")
+    elif not (
+        review.get("decision") == "HUMAN_REVIEW"
+        and hex_text(review.get("packetDigest"))
+        and type(review.get("round")) is int and review["round"] > 0
+        and isinstance(review.get("areas"), dict)
+        and set(review["areas"]) == areas
+        and all(
+            isinstance(area, dict)
+            and area.get("decision") == "HUMAN_REVIEW"
+            and type(area.get("round")) is int
+            and area["round"] == review["round"]
+            and area.get("packetDigest") == review["packetDigest"]
+            and hex_text(area.get("recordDigest"))
+            for area in review["areas"].values()
+        )
+    ):
+        reasons.append("four completed review areas on one packet and round required")
+    if isinstance(review, dict):
+        reviewed = review.get("candidate")
+        correction = review.get("correction")
+        if not hex_text(reviewed, COMMIT):
+            reasons.append("reviewed packet candidate required")
+        elif reviewed != release["candidate"]:
+            if not (
+                isinstance(correction, dict)
+                and correction.get("fromCandidate") == reviewed
+                and correction.get("toCandidate") == release["candidate"]
+                and hex_text(correction.get("diffDigest"))
+                and hex_text(correction.get("recordDigest"))
+                and correction.get("verificationPassed") is True
+                and correction.get("materialChange") is False
+                and correction.get("repeatThresholdFinding") is False
+                and correction.get("gatePassed") is True
+                and correction.get("gateCandidate") == release["candidate"]
+            ):
+                reasons.append("candidate differs from reviewed packet without verified bounded corrections")
+    report = release.get("report")
+    if not (
+        isinstance(report, dict)
+        and report.get("verified") is True
+        and report.get("pointerVerified") is True
+        and hex_text(report.get("commit"), COMMIT)
+        and present(report.get("path"))
+        and present(report.get("sourcePath"))
+        and hex_text(report.get("sourceDigest"))
+        and report.get("htmlDigest") == release["reportDigest"]
+        and report.get("candidate") == release["candidate"]
+        and isinstance(review, dict)
+        and report.get("packetDigest") == review.get("packetDigest")
+    ):
+        reasons.append("verified committed report and current board pointer required")
     if approval is not None:
         for field in ("candidate", "reportDigest", "tag"):
             if approval.get(field) != release[field]:
                 reasons.append(f"close approval names another {field}")
+    if not publish_tag:
+        if any(release.get(field) is not None for field in ("tag", "tagObject", "publication")):
+            reasons.append("no-tag brief cannot claim tag publication")
+        return reasons
     published = release.get("publication")
     if not (isinstance(published, dict) and published.get("verified") is True):
         reasons.append("tag publication is not verified")
@@ -367,8 +455,11 @@ def close_reasons(
         if timestamp(record["observedAt"]) < approved_at:
             reasons.append("observation precedes the close approval")
     brief = record.get("brief")
-    if brief is not None and brief["release"]:
+    if brief is not None and brief.get("review") == "full":
         reasons.extend(release_reasons(record, approval))
+    if brief is not None and brief.get("review") == "none" and isinstance(approval, dict):
+        if any(approval.get(field) is not None for field in ("candidate", "reportDigest", "tag")):
+            reasons.append("no-review approval cannot name candidate, report or tag")
     return reasons
 
 

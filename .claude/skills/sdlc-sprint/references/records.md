@@ -19,6 +19,7 @@ one. It supersedes it.
 | Record | `stage` / `kind` | Posted by |
 |---|---|---|
 | Approved brief, and every amendment | `sprint` / `sprint-brief` | `sdlc-sprint` |
+| Owner priority approval for the exact scope | `sprint` / `sprint-priority` | `sdlc-sprint` |
 | The human's start request | `sprint` / `sprint-start` | `sdlc-sprint` |
 | The human's close approval | `sprint` / `close-approval` | `sdlc-sprint` |
 | Tag attempts, tag result, close result | `sprint` / `release` | `sdlc-sprint` |
@@ -26,6 +27,8 @@ one. It supersedes it.
 | Cross-story retrospective, and the human's selections | `sprint` / `sprint-retro` | `sdlc-sprint-review` |
 | Release packet (candidate and material inputs) | `sprint-review` / `summary` | `sdlc-sprint-review` |
 | One area's review round (both lenses) | `sprint-review` / `review` | `sdlc-sprint-review` |
+| Below-threshold correction verification | `sprint-review` / `correction` | `sdlc-sprint-review` |
+| Later report fact-check receipt | `sprint-review` / `report-check` | `sdlc-sprint-review` |
 | Round blocker | `sprint-review` / `blocker` | `sdlc-sprint-review` |
 | Report publication or replacement | `sprint-review` / `report-artifact` | `sdlc-sprint-review` |
 
@@ -61,15 +64,14 @@ restates the whole brief and names the digest it supersedes. The newest `sprint-
 current brief.
 
 ```json
-{"sprint": "S-3", "release": true, "closureTask": "TKT-512",
+{"sprint": "S-3", "review": "full", "continuation": "autonomous", "release": true, "closureTask": "TKT-512",
  "members": ["TKT-510", "TKT-511", "TKT-512"], "scopeDigest": "<64 hex>",
  "approvedBy": "<name of the human>", "approvedAt": "2026-10-19T08:55:00-04:00",
  "reportLanguage": "en", "supersedes": null}
 ```
 
 `members` is the approved member list, sorted. `scopeDigest` is the digest the human approved. It
-is the `scopeDigest` that the board reported, and that `sprint_state.py progress` matched. With
-`release: false`, `closureTask` is `null`.
+is the `scopeDigest` that the board reported, and that `sprint_state.py progress` matched. `review: "full"` requires a member closure task even with `release: false`. For the explicit `review: "none"` exception, set `closureTask: null`, `release: false` and a nonempty owner-approved `reviewReason`. New briefs always name a review policy and `continuation: "autonomous"|"manual"`. Only an approved autonomous continuation starts final validation automatically.
 
 **`sprint-start`.** The human asked to start the sprint and named it and the digest.
 
@@ -78,8 +80,7 @@ is the `scopeDigest` that the board reported, and that `sprint_state.py progress
  "scopeDigest": "<64 hex>", "requestedBy": "<name>", "requestedAt": "<time>"}
 ```
 
-**`close-approval`.** The human approved the close. With `release: true`, it also names the
-candidate, the report and the tag. With `release: false`, leave those three fields out.
+**`close-approval`.** The human approved the close. With `review: "full"`, it also names the candidate and report. Set `tag: null` when `release: false`; only the tag is omitted from publication. With `review: "none"`, leave all three target fields out.
 
 ```json
 {"sprint": "S-3", "briefDigest": "<64 hex>", "scopeDigest": "<64 hex>", "closeSprint": true,
@@ -135,7 +136,7 @@ a contract input. It is not a tracker and not a source of approvals. Use the exa
 | `brief` | The JSON block of the newest `sprint-brief`, plus `digest` (its reference digest) |
 | `startRequest` | The JSON block of the newest `sprint-start`, plus `digest` |
 | `closeApproval` | The JSON block of the newest `close-approval`, plus `digest` |
-| `release` | With `release: true` only: `ready` (the report says `ready`), `candidate`, `reportDigest`, `tag`, `tagObject`, and `publication` (`verified`, `candidate`, `tag`, `tagObject`) from the `release` record |
+| `release` | With `review: "full"`: `ready` (the report says `ready`), `candidate`, `reportDigest`, `tag`, `tagObject`, and `publication` (`verified`, `candidate`, `tag`, `tagObject`) from the `release` record; omit `publication` and `tagObject` and set `tag: null` for no tag. Also capture `review` and `report` below |
 
 A member is accepted when its status is the done status. There is no per-ticket acceptance field.
 Take the done status from the vault's status list, not from a response.
@@ -173,3 +174,54 @@ What the script checks, and what it does not:
   get `START` or `CLOSE`.
 - A closed sprint returns `STOP` from `close`. After an ambiguous close, read the closed state and
   compare `endScope` with the approved members. Do not close again, and do not start again.
+
+## Full-review closure evidence
+
+The normalized `release` object keeps that legacy name for both tag choices. It contains:
+
+- `candidate`, `reportDigest`, `ready` from the verified report. `reportDigest` is the HTML digest.
+- `review`: `candidate` from the frozen reviewed packet, `packetDigest`, positive integer `round`, combined `decision: "HUMAN_REVIEW"`, and
+  `areas` with exactly `implementation`, `verification`, `documentation`, `retrospective`.
+  Each area has the same `packetDigest`, `round`, `decision: "HUMAN_REVIEW"` and `recordDigest`.
+  Derive these from accepted board records after `review_round.py sprint-round` succeeds. Never
+  infer them from member Done states or from an agent's summary. Keep author/model independence,
+  cap authorization, dispositions and verification in those referenced round records.
+- `report`: take `candidate` and `packetDigest` from `release.candidate.sha` and `report.packetDigest` in the committed JSON, after verifying its `sourceDigest`. Do not fill these from the review record. Then capture `commit`, `path`, `sourcePath`, `htmlDigest`, `sourceDigest`,
+  `verified: true` and `pointerVerified: true`. Set the booleans only after the committed bytes
+  match the render receipt and both board pointers name that artifact. Match candidate, packet
+  and HTML digest to the review and approved target. A temporary HTML file is insufficient.
+
+The report candidate must equal `review.candidate`. The only exception is a permitted correction
+below the repeat threshold, captured as `review.correction`: `fromCandidate`, `toCandidate`,
+`diffDigest`, `recordDigest`, `verificationPassed: true`, `materialChange: false`,
+`repeatThresholdFinding: false`, `gatePassed: true`, and `gateCandidate` equal to the final candidate.
+Read this append-only correction record and fresh final-candidate gate evidence before filling the
+snapshot. Compare the complete intervening diff with the authorized corrections. A material change
+or Critical/High fix needs a fresh full round. The original packet and four area records stay intact.
+A changed final candidate always needs a new owner approval.
+
+The checker validates captured facts, not authenticity. Independently read the referenced records,
+verify their digests and run the round contract before filling the snapshot. The board close API
+does not enforce this review contract. Do not bypass the local check with a direct UI or API close.
+
+The closure checker does not re-evaluate the review cap or author independence. The referenced
+`review_round.py sprint-round` receipt must validate both, including any owner round authorization.
+
+## `sprint-priority`
+
+Post only after the owner explicitly prioritizes the named members. A start request alone is not
+this decision. It can be given in the same prompt. Store `sprint`, `briefDigest`, `scopeDigest`,
+sorted `members`, `approvedBy` and `approvedAt`. Reference the returned body by key and SHA-256.
+The snapshot field `priorityApproval` carries this block plus its `digest`.
+
+An autonomous start with Backlog or BLOCKED members requires this exact approval so later Ready
+transitions do not stop the run. Do not transition them until all DoR questions and blockers pass.
+Every transition still uses the board's normal checks and logs the actual agent actor. The owner
+remains the priority decision-maker. Changed scope or brief needs a new owner approval.
+
+
+## Verification supplements
+
+A `sprint-review` / `correction` is a new append-only comment, not an edit of a review record. Name `sprint`, `packetDigest`, `round` and the existing area record digests. Include the correction fields defined above, except `recordDigest`, which is the digest of this comment's returned body and is added only to the normalized snapshot. This avoids a self-digest. It does not add a review round or authorize a scope change.
+
+A `sprint-review` / `report-check` is a new append-only comment for a later bounded fact check. Name `sprint`, `area: "documentation"`, `packetDigest`, `round`, the documentation record digest, checked source and HTML digests, actual reviewer, result and evidence. The earlier documentation record remains unchanged. Neither supplement enters the four `review` records passed to `sprint-round`; neither replaces a lens or changes the cap count.

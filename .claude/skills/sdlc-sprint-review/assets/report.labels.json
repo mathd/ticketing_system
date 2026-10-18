@@ -115,7 +115,9 @@
       "no": "No",
       "colon": ": ",
       "money": "{currency} {amount}",
-      "decimal_mark": "."
+      "decimal_mark": ".",
+      "no_tag": "No tag planned",
+      "packet_digest": "Review packet SHA-256"
     },
     "enums": {
       "ready": "Ready",
@@ -162,7 +164,8 @@
       "not_published": "Not published",
       "published": "Published",
       "active": "Active",
-      "closed": "Closed"
+      "closed": "Closed",
+      "not_required": "No tag planned"
     }
   },
   "fr": {
@@ -281,7 +284,9 @@
       "no": "Non",
       "colon": " : ",
       "money": "{amount} {currency}",
-      "decimal_mark": ","
+      "decimal_mark": ",",
+      "no_tag": "Aucun tag prévu",
+      "packet_digest": "SHA-256 du dossier de revue"
     },
     "enums": {
       "ready": "Prête",
@@ -328,7 +333,8 @@
       "not_published": "Non publiée",
       "published": "Publiée",
       "active": "Actif",
-      "closed": "Fermé"
+      "closed": "Fermé",
+      "not_required": "Aucun tag prévu"
     }
   }
 }
