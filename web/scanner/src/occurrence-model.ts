@@ -173,7 +173,9 @@ export function readCurrentRecord(raw: unknown): RecordRead {
 
   if (outcome.family === 'terminal') {
     if (state !== 'RESOLVED') return fail('a terminal outcome needs RESOLVED')
-    if (type !== 'normal') return fail('a refusal has no terminal outcome in this format')
+    if (type === 'refusal' && !(outcome.cause === 'cancelled' && outcome.requestMayHaveBeenSent === false)) {
+      return fail('a refusal permits only pre-send terminal cancellation')
+    }
     if (hasResult) return fail('a terminal row has no reconcile result')
     const problem = terminalOutcomeProblem(outcome)
     return problem ? fail(problem) : { ok: true, record: raw as CurrentRecord }

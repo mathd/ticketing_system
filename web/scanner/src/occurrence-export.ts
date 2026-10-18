@@ -72,6 +72,8 @@ export class UnsupportedExportValue extends Error {
 }
 
 const own = (value: object, key: string) => Object.prototype.hasOwnProperty.call(value, key)
+const setOwn = <T>(record: Record<string, T>, key: string, value: T) =>
+  Object.defineProperty(record, key, { value, enumerable: true, writable: true, configurable: true })
 
 function encodeValue(value: unknown, path: string): JsonValue {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
@@ -94,7 +96,7 @@ function encodeValue(value: unknown, path: string): JsonValue {
     for (const key of Object.keys(value).sort()) {
       const field = (value as Record<string, unknown>)[key]
       if (field === undefined) throw new UnsupportedExportValue(`${path}.${key}`)
-      encoded[key] = encodeValue(field, `${path}.${key}`)
+      setOwn(encoded, key, encodeValue(field, `${path}.${key}`))
     }
     return encoded
   }
@@ -107,9 +109,9 @@ export function encodeFields(raw: unknown): Record<string, FieldPresence> {
   const record = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : undefined
   const names = new Set<string>([...KNOWN_FIELDS, ...(record ? Object.keys(record) : [])])
   for (const name of [...names].sort()) {
-    if (!record || !own(record, name)) fields[name] = { presence: 'absent' }
-    else if (record[name] === undefined) fields[name] = { presence: 'undefined' }
-    else fields[name] = { presence: 'value', value: encodeValue(record[name], name) }
+    if (!record || !own(record, name)) setOwn(fields, name, { presence: 'absent' })
+    else if (record[name] === undefined) setOwn(fields, name, { presence: 'undefined' })
+    else setOwn(fields, name, { presence: 'value', value: encodeValue(record[name], name) })
   }
   return fields
 }

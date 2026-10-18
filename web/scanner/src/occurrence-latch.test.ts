@@ -4,8 +4,8 @@ import type { FinalDecision, ProposedDecision } from './occurrence-coordinator'
 import type { QueueOutcome, TerminalOutcome } from './occurrence-model'
 import { STORE } from './occurrence-store'
 import { instrumentTransactions, type Hold, type Instrument } from './test/idb-instrument'
-import { bounded, captured, createTestPage, destroyAllPages, eventually, type TestPage } from './test/page-fixture'
-import { rawGet } from './test/raw-db'
+import { bounded, captured, createTestPage, destroyAllPages, eventually, mintOn, type TestPage } from './test/page-fixture'
+import { rawGet, rawPut } from './test/raw-db'
 
 // I3-10, ST half (TKT-558 D26 as corrected by D28). The first final decision for
 // an occurrence stays fixed for the page. Each case latches a write target, then
@@ -141,7 +141,7 @@ async function latchedWrite(family: Family, mode: WriteMode): Promise<Setup> {
   }
   const proposed = proposal(family, scan.occurrenceId)
   const latch = a.coordinator.latch(proposed)
-  expect(latch).toBe(proposed)
+  expect(latch).toEqual(proposed)
   let hold: Hold | undefined
   if (mode === 'held') hold = instrument.hold(OCC_RW_STRICT)
   else instrument.inject(mode, OCC_RW_STRICT)
@@ -278,8 +278,10 @@ describe('committed ACT controls', () => {
     const setup: Setup = { a, scan, latch, persisting: Promise.resolve() }
     if (producer === 'exception') {
       // A separately failing storage operation is diagnostic only.
+      await rawPut(dbName, STORE.recoveryNotices, { occurrenceId: 'diagnostic', acknowledged: false })
       instrument!.inject('abort', { stores: [STORE.recoveryNotices], mode: 'readwrite' })
-      await expect(a.store().acknowledgeNotice('none')).resolves.toBe('missing')
+      await expect(a.store().acknowledgeNotice('diagnostic')).rejects.toThrow()
+      expect(instrument!.calls.some((call) => call.storeNames.includes(STORE.recoveryNotices) && call.events.includes('abort'))).toBe(true)
     }
     const { deleted } = await produce(setup, producer)
     expect(a.coordinator.latched(scan.occurrenceId)).toBe(latch)
@@ -305,7 +307,7 @@ describe('in-flight mark under a cancellation latch (I3-10-CS)', () => {
     const call = await bounded(hold.started, 'mark held')
     await eventually(() => call.events.includes('write-success'), 'mark request success')
     const cancellation = laterCancellation(scan.occurrenceId)
-    expect(a.coordinator.latch(cancellation)).toBe(cancellation)
+    expect(a.coordinator.latch(cancellation)).toEqual(cancellation)
     return { a, scan, hold, marking, cancellation }
   }
 
@@ -353,14 +355,22 @@ describe('closing connection and deferred targets', () => {
     const scan = captured()
     a.coordinator.register(scan)
     await old.mintNormal(scan.occurrenceId)
-    forceClose(old.db)
-    await a.waitFor('failed')
+    const latch = a.coordinator.latch(proposal('O02', scan.occurrenceId))
+    // Explicit close rejects new transactions without emitting a close event.
+    // The store still passes its ready-mode guard, so this reaches IDB itself.
+    old.db.close()
+    const errors: unknown[] = []
+    const original = old.db.transaction.bind(old.db)
+    old.db.transaction = (...args: Parameters<IDBDatabase['transaction']>) => {
+      try { return original(...args) } catch (error) { errors.push(error); throw error }
+    }
+    expect((await a.coordinator.persist(scan.occurrenceId, old)).durable).toBe('failed')
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toMatchObject({ name: 'InvalidStateError' })
+    expect(a.storage.state()).toMatchObject({ status: 'ready' })
+    a.storage.stop()
     a.storage.retry()
     await a.waitFor('ready')
-    const latch = a.coordinator.latch(proposal('O02', scan.occurrenceId))
-    // The old store's connection is closed: transaction creation throws InvalidStateError.
-    expect((await a.coordinator.persist(scan.occurrenceId, old)).durable).toBe('failed')
-    expect(a.storage.state()).toMatchObject({ status: 'ready' })
     await a.coordinator.repairAll()
     expect(await rawGet(dbName, STORE.occurrences, scan.occurrenceId)).toStrictEqual(expectedRow(scan, latch as ProposedDecision))
   })
@@ -371,10 +381,23 @@ describe('closing connection and deferred targets', () => {
     const scan = captured()
     a.coordinator.register(scan)
     await a.store().mintNormal(scan.occurrenceId)
+    const control = await mintOn(a)
+    instrument = instrumentTransactions()
+    const hold = instrument.hold(OCC_RW_STRICT)
+    const controlLatch = a.coordinator.latch(proposal('O02', control.scan.occurrenceId))
+    const persisting = a.coordinator.persist(control.scan.occurrenceId)
+    const held = await bounded(hold.started, 'draining control')
+    await eventually(() => held.events.includes('write-success'), 'control write success')
     const changing = versionChangeThenAbortUpgrade()
+    await a.waitFor('draining')
+    const latch = a.coordinator.latch(proposal('denial-unknown', scan.occurrenceId))
+    expect(a.storage.readyStore()).toBeNull()
+    instrument.inject('abort', OCC_RW_STRICT)
+    hold.release()
+    await bounded(persisting, 'control persist')
     await a.waitFor('closed')
     await changing
-    const latch = a.coordinator.latch(proposal('denial-unknown', scan.occurrenceId))
+    expect(await rawGet(dbName, STORE.occurrences, control.scan.occurrenceId)).toStrictEqual(expectedRow(control.scan, controlLatch as ProposedDecision))
     expect((await a.coordinator.persist(scan.occurrenceId)).durable).toBe('deferred')
     expect(a.coordinator.captureDenialReason(scan.occurrenceId, 'refunded')).toBe(true)
     expect(a.coordinator.view(scan.occurrenceId)?.enrichment).toBe('pending')

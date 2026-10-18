@@ -14,18 +14,18 @@ import { createBrowserOwnerLock, type OwnerLock } from './occurrence-lock'
 import type { QueueOutcome, ScanType, TerminalOutcome } from './occurrence-model'
 import { createOccurrenceOwner, type OccurrenceOwner } from './occurrence-owner'
 
-export type CapturedOccurrence = {
+export type CapturedOccurrence = Readonly<{
   occurrenceId: string
   qrPayload: string
   occurredAt: string
   createdAt: string
   type: ScanType
-}
+}>
 
-export type QueueDecision = { kind: 'queue'; occurrenceId: string; outcome: QueueOutcome; decidedAt: string }
-export type TerminalDecision = { kind: 'terminal'; occurrenceId: string; outcome: TerminalOutcome; decidedAt: string }
+export type QueueDecision = Readonly<{ kind: 'queue'; occurrenceId: string; outcome: Readonly<QueueOutcome>; decidedAt: string }>
+export type TerminalDecision = Readonly<{ kind: 'terminal'; occurrenceId: string; outcome: Readonly<TerminalOutcome>; decidedAt: string }>
 /** A committed own-row actuation reservation. Only the coordinator makes this decision. */
-export type ActuationDecision = { kind: 'actuation'; occurrenceId: string; decidedAt: string }
+export type ActuationDecision = Readonly<{ kind: 'actuation'; occurrenceId: string; decidedAt: string }>
 export type FinalDecision = QueueDecision | TerminalDecision | ActuationDecision
 export type ProposedDecision = QueueDecision | TerminalDecision
 
@@ -143,6 +143,9 @@ export type PageCoordinatorOptions = {
 
 export function createPageCoordinator({ owner, lock }: PageCoordinatorOptions): PageCoordinator {
   const entries = new Map<string, Entry>()
+  // Confirmed failed mints release their captured credentials. Keep only the id
+  // and any immutable decision so later callbacks cannot start another attempt.
+  const abortedMints = new Map<string, FinalDecision | undefined>()
   // Ids whose final write or enrichment has not settled. Settled entries leave
   // this set; their latch stays in `entries` for the life of the page.
   const targets = new Set<string>()
@@ -226,6 +229,7 @@ export function createPageCoordinator({ owner, lock }: PageCoordinatorOptions): 
   }
 
   const persist = (occurrenceId: string, using?: DecisionWriter): Promise<PersistReport> => {
+    if (abortedMints.has(occurrenceId)) return Promise.resolve({ occurrenceId, durable: 'no_row', enrichment: 'none' })
     const entry = entryFor(occurrenceId)
     if (!entry.final) return Promise.resolve(report(entry))
     // At most one attempt per occurrence. A second request joins it.
@@ -264,11 +268,11 @@ export function createPageCoordinator({ owner, lock }: PageCoordinatorOptions): 
     lockHeld: () => held,
 
     register(captured) {
-      if (entries.has(captured.occurrenceId)) throw new Error(`occurrence ${captured.occurrenceId} is already registered`)
+      if (entries.has(captured.occurrenceId) || abortedMints.has(captured.occurrenceId)) throw new Error(`occurrence ${captured.occurrenceId} is already registered`)
       let settleMint!: () => void
       const mintSettled = new Promise<void>((resolve) => { settleMint = resolve })
       entries.set(captured.occurrenceId, {
-        captured: { ...captured },
+        captured: Object.freeze({ ...captured }),
         mint: 'unstarted',
         mintSettled,
         settleMint,
@@ -292,6 +296,11 @@ export function createPageCoordinator({ owner, lock }: PageCoordinatorOptions): 
         if (entry.mint !== 'pending') return
         entry.mint = evidence
         entry.settleMint()
+        if (evidence === 'aborted') {
+          abortedMints.set(occurrenceId, entry.final)
+          entries.delete(occurrenceId)
+          targets.delete(occurrenceId)
+        }
       }
       return { committed: () => settle('committed'), aborted: () => settle('aborted') }
     },
@@ -320,7 +329,7 @@ export function createPageCoordinator({ owner, lock }: PageCoordinatorOptions): 
         entry.mark = evidence
         if (evidence === 'reserved') {
           if (!entry.final) {
-            entry.final = { kind: 'actuation', occurrenceId, decidedAt }
+            entry.final = Object.freeze({ kind: 'actuation', occurrenceId, decidedAt })
             entry.durable = 'committed'
           } else if (entry.final.kind !== 'actuation') {
             entry.durable = 'settled_as_actuation'
@@ -337,14 +346,20 @@ export function createPageCoordinator({ owner, lock }: PageCoordinatorOptions): 
     },
 
     latch(proposal) {
+      const canonical = () => Object.freeze({ ...proposal, outcome: Object.freeze({ ...proposal.outcome }) }) as ProposedDecision
+      if (abortedMints.has(proposal.occurrenceId)) {
+        const final = abortedMints.get(proposal.occurrenceId) ?? canonical()
+        abortedMints.set(proposal.occurrenceId, final)
+        return final
+      }
       const entry = entryFor(proposal.occurrenceId)
       if (entry.final) return entry.final
-      entry.final = proposal
+      entry.final = canonical()
       targets.add(proposal.occurrenceId)
-      return proposal
+      return entry.final
     },
 
-    latched: (occurrenceId) => entries.get(occurrenceId)?.final,
+    latched: (occurrenceId) => entries.get(occurrenceId)?.final ?? abortedMints.get(occurrenceId),
 
     captureDenialReason(occurrenceId, reason) {
       const entry = entryFor(occurrenceId)

@@ -1,5 +1,5 @@
 import { forceCloseDatabase } from 'fake-indexeddb'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { FinalDecision, ProposedDecision } from './occurrence-coordinator'
 import { STORE, StorageWriteError } from './occurrence-store'
 import { instrumentTransactions, type Instrument } from './test/idb-instrument'
@@ -22,6 +22,7 @@ afterEach(() => {
   instrument?.restore()
   instrument = undefined
   destroyAllPages()
+  vi.restoreAllMocks()
 })
 
 const page = (ownerId = 'owner-a', extra: { recoverOwnerId?: string } = {}) =>
@@ -111,7 +112,7 @@ describe('mint', () => {
     const scan = captured()
     a.coordinator.register(scan)
     await expect(a.store().mintNormal(scan.occurrenceId)).rejects.toBeInstanceOf(StorageWriteError)
-    expect(a.coordinator.view(scan.occurrenceId)?.mint).toBe('aborted')
+    expect(a.coordinator.view(scan.occurrenceId)).toBeUndefined()
     expect(await rawGet(dbName, STORE.occurrences, scan.occurrenceId)).toBeUndefined()
   })
 })
@@ -412,10 +413,23 @@ describe('reconcile retirement', () => {
     const ids = await queued(a, 3)
     const before = await Promise.all(ids.map((id) => rawGet(dbName, STORE.occurrences, id)))
     instrument = instrumentTransactions()
-    instrument.inject('abort', { stores: [STORE.occurrences, STORE.legacyClasses], mode: 'readwrite' })
+    const originalPut = IDBObjectStore.prototype.put
+    const successfulWrites: string[] = []
+    vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, value, key) {
+      const request = originalPut.call(this, value, key)
+      if (this.name === STORE.occurrences && value.state === 'SYNCED') {
+        request.addEventListener('success', () => {
+          successfulWrites.push(value.occurrenceId)
+          if (value.occurrenceId === ids[1]) this.transaction.abort()
+        })
+      }
+      return request
+    })
     const results = ids.map((id) => ({ occurrence_id: id, result: 'recorded' }))
     await expect(a.store().applyReconcileResults(ids, results)).rejects.toBeInstanceOf(StorageWriteError)
+    expect(successfulWrites).toEqual(ids.slice(0, 2))
     expect(await Promise.all(ids.map((id) => rawGet(dbName, STORE.occurrences, id)))).toStrictEqual(before)
+    vi.restoreAllMocks()
     expect(await a.store().applyReconcileResults(ids, results)).toEqual({ status: 'applied', retired: 3, alreadyApplied: 0 })
   })
 })

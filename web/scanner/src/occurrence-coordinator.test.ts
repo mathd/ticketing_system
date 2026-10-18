@@ -58,10 +58,11 @@ describe('latch', () => {
     const page = coordinator()
     const scan = minted(page)
     const first = queue(scan.occurrenceId)
-    expect(page.latch(first)).toBe(first)
-    expect(page.latch(cancel(scan.occurrenceId))).toBe(first)
-    expect(page.latch(queue(scan.occurrenceId, '2026-10-18T09:00:09.000Z'))).toBe(first)
-    expect(page.latched(scan.occurrenceId)).toBe(first)
+    const canonical = page.latch(first)
+    expect(canonical).toEqual(first)
+    expect(page.latch(cancel(scan.occurrenceId))).toBe(canonical)
+    expect(page.latch(queue(scan.occurrenceId, '2026-10-18T09:00:09.000Z'))).toBe(canonical)
+    expect(page.latched(scan.occurrenceId)).toBe(canonical)
   })
 
   it('makes no storage call on the way to a queue latch (TKT-558 D24, store half)', () => {
@@ -83,7 +84,7 @@ describe('latch', () => {
       })
     }
     const decision = queue(scan.occurrenceId)
-    expect(page.latch(decision)).toBe(decision)
+    expect(page.latch(decision)).toEqual(decision)
     calls.push('latched')
     expect(calls).toEqual(['latched'])
   })

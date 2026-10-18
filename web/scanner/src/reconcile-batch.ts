@@ -29,19 +29,25 @@ export type ReconcilePlan = { batches: ReconcileBatch[]; unsendable: UnsendableR
 const own = (value: object, key: string) => Object.prototype.hasOwnProperty.call(value, key)
 
 /** True when JSON carries the value exactly: plain data of strings, finite numbers, booleans and null. */
-function jsonExact(value: unknown): boolean {
+function jsonExact(value: unknown, ancestors = new Set<object>()): boolean {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return true
   if (typeof value === 'number') return Number.isFinite(value) && !Object.is(value, -0)
-  if (Array.isArray(value)) {
-    for (let index = 0; index < value.length; index += 1) {
-      if (!own(value, String(index)) || !jsonExact(value[index])) return false
-    }
-    return true
-  }
   if (typeof value === 'object') {
-    const prototype = Object.getPrototypeOf(value)
-    if (prototype !== Object.prototype && prototype !== null) return false
-    return Object.values(value as Record<string, unknown>).every((field) => field !== undefined && jsonExact(field))
+    if (ancestors.has(value)) return false
+    ancestors.add(value)
+    try {
+      if (Array.isArray(value)) {
+        for (let index = 0; index < value.length; index += 1) {
+          if (!own(value, String(index)) || !jsonExact(value[index], ancestors)) return false
+        }
+        return true
+      }
+      const prototype = Object.getPrototypeOf(value)
+      if (prototype !== Object.prototype && prototype !== null) return false
+      return Object.values(value as Record<string, unknown>).every((field) => field !== undefined && jsonExact(field, ancestors))
+    } finally {
+      ancestors.delete(value)
+    }
   }
   return false
 }
