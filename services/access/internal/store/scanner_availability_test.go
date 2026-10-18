@@ -101,14 +101,20 @@ func (t *fakeStepTimer) isStopped() bool {
 	return t.stopped
 }
 
-func requireUnavailable(t *testing.T, err error, site AvailabilitySite, class AvailabilityClass) *PreDecisionUnavailable {
+func requireUnavailable(t *testing.T, err error, site AvailabilitySite, class AvailabilityClass) {
+	t.Helper()
+	avail := unavailableOf(t, err)
+	if avail.Site != site || avail.Class != class {
+		t.Fatalf("unavailable = %s/%s, want %s/%s (cause %v)", avail.Site, avail.Class, site, class, avail.Cause)
+	}
+}
+
+// unavailableOf returns the named type inside err, or fails the test.
+func unavailableOf(t *testing.T, err error) *PreDecisionUnavailable {
 	t.Helper()
 	var avail *PreDecisionUnavailable
 	if !errors.As(err, &avail) {
-		t.Fatalf("error = %v (%T), want *PreDecisionUnavailable %s/%s", err, err, site, class)
-	}
-	if avail.Site != site || avail.Class != class {
-		t.Fatalf("unavailable = %s/%s, want %s/%s (cause %v)", avail.Site, avail.Class, site, class, avail.Cause)
+		t.Fatalf("error = %v (%T), want *PreDecisionUnavailable", err, err)
 	}
 	return avail
 }
@@ -139,8 +145,8 @@ func TestStepCallbackBeforeFinishSelectsExpiry(t *testing.T) {
 		t.Fatal("outcome.expired = false after the callback ran inside the phase")
 	}
 	err := outcome.unavailable(SiteDeviceLookup, context.Canceled)
-	avail := requireUnavailable(t, err, SiteDeviceLookup, ClassStepExpired)
-	if !errors.Is(avail, context.Canceled) {
+	requireUnavailable(t, err, SiteDeviceLookup, ClassStepExpired)
+	if avail := unavailableOf(t, err); !errors.Is(avail, context.Canceled) {
 		t.Fatalf("cause = %v, want the original driver error kept", avail.Cause)
 	}
 }
@@ -643,13 +649,12 @@ type fakeConnector struct {
 }
 
 type fakeLog struct {
-	mu         sync.Mutex
-	queries    []string
-	begins     int
-	rollbacks  int
-	commits    int
-	beginCtx   context.Context
-	lastClosed bool
+	mu        sync.Mutex
+	queries   []string
+	begins    int
+	rollbacks int
+	commits   int
+	beginCtx  context.Context
 }
 
 func (l *fakeLog) add(q string) {
@@ -764,8 +769,8 @@ func TestDeviceLookupLateUnsupportedErrorIsExpiry(t *testing.T) {
 		return errUnsupportedLeaf
 	}})
 	_, err := st.AuthenticateScannerDevice(context.Background(), "device-token")
-	avail := requireUnavailable(t, err, SiteDeviceLookup, ClassStepExpired)
-	if !errors.Is(avail, errUnsupportedLeaf) {
+	requireUnavailable(t, err, SiteDeviceLookup, ClassStepExpired)
+	if avail := unavailableOf(t, err); !errors.Is(avail, errUnsupportedLeaf) {
 		t.Fatalf("cause = %v, want the original error kept for logs", avail.Cause)
 	}
 }

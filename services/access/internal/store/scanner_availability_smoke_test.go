@@ -95,7 +95,7 @@ func (h *scannerHarness) armAt(site AvailabilitySite, fault testdb.Fault) {
 }
 
 // faultAt runs one cold fault at one site under an independent outer bound.
-func (h *scannerHarness) faultAt(t *testing.T, site AvailabilitySite, fault testdb.Fault) (error, time.Duration) {
+func (h *scannerHarness) faultAt(t *testing.T, site AvailabilitySite, fault testdb.Fault) (time.Duration, error) {
 	t.Helper()
 	h.armAt(site, fault)
 	defer h.f.Disarm()
@@ -103,7 +103,7 @@ func (h *scannerHarness) faultAt(t *testing.T, site AvailabilitySite, fault test
 	defer cancel()
 	start := time.Now()
 	err := h.call(ctx, site)
-	return err, time.Since(start)
+	return time.Since(start), err
 }
 
 // requireNoDecision proves nothing past the site ran: for an acquisition the
@@ -132,7 +132,9 @@ func (h *scannerHarness) requireNoDecision(t *testing.T, ctx context.Context, si
 	}
 }
 
-func requireClass(t *testing.T, err error, site AvailabilitySite, class AvailabilityClass) *PreDecisionUnavailable {
+// requireClass fails unless err carries the named type with this site and
+// class.
+func requireClass(t *testing.T, err error, site AvailabilitySite, class AvailabilityClass) {
 	t.Helper()
 	var avail *PreDecisionUnavailable
 	if !errors.As(err, &avail) {
@@ -141,7 +143,6 @@ func requireClass(t *testing.T, err error, site AvailabilitySite, class Availabi
 	if avail.Site != site || avail.Class != class {
 		t.Fatalf("%s: got %s/%s, want %s/%s:\n%s", site, avail.Site, avail.Class, site, class, testdb.ErrorTree(err))
 	}
-	return avail
 }
 
 func requireNoClass(t *testing.T, err error, site AvailabilitySite) {
@@ -155,13 +156,19 @@ func requireNoClass(t *testing.T, err error, site AvailabilitySite) {
 	}
 }
 
-func requireConnectCause(t *testing.T, err error) *pgconn.ConnectError {
+// connectCauseOf returns the real ConnectError inside err, or fails.
+func connectCauseOf(t *testing.T, err error) *pgconn.ConnectError {
 	t.Helper()
 	var ce *pgconn.ConnectError
 	if !errors.As(err, &ce) {
 		t.Fatalf("no real ConnectError in the cause:\n%s", testdb.ErrorTree(err))
 	}
 	return ce
+}
+
+func requireConnectCause(t *testing.T, err error) {
+	t.Helper()
+	_ = connectCauseOf(t, err)
 }
 
 var everySite = []AvailabilitySite{SiteDeviceLookup, SitePolicyRead, SiteSingleBegin, SitePassBegin}
@@ -179,9 +186,10 @@ func TestRealConnectLookupDNSAtEverySite(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			h := newScannerHarness(t, ctx, testdb.Options{})
-			err, elapsed := h.faultAt(t, site, testdb.FaultDNSLookup)
-			avail := requireClass(t, err, site, ClassConnectDNS)
-			ce := requireConnectCause(t, avail)
+			elapsed, err := h.faultAt(t, site, testdb.FaultDNSLookup)
+			requireClass(t, err, site, ClassConnectDNS)
+			avail := err
+			ce := connectCauseOf(t, avail)
 			tree := testdb.ErrorTree(ce)
 			if strings.Contains(tree, "perDialConnectError") {
 				t.Fatalf("lookup form carries a per-attempt wrapper:\n%s", tree)
@@ -212,9 +220,10 @@ func TestRealConnectAttemptDNSAtEverySite(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			h := newScannerHarness(t, ctx, testdb.Options{})
-			err, elapsed := h.faultAt(t, site, testdb.FaultDNSAttempt)
-			avail := requireClass(t, err, site, ClassConnectDNS)
-			tree := testdb.ErrorTree(requireConnectCause(t, avail))
+			elapsed, err := h.faultAt(t, site, testdb.FaultDNSAttempt)
+			requireClass(t, err, site, ClassConnectDNS)
+			avail := err
+			tree := testdb.ErrorTree(connectCauseOf(t, avail))
 			var op *net.OpError
 			var dns *net.DNSError
 			if !strings.Contains(tree, "perDialConnectError") || !errors.As(avail, &op) || !errors.As(avail, &dns) {
@@ -232,8 +241,9 @@ func TestRealConnectRefusedAtEverySite(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			h := newScannerHarness(t, ctx, testdb.Options{})
-			err, elapsed := h.faultAt(t, site, testdb.FaultRefused)
-			avail := requireClass(t, err, site, ClassConnectRefused)
+			elapsed, err := h.faultAt(t, site, testdb.FaultRefused)
+			requireClass(t, err, site, ClassConnectRefused)
+			avail := err
 			requireConnectCause(t, avail)
 			if !errors.Is(avail, syscall.ECONNREFUSED) {
 				t.Fatalf("the syscall cause was not kept:\n%s", testdb.ErrorTree(avail))
@@ -254,8 +264,9 @@ func TestRealRecoveryStartupAtEverySite(t *testing.T) {
 			defer cancel()
 			h := newScannerHarness(t, ctx, testdb.Options{})
 			testdb.RequireRecoveryRejects(t, ctx)
-			err, elapsed := h.faultAt(t, site, testdb.FaultRecovery)
-			avail := requireClass(t, err, site, ClassConnectStartup)
+			elapsed, err := h.faultAt(t, site, testdb.FaultRecovery)
+			requireClass(t, err, site, ClassConnectStartup)
+			avail := err
 			requireConnectCause(t, avail)
 			var pgErr *pgconn.PgError
 			if !errors.As(avail, &pgErr) || pgErr.Code != "57P03" {
@@ -283,7 +294,7 @@ func TestRealRecoveryThroughLocalhostIsOneSupportedSet(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			err, _ = h.faultAt(t, site, testdb.FaultRecoveryLocalhost)
+			_, err = h.faultAt(t, site, testdb.FaultRecoveryLocalhost)
 			var pgErr *pgconn.PgError
 			if !errors.As(err, &pgErr) || pgErr.Code != "57P03" {
 				t.Fatalf("no real 57P03 attempt:\n%s", testdb.ErrorTree(err))
@@ -314,8 +325,9 @@ func TestRealMixedConnectLeavesUnderOneConnectError(t *testing.T) {
 			h := newScannerHarness(t, ctx, testdb.Options{})
 			testdb.RequireRecoveryRejects(t, ctx)
 
-			err, _ := h.faultAt(t, site, testdb.FaultMixedSupported)
-			avail := requireClass(t, err, site, ClassConnectMixed)
+			_, err := h.faultAt(t, site, testdb.FaultMixedSupported)
+			requireClass(t, err, site, ClassConnectMixed)
+			avail := err
 			var pgErr *pgconn.PgError
 			var dns *net.DNSError
 			if !errors.As(avail, &pgErr) || pgErr.Code != "57P03" || !errors.As(avail, &dns) || !errors.Is(avail, syscall.ECONNREFUSED) {
@@ -323,7 +335,7 @@ func TestRealMixedConnectLeavesUnderOneConnectError(t *testing.T) {
 			}
 
 			for _, fault := range []testdb.Fault{testdb.FaultMixedUnsupported, testdb.FaultMixedUnsupportedFirst} {
-				err, elapsed := h.faultAt(t, site, fault)
+				elapsed, err := h.faultAt(t, site, fault)
 				requireNoClass(t, err, site)
 				requireConnectCause(t, err)
 				if !errors.As(err, &pgErr) || pgErr.Code != "57P03" || !errors.As(err, &dns) {
@@ -347,8 +359,9 @@ func TestRealRoleLimitAtEverySite(t *testing.T) {
 			defer cancel()
 			h := newScannerHarness(t, ctx, testdb.Options{})
 			h.f.LimitedRole(ctx)
-			err, elapsed := h.faultAt(t, site, testdb.FaultRoleLimit)
-			avail := requireClass(t, err, site, ClassConnectTooMany)
+			elapsed, err := h.faultAt(t, site, testdb.FaultRoleLimit)
+			requireClass(t, err, site, ClassConnectTooMany)
+			avail := err
 			requireConnectCause(t, avail)
 			var pgErr *pgconn.PgError
 			if !errors.As(avail, &pgErr) || pgErr.Code != "53300" {
@@ -370,7 +383,7 @@ func TestRealBlockedDialExpiresAtEverySite(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			h := newScannerHarness(t, ctx, testdb.Options{})
-			err, elapsed := h.faultAt(t, site, testdb.FaultBlockedDial)
+			elapsed, err := h.faultAt(t, site, testdb.FaultBlockedDial)
 			requireClass(t, err, site, ClassStepExpired)
 			if h.f.BlockedDials() < 1 {
 				t.Fatal("the blocked listener's dial function was never entered")
@@ -392,7 +405,7 @@ func TestIndependentDialTimeoutIsUnsupported(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			h := newScannerHarness(t, ctx, testdb.Options{})
-			err, elapsed := h.faultAt(t, site, testdb.FaultDialTimeout)
+			elapsed, err := h.faultAt(t, site, testdb.FaultDialTimeout)
 			requireNoClass(t, err, site)
 			if elapsed >= preDecisionStepBound {
 				t.Fatalf("the dial timeout took %s: the step timer fired first, so this control proves nothing", elapsed)
@@ -440,7 +453,8 @@ func TestRealBackendTerminationAtEverySite(t *testing.T) {
 			if len(killed) != 1 {
 				t.Fatalf("terminated %d backends, want exactly the one pooled connection", len(killed))
 			}
-			avail := requireClass(t, err, site, ClassBackendTerminated)
+			requireClass(t, err, site, ClassBackendTerminated)
+			avail := err
 			var pgErr *pgconn.PgError
 			if !errors.As(avail, &pgErr) || pgErr.Code != "57P01" {
 				t.Fatalf("no real SQLSTATE 57P01:\n%s", testdb.ErrorTree(avail))
@@ -466,7 +480,8 @@ func TestRealFINCutAtReadSites(t *testing.T) {
 			err := h.call(opCtx, site)
 			elapsed := time.Since(start)
 			requireFired(t, fired)
-			avail := requireClass(t, err, site, ClassUnexpectedEOF)
+			requireClass(t, err, site, ClassUnexpectedEOF)
+			avail := err
 			if !errors.Is(avail, io.ErrUnexpectedEOF) {
 				t.Fatalf("cause lost:\n%s", testdb.ErrorTree(avail))
 			}
@@ -490,7 +505,8 @@ func TestRealRSTCutAtReadSites(t *testing.T) {
 			err := h.call(opCtx, site)
 			elapsed := time.Since(start)
 			requireFired(t, fired)
-			avail := requireClass(t, err, site, ClassConnReset)
+			requireClass(t, err, site, ClassConnReset)
+			avail := err
 			if !errors.Is(avail, syscall.ECONNRESET) {
 				t.Fatalf("cause lost:\n%s", testdb.ErrorTree(avail))
 			}
@@ -518,7 +534,8 @@ func TestRealBeginSocketCutAtBeginSites(t *testing.T) {
 				t.Fatal("the policy barrier never ran")
 			}
 			requireFired(t, fired)
-			avail := requireClass(t, err, site, ClassConnClosed)
+			requireClass(t, err, site, ClassConnClosed)
+			avail := err
 			if !errors.Is(avail, pgconn.ErrConnClosed) {
 				t.Fatalf("cause lost:\n%s", testdb.ErrorTree(avail))
 			}
@@ -915,12 +932,13 @@ func TestDeviceLookupAvailabilityIsTheNamedApplicationType(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	h := newScannerHarness(t, ctx, testdb.Options{})
-	err, _ := h.faultAt(t, SiteDeviceLookup, testdb.FaultRefused)
-	avail := requireClass(t, err, SiteDeviceLookup, ClassConnectRefused)
+	_, err := h.faultAt(t, SiteDeviceLookup, testdb.FaultRefused)
+	requireClass(t, err, SiteDeviceLookup, ClassConnectRefused)
 	if errors.Is(err, ErrScannerDeviceUnknown) {
 		t.Fatal("availability also reads as the unknown-device refusal")
 	}
-	if avail.Cause == nil {
+	var avail *PreDecisionUnavailable
+	if !errors.As(err, &avail) || avail.Cause == nil {
 		t.Fatal("the original cause was not kept")
 	}
 }

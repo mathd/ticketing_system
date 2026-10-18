@@ -535,7 +535,8 @@ type scannerIdentity struct {
 type scannerLookupResult int
 
 const (
-	lookupNotFailed scannerLookupResult = iota
+	// The zero value: no lookup failure was recorded.
+	_ scannerLookupResult = iota
 	// lookupUnavailable: the store returned its named pre-decision type. 503.
 	lookupUnavailable
 	// lookupFailed: any other lookup error except the unknown-device refusal. 500.
