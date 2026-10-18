@@ -172,6 +172,7 @@ async function queueOneScan(value = 'offline-ticket') {
   fireEvent.change(screen.getByLabelText('Ticket credential'), { target: { value } })
   fireEvent.click(screen.getByRole('button', { name: 'Check ticket' }))
   await screen.findByRole('heading', { name: 'Queued offline' })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Check ticket' }).hasAttribute('disabled')).toBe(false))
 }
 
 // The stored occurrence rows, read straight from IndexedDB — not through the app.
@@ -223,6 +224,24 @@ async function failSyncWith(reconcile: Reconcile, note: RegExp) {
   expect(await storedRows()).toEqual(before)
   return before
 }
+
+it('waits for the scan queue read before the helper permits another presentation', async () => {
+  const before = queueReads.started
+  stubFetch(() => Promise.reject(new TypeError('not yet')))
+  render(<App />)
+  await readsSince(before)
+  const held = holdNextQueueRead()
+  let finished = false
+  const scanning = queueOneScan('first-ticket').then(() => { finished = true })
+  await held.started
+  await screen.findByRole('heading', { name: 'Queued offline' })
+  await act(async () => { await Promise.resolve() })
+  expect(finished).toBe(false)
+  expect(screen.getByRole('button', { name: 'Checking…' }).hasAttribute('disabled')).toBe(true)
+  held.result.resolve(await storedRows() as OccurrenceRecord[])
+  await scanning
+  expect(screen.getByRole('button', { name: 'Check ticket' }).hasAttribute('disabled')).toBe(false)
+})
 
 describe('a failed sync of the offline queue', () => {
   it('says "No connection" when the request never reached a server (COS1)', async () => {
