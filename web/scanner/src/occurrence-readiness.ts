@@ -152,6 +152,9 @@ export function createStorageController(options: StorageControllerOptions): Stor
   }
 
   const onUnexpectedClose = (connection: Connection) => {
+    // A late close of an old generation cannot fail a newer one: a connection is always
+    // marked closed before it stops being current (begin() and stop() close it, a draining
+    // connection closes when its drain ends, and retry() is refused while ready or draining).
     if (connection.closed) return
     connection.closed = true
     stopHeartbeat(connection)
@@ -159,11 +162,8 @@ export function createStorageController(options: StorageControllerOptions): Stor
       connection.store.setMode('closed')
       coordinator.detach(connection.store)
     }
-    // A late close of an old generation cannot fail a newer one.
-    if (isCurrent(connection)) {
-      reads = null
-      publish({ status: 'failed', generation: connection.generation, cause: 'unexpected_close' })
-    }
+    reads = null
+    publish({ status: 'failed', generation: connection.generation, cause: 'unexpected_close' })
   }
 
   const open = (connection: Connection): Promise<IDBDatabase> =>
