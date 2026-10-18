@@ -373,6 +373,28 @@ func TestRealRoleLimitAtEverySite(t *testing.T) {
 	}
 }
 
+// Negative control: the real server refuses a wrong password at connect,
+// SQLSTATE 28P01 below the real ConnectError. A credential fault is
+// configuration, not availability, so it stays an ordinary error at every
+// site (plan COS-2; ADR-085 §8 class ledger).
+func TestRealWrongPasswordAtEverySiteIsNotAvailability(t *testing.T) {
+	for _, site := range everySite {
+		t.Run(string(site), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			h := newScannerHarness(t, ctx, testdb.Options{})
+			_, err := h.faultAt(t, site, testdb.FaultWrongPassword)
+			requireNoClass(t, err, site)
+			requireConnectCause(t, err)
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) || pgErr.Code != "28P01" {
+				t.Fatalf("no real SQLSTATE 28P01 in the cause:\n%s", testdb.ErrorTree(err))
+			}
+			h.requireNoDecision(t, ctx, site)
+		})
+	}
+}
+
 // A real backlog-full listener: the dial cannot finish, the production 500 ms
 // step timer fires in the pre-decision phase, and the class is expiry
 // whatever the returned error chain says. Remove the phase-expiry class and

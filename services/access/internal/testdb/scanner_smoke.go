@@ -96,6 +96,10 @@ const (
 	// FaultMixedUnsupportedFirst: the same set with the unsupported attempt
 	// first.
 	FaultMixedUnsupportedFirst Fault = "mixed_unsupported_first"
+	// FaultWrongPassword: the attempt reaches the real server as the real
+	// user with a wrong password (SQLSTATE 28P01 below ConnectError). A
+	// negative control: a credential fault is configuration, not availability.
+	FaultWrongPassword Fault = "wrong_password"
 )
 
 // CutMode is what the proxy does when it sees the armed pattern in bytes
@@ -480,6 +484,9 @@ func (f *Fixture) beforeConnect(_ context.Context, cc *pgx.ConnConfig) error {
 		cc.DialFunc = direct
 	case FaultRoleLimit:
 		cc.User, cc.Password = limitUser, limitPassword
+		cc.DialFunc = direct
+	case FaultWrongPassword:
+		cc.Password += "-wrong"
 		cc.DialFunc = direct
 	case FaultMixedSupported, FaultMixedUnsupported, FaultMixedUnsupportedFirst:
 		recovery := RecoveryConfig(f.t)

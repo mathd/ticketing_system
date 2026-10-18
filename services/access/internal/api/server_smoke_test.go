@@ -644,6 +644,49 @@ func TestRouterStepExpiryAtEverySite(t *testing.T) {
 	}
 }
 
+// Negative control: a wrong database password is a configuration fault, not
+// availability. At every site the real 28P01 answers 500, never 503, and no
+// ticket decision runs.
+func TestRouterWrongDatabasePasswordIs500(t *testing.T) {
+	for _, tc := range []struct {
+		site, after string
+		pass        bool
+		body        map[string]any
+	}{
+		{"device", "", false, map[string]any{"error": "scanner device lookup failed"}},
+		{"policy", smokeTouchSQL, false, map[string]any{"error": "redeem ticket"}},
+		{"single begin", smokePolicySQL, false, map[string]any{"error": "redeem ticket"}},
+		{"pass begin", smokePolicySQL, true, map[string]any{"error": "redeem ticket"}},
+	} {
+		t.Run(tc.site, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			h := newRouterHarness(t, ctx, testdb.Options{})
+			tk := h.issue(t, ctx, tc.pass)
+			if tc.after == "" {
+				h.f.Arm(testdb.FaultWrongPassword)
+			} else {
+				h.f.ArmAfter(tc.after, testdb.FaultWrongPassword)
+			}
+			rec := h.serve(h.server().Router(nil, true), h.request(http.MethodPost, "/scans", scanBody(t, tk, uuid.NewString())))
+			h.f.Disarm()
+			requireExactJSON(t, rec, 500, tc.body)
+			if err := validateCaptured(t, apispec.Spec, http.MethodPost, "/scans", rec); err != nil {
+				t.Errorf("capture violates scanTicket: %v", err)
+			}
+			if s := h.f.Stats(); s.Faulted < 1 {
+				t.Fatal("no connect attempt met the wrong password")
+			}
+			if n := h.f.CountQueries(smokeTicketLockSQL); n != 0 {
+				t.Fatalf("%d ticket decision statements ran", n)
+			}
+			if n := h.admissions(t, ctx, tk); n != 0 {
+				t.Fatalf("%d admission facts written", n)
+			}
+		})
+	}
+}
+
 func holdRowLock(t *testing.T, ctx context.Context, admin *sql.DB, query string, args ...any) *sql.Tx {
 	t.Helper()
 	tx, err := admin.BeginTx(ctx, nil)
