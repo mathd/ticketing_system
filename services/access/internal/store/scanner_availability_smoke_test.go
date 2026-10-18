@@ -777,8 +777,10 @@ func TestLaterBackendLossIsNotAvailability(t *testing.T) {
 			}
 			lock := holdTicketLock(t, ctx, h.f.Admin, ticket.ticketID)
 			defer func() { _ = lock.Rollback() }()
-			var pid uint32
-			h.f.Once(testdb.AtStart, ticketLockSQL, func(e testdb.QueryEvent) { pid = e.PID })
+			// The hook runs on the call's goroutine: the pid crosses to this
+			// one through a channel, not through a shared variable.
+			pids := make(chan uint32, 1)
+			h.f.Once(testdb.AtStart, ticketLockSQL, func(e testdb.QueryEvent) { pids <- e.PID })
 			done := make(chan error, 1)
 			go func() {
 				opCtx, opCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -787,6 +789,12 @@ func TestLaterBackendLossIsNotAvailability(t *testing.T) {
 			}()
 			if !h.f.WaitForLockWait(ctx, "for update", 2*time.Second) {
 				t.Fatal("the decision's FOR UPDATE was never seen waiting")
+			}
+			var pid uint32
+			select {
+			case pid = <-pids:
+			case <-time.After(time.Second):
+				t.Fatal("the ticket read never reported its backend")
 			}
 			h.f.Terminate(ctx, int(pid))
 			err := <-done
