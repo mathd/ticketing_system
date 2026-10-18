@@ -97,9 +97,9 @@ export async function storageCore({ browser, BASE, token, check, fixture }) {
       const selected = page.getByLabel(`Held record ${heldA.occurrenceId}`);
       await selected.check();
       assert.equal(await page.getByRole('button', { name: 'Acknowledge selected held records' }).isDisabled(), true);
-      const download = page.waitForEvent('download');
-      await page.getByRole('button', { name: 'Export local records' }).click();
-      const file = JSON.parse(await readFile(await (await download).path(), 'utf8'));
+      const [download] = await Promise.all([page.waitForEvent('download'),
+        page.getByRole('button', { name: 'Export local records' }).click()]);
+      const file = JSON.parse(await readFile(await download.path(), 'utf8'));
       await page.getByText('Export requested. The browser cannot confirm that the file was saved.').waitFor();
       assert.equal(file.schemaVersion, 1);
       assert.deepEqual(file.source, { databaseName: 'gate-occurrences', databaseVersion: 3, legacyFormat: 0, currentFormat: 1 });
@@ -123,8 +123,8 @@ export async function storageCore({ browser, BASE, token, check, fixture }) {
       await page.getByText('Synced 1 offline scan(s).', { exact: true }).waitFor();
       assert.deepEqual(seen.map(row => row.occurrence_id), [m02.occurrenceId]);
       await page.reload(); await page.getByText('1 held record(s) need operator review. These records will not sync.').waitFor();
-      const nextDownload = page.waitForEvent('download'); await page.getByRole('button', { name: 'Export local records' }).click();
-      const nextFile = JSON.parse(await readFile(await (await nextDownload).path(), 'utf8'));
+      const [nextDownload] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Export local records' }).click()]);
+      const nextFile = JSON.parse(await readFile(await nextDownload.path(), 'utf8'));
       assert.equal(nextFile.held.find(row => row.occurrenceId === heldA.occurrenceId).disposal.status, 'acknowledged');
       assert.equal(nextFile.held.find(row => row.occurrenceId === heldB.occurrenceId).disposal.status, 'unresolved');
       assert.equal(nextFile.legacyQueued[0].state.value, 'SYNCED');
@@ -142,8 +142,8 @@ export async function storageCore({ browser, BASE, token, check, fixture }) {
     const batches = []; legacyPage.on('request', request => { if(request.method()==='POST' && reconcilePath(request.url())) batches.push(request.postDataJSON().occurrences); });
     for(const state of ['QUEUED','SYNCED']) {
       assert.equal(await legacyPage.getByRole('button',{name:'Acknowledge selected held records'}).count(),0);
-      const download=legacyPage.waitForEvent('download');await legacyPage.getByRole('button',{name:'Export local records'}).click();
-      const file=JSON.parse(await readFile(await (await download).path(),'utf8'));
+      const [download]=await Promise.all([legacyPage.waitForEvent('download'),legacyPage.getByRole('button',{name:'Export local records'}).click()]);
+      const file=JSON.parse(await readFile(await download.path(),'utf8'));
       assert.deepEqual(file.held,[]);
       assert.deepEqual(file.legacyQueued.sort((a,b)=>a.occurrenceId.localeCompare(b.occurrenceId)),[
         {occurrenceId:odd.occurrenceId,legacyClass:'M02',state:{presence:'value',value:'QUEUED'},occurredAt:{presence:'value',value:odd.occurredAt}},
