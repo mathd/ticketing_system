@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, screen } from '@testing-library/react'
 import App from './App'
+import { renderWithQueue } from './test/render-queued'
 import { mintOn } from './test/page-fixture'
 import type { StorageController } from './occurrence-readiness'
 import { createTestPage, destroyAllPages, type TestPage } from './test/page-fixture'
@@ -49,7 +50,7 @@ const malformed: Array<[string, (rows: Array<{ occurrence_id: string }>) => unkn
 it.each(malformed)('keeps both complete rows on malformed reconciliation %s and retires both on a valid retry', async (_, build) => {
   const before = await rawGetAll(dbName, STORE.occurrences)
   answer = (rows) => new Response(JSON.stringify(build(rows)), { status: 200 })
-  render(<App />)
+  await renderWithQueue(<App />, page)
   fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
   await screen.findByText(/^Sync failed: The server answered/)
   expect(await rawGetAll(dbName, STORE.occurrences)).toStrictEqual(before)
@@ -71,7 +72,7 @@ it('rolls back the valid first retirement when the second retirement write abort
     }
     return request
   })
-  render(<App />); fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
+  await renderWithQueue(<App />, page); fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
   await screen.findByText('Storage is unavailable or incompatible. Keep this page open and retry storage.')
   expect(failed).toBe(true)
   expect(await rawGetAll(dbName, STORE.occurrences)).toStrictEqual(before)
@@ -82,7 +83,7 @@ it('rolls back the valid first retirement when the second retirement write abort
 
 it('reports a rejected result as not recorded beside a recorded sibling', async () => {
   answer = (rows) => new Response(JSON.stringify({ results: [{ occurrence_id: rows[0].occurrence_id, result: 'recorded' }, { occurrence_id: rows[1].occurrence_id, result: 'rejected' }] }), { status: 200 })
-  render(<App />); fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
+  await renderWithQueue(<App />, page); fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
   await screen.findByText('Synced 1 offline scan(s).')
   expect(screen.getByText(`Reconciliation rejected for ${keys[1]}. This result is not recorded.`)).toBeDefined()
   expect(await rawGetAll(dbName, STORE.occurrences)).toEqual(expect.arrayContaining([expect.objectContaining({ occurrenceId: keys[0], state: 'SYNCED', result: 'recorded' }), expect.objectContaining({ occurrenceId: keys[1], state: 'RESOLVED', result: 'rejected' })]))

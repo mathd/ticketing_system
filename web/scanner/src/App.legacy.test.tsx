@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, screen } from '@testing-library/react'
 import App from './App'
+import { renderWithQueue } from './test/render-queued'
 import { seedDatabase, V2_STORES, rawGetAll } from './test/raw-db'
 import { createTestPage, destroyAllPages, mintOn } from './test/page-fixture'
 import type { StorageController } from './occurrence-readiness'
@@ -24,7 +25,7 @@ it('sends literal legacy direction classes and isolates an odd M02 beside a vali
       ?new Response('{}',{status:422})
       :new Response(JSON.stringify({results:batch.map((row:Record<string,unknown>)=>({occurrence_id:row.occurrence_id,result:'recorded'}))}))
   }))
-  render(<App/>);fireEvent.click(await screen.findByRole('button',{name:'Sync queued scans'}))
+  await renderWithQueue(<App/>, page);fireEvent.click(await screen.findByRole('button',{name:'Sync queued scans'}))
   await screen.findByText('Synced 8 offline scan(s).')
   expect(screen.getByText('Pre-upgrade record odd could not sync. It remains queued and listed in the export.')).toBeDefined()
   const normal=sent.flat().filter(row=>row.occurrence_id!=='odd').sort((a,b)=>String(a.occurrence_id).localeCompare(String(b.occurrence_id)))
@@ -45,7 +46,7 @@ it('keeps an isolated M02 warning when the next batch fails', async () => {
     const batch=JSON.parse(init!.body as string).occurrences;sent.push(batch.map((row:{occurrence_id:string})=>row.occurrence_id))
     return new Response('{}',{status:batch[0].occurrence_id==='a-odd'?422:500})
   }))
-  render(<App/>);fireEvent.click(await screen.findByRole('button',{name:'Sync queued scans'}))
+  await renderWithQueue(<App/>, page);fireEvent.click(await screen.findByRole('button',{name:'Sync queued scans'}))
   await screen.findByText(/^Sync failed: The server answered/)
   expect(sent).toStrictEqual([['a-odd'],['b-valid']])
   expect(screen.getByText('Pre-upgrade record a-odd could not sync. It remains queued and listed in the export.')).toBeDefined()
@@ -73,7 +74,7 @@ it('preserves mixed Entry, refusal and literal M02 Exit across transport failure
     if(response===2)return new Response('',{status:401})
     return new Response(JSON.stringify({results:rows.map((row:{occurrence_id:string})=>({occurrence_id:row.occurrence_id,result:'recorded'}))}))
   }))
-  render(<App/>);fireEvent.click(await screen.findByRole('button',{name:'Sync queued scans'}))
+  await renderWithQueue(<App/>, page);fireEvent.click(await screen.findByRole('button',{name:'Sync queued scans'}))
   await screen.findByText(/^Sync failed: No connection\./)
   expect(await rawGetAll(dbName,STORE.occurrences)).toStrictEqual(before)
   fireEvent.click(screen.getByRole('button',{name:'Sync queued scans'}));await screen.findByLabelText('Pairing token')
