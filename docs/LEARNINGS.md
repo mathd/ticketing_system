@@ -114,6 +114,11 @@ exists are in *Historical* at the bottom; their files are kept.
 - [**A Go patch release can break the linter**](./learnings/2026-10-13-a-go-patch-release-can-break-the-linter.md) —
   golangci-lint v2.13.2 cannot read go1.27.2 export data, and `check-go-toolchain` compares minor
   versions only. `lint-go` is the proof that a linter and a toolchain work together. (TKT-523)
+- [**Seven review passes mean the plan has no model**](./learnings/2026-10-18-seven-review-passes-mean-the-plan-has-no-model.md) —
+  TKT-399 failed seven code-review passes, each on a new outcome × failure-point case. The plan
+  enumerated no such space. A spike wrote the model (ADR-085), and the first ticket built from it
+  needed one review round. Stop after two rounds of same-kind findings, and set the stop point in
+  advance. (TKT-399, TKT-556)
 
 ## Distributed behaviour and events
 
@@ -149,6 +154,16 @@ exists are in *Historical* at the bottom; their files are kept.
   prefix before an [ADR-025](./adr/ADR-025-admission-events-and-offline-reconciliation.md) §D7-style
   swap; a partial replacement cannot serve rows outside its predicate. (TKT-84)
 - [**A column narrower than the value the code accepts turns storage into a validator**](./learnings/2026-07-17-column-range-narrower-than-code-accepts.md) (TKT-75)
+- [**Probe the production connection string, not a convenient one**](./learnings/2026-10-18-probe-the-production-connection-string.md) —
+  an error classifier was built from probes that used `sslmode=disable`, while production used the pgx
+  default `prefer`, whose TLS-then-plaintext fallback adds a second child to every connect join. A
+  database restart then answered 500 under a strict join rule. Probe the exact DSN, and make startup
+  refuse every other form. (TKT-557)
+- [**Classify by state you own, not by how the driver spells the error**](./learnings/2026-10-18-classify-by-state-you-own-not-by-error-spelling.md) —
+  one blocked dial returned `context.DeadlineExceeded` or a `poll` timeout depending on a race, and a
+  short context also reached the reset ping and the dial. A phase flag under a mutex decided the
+  status deterministically. When review rounds keep finding local defects with one cause, simplify
+  the design. (TKT-557)
 
 ## HTTP, contracts and the web layer
 
