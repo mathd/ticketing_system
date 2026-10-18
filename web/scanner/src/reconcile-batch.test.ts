@@ -98,17 +98,17 @@ describe('odd pre-upgrade rows (TKT-558 D12, D17)', () => {
   })
 
   it.each([
-    ['an absent credential', (id: string) => { const row: Record<string, unknown> = legacy(id, {}); delete row.qrPayload; return row }],
-    ['an own undefined time', (id: string) => legacy(id, { occurredAt: undefined })],
-    ['a non-finite time', (id: string) => legacy(id, { occurredAt: Number.NaN })],
-    ['a date object', (id: string) => legacy(id, { occurredAt: new Date(0) })],
-  ])('does not send %s; the row stays listed and other rows proceed', async (_name, build) => {
+    ['an absent credential', (id: string) => { const row: Record<string, unknown> = legacy(id, {}); delete row.qrPayload; return row }, 'qrPayload has no value'],
+    ['an own undefined time', (id: string) => legacy(id, { occurredAt: undefined }), 'occurredAt has no value'],
+    ['a non-finite time', (id: string) => legacy(id, { occurredAt: Number.NaN }), 'occurredAt cannot be sent exactly'],
+    ['a date object', (id: string) => legacy(id, { occurredAt: new Date(0) }), 'occurredAt cannot be sent exactly'],
+  ])('does not send %s; the row stays listed and other rows proceed', async (_name, build, reason) => {
     const a = await migrated([build('odd'), legacy('control', {})])
     const listed = await a.store().queued()
     expect(listed.entries.map((entry) => entry.key)).toEqual(['control', 'odd'])
     const plan = planReconcileBatches(listed.entries)
     expect(plan.batches).toStrictEqual([{ keys: ['control'], occurrences: [wire('control')], isolated: false }])
-    expect(plan.unsendable.map((row) => row.key)).toEqual(['odd'])
+    expect(plan.unsendable).toEqual([{ key: 'odd', reason }])
   })
 })
 
