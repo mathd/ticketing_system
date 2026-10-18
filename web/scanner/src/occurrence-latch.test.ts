@@ -278,7 +278,7 @@ describe('committed ACT controls', () => {
     const setup: Setup = { a, scan, latch, persisting: Promise.resolve() }
     if (producer === 'exception') {
       // A separately failing storage operation is diagnostic only.
-      await rawPut(dbName, STORE.recoveryNotices, { occurrenceId: 'diagnostic', acknowledged: false })
+      await rawPut(dbName, STORE.recoveryNotices, { occurrenceId: 'diagnostic', cause: 'uncertain_recovery', recoveredAt: FIRST })
       instrument!.inject('abort', { stores: [STORE.recoveryNotices], mode: 'readwrite' })
       await expect(a.store().acknowledgeNotice('diagnostic')).rejects.toThrow()
       expect(instrument!.calls.some((call) => call.storeNames.includes(STORE.recoveryNotices) && call.events.includes('abort'))).toBe(true)
