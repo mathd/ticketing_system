@@ -306,8 +306,8 @@ export function createPageCoordinator({ owner, lock }: PageCoordinatorOptions): 
     },
 
     beginMarking(occurrenceId) {
-      const entry = entryFor(occurrenceId)
-      if (entry.mint !== 'committed' || entry.final || entry.phase === 'MARKING') return false
+      const entry = entries.get(occurrenceId)
+      if (!entry || entry.mint !== 'committed' || entry.final || entry.phase === 'MARKING') return false
       entry.phase = 'MARKING'
       return true
     },
@@ -362,7 +362,8 @@ export function createPageCoordinator({ owner, lock }: PageCoordinatorOptions): 
     latched: (occurrenceId) => entries.get(occurrenceId)?.final ?? abortedMints.get(occurrenceId),
 
     captureDenialReason(occurrenceId, reason) {
-      const entry = entryFor(occurrenceId)
+      const entry = entries.get(occurrenceId)
+      if (!entry) return false
       const final = entry.final
       if (!final || final.kind !== 'terminal' || final.outcome.cause !== 'denied' || final.outcome.reason !== null) return false
       if (entry.enrichment !== 'none' || !reason) return false

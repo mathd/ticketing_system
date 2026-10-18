@@ -75,32 +75,35 @@ const own = (value: object, key: string) => Object.prototype.hasOwnProperty.call
 const setOwn = <T>(record: Record<string, T>, key: string, value: T) =>
   Object.defineProperty(record, key, { value, enumerable: true, writable: true, configurable: true })
 
-function encodeValue(value: unknown, path: string): JsonValue {
+function encodeValue(value: unknown, path: string, ancestors = new Set<object>()): JsonValue {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
   if (typeof value === 'number') {
     if (!Number.isFinite(value) || Object.is(value, -0)) throw new UnsupportedExportValue(path)
     return value
   }
-  if (Array.isArray(value)) {
-    const encoded: JsonValue[] = []
-    for (let index = 0; index < value.length; index += 1) {
-      if (!own(value, String(index)) || value[index] === undefined) throw new UnsupportedExportValue(`${path}[${index}]`)
-      encoded.push(encodeValue(value[index], `${path}[${index}]`))
+  if (typeof value !== 'object' || ancestors.has(value)) throw new UnsupportedExportValue(path)
+  ancestors.add(value)
+  try {
+    if (Array.isArray(value)) {
+      const encoded: JsonValue[] = []
+      for (let index = 0; index < value.length; index += 1) {
+        if (!own(value, String(index)) || value[index] === undefined) throw new UnsupportedExportValue(`${path}[${index}]`)
+        encoded.push(encodeValue(value[index], `${path}[${index}]`, ancestors))
+      }
+      return encoded
     }
-    return encoded
-  }
-  if (typeof value === 'object') {
     const prototype = Object.getPrototypeOf(value)
     if (prototype !== Object.prototype && prototype !== null) throw new UnsupportedExportValue(path)
     const encoded: { [key: string]: JsonValue } = {}
     for (const key of Object.keys(value).sort()) {
       const field = (value as Record<string, unknown>)[key]
       if (field === undefined) throw new UnsupportedExportValue(`${path}.${key}`)
-      setOwn(encoded, key, encodeValue(field, `${path}.${key}`))
+      setOwn(encoded, key, encodeValue(field, `${path}.${key}`, ancestors))
     }
     return encoded
+  } finally {
+    ancestors.delete(value)
   }
-  throw new UnsupportedExportValue(path)
 }
 
 /** Encodes every own field of a stored row, plus each known field that is absent. */
