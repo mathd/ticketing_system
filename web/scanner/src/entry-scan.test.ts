@@ -44,6 +44,12 @@ function answer(response: Response | (() => Promise<Response>), onResponse: () =
   }))
 }
 const response = (status: number, body: unknown = {}) => new Response(JSON.stringify(body), { status })
+async function decisionWriteSettled() {
+  await eventually(() => {
+    const durable = page.coordinator.view(sent[0].occurrence_id as string)?.durable
+    return durable === 'committed' || durable === 'settled_as_actuation'
+  }, 'production decision write settled')
+}
 async function row() {
   expect(sent).toHaveLength(1)
   return rawGet(dbName, STORE.occurrences, sent[0].occurrence_id as string) as Promise<Record<string, unknown>>
@@ -57,7 +63,7 @@ it.each([401, 500, 501, 505, 599, 201, 204, 301, 400, 403, 404, 429])('keeps sta
   expect(json).not.toHaveBeenCalled()
   expect(results).toHaveLength(1)
   expect(results[0].kind).toBe(status === 401 ? 'auth-refused' : status >= 500 ? 'server-error' : 'status-unconfirmed')
-  await page.coordinator.repairAll()
+  await decisionWriteSettled()
   expect((await row()).state).toBe('RESOLVED')
   expect((await page.store().queued()).entries).toEqual([])
   expect(pairing.token).toBe(status === 401 ? '' : 'token-a')
@@ -131,7 +137,7 @@ it.each([409, 422])('keeps unreadable status %s as denial rather than queue', as
   answer(new Response('{broken', { status }))
   await scanner.submit('credential')
   expect(results).toEqual([{ kind: 'denial-unreadable' }])
-  await page.coordinator.repairAll()
+  await decisionWriteSettled()
   expect((await row()).state).toBe('RESOLVED')
 })
 
@@ -147,7 +153,7 @@ it.each([{}, { decision: 'accepted', scanned_at: 'not-a-time' }, { decision: 're
   answer(response(200, body))
   await scanner.submit('credential')
   expect(results).toEqual([{ kind: 'body-unconfirmed' }])
-  await page.coordinator.repairAll()
+  await decisionWriteSettled()
   expect((await row()).state).toBe('RESOLVED')
 })
 
@@ -184,7 +190,7 @@ it('keeps the captured pairing and claimed time while a request waits', async ()
   finish(response(200, { decision: 'accepted', scanned_at: TIME }))
   await scanning
   expect(results.some((r) => r.kind === 'accepted')).toBe(false)
-  await page.coordinator.repairAll()
+  await decisionWriteSettled()
   expect(await row()).toMatchObject({ state: 'RESOLVED', localOutcome: { cause: 'cancelled', requestMayHaveBeenSent: true } })
 })
 
@@ -235,4 +241,72 @@ it.each(['commit', 'mint-abort', 'queue-abort'] as const)('keeps a known local r
       localOutcome: { family: 'queue', cause: 'local_refusal' } } })
     expect(Object.hasOwn((queue[0] as { record: object }).record, 'direction')).toBe(false)
   }
+})
+
+it('waits for mint complete before invoking fetch', async () => {
+  answer(response(503))
+  const fetch = vi.mocked(globalThis.fetch)
+  instrument = instrumentTransactions()
+  const hold = instrument.hold({ stores: [STORE.occurrences], mode: 'readwrite' })
+  const scanning = scanner.submit('credential')
+  const call = await hold.started
+  try {
+    expect(call.events).not.toContain('complete')
+    expect(fetch).not.toHaveBeenCalled()
+    expect(results).toEqual([])
+  } finally { hold.release(); await scanning }
+  expect(call.events).toContain('complete')
+  expect(fetch).toHaveBeenCalledTimes(1)
+  expect(results).toEqual([{ kind: 'queued', status: 503 }])
+})
+
+it.each(['commit', 'abort'] as const)('publishes acceptance only after the mark completes, %s', async (schedule) => {
+  let hold: ReturnType<Instrument['hold']> | undefined
+  instrument = instrumentTransactions()
+  answer(response(200, { decision: 'accepted', scanned_at: ACCEPTED }), () => {
+    hold = instrument!.hold({ stores: [STORE.occurrences], mode: 'readwrite' })
+  })
+  const scanning = scanner.submit('credential')
+  await eventually(() => !!hold, 'mark barrier installed')
+  const call = await hold!.started
+  try {
+    expect(call.events).not.toContain('complete')
+    expect(results).toEqual([])
+    onPublish = () => { if (schedule === 'commit') expect(call.events).toContain('complete') }
+  } finally { hold!.release(schedule); await scanning }
+  expect(results).toEqual(schedule === 'commit'
+    ? [{ kind: 'accepted', scannedAt: ACCEPTED, replay: false }]
+    : [{ kind: 'mark-failed' }])
+  expect((await row()).state).toBe(schedule === 'commit' ? 'ACTUATED' : 'RESOLVED')
+})
+
+it.each(['commit', 'abort'] as const)('settles cancellation against an in-flight mark, %s', async (schedule) => {
+  let hold: ReturnType<Instrument['hold']> | undefined
+  instrument = instrumentTransactions()
+  answer(response(200, { decision: 'accepted', scanned_at: ACCEPTED }), () => {
+    hold = instrument!.hold({ stores: [STORE.occurrences], mode: 'readwrite' })
+  })
+  const scanning = scanner.submit('credential')
+  await eventually(() => !!hold, 'mark barrier installed')
+  const call = await hold!.started
+  try {
+    await eventually(() => call.events.includes('write-success'), 'mark write request succeeds')
+    scanner.cancel()
+    pairing = { token: 'token-b', generation: 2 }
+  } finally { hold!.release(schedule); await scanning }
+  await decisionWriteSettled()
+  expect(results).toEqual([{ kind: 'cancelled', requestMayHaveBeenSent: true }])
+  expect((await row()).state).toBe(schedule === 'commit' ? 'ACTUATED' : 'RESOLVED')
+  expect(page.coordinator.repairWarnings()).toEqual([])
+  expect(page.coordinator.pendingTargets()).toEqual([])
+})
+
+it('rejects an invalid header before fetch without offline permission', async () => {
+  pairing = { token: 'bad\nheader', generation: 1 }
+  const fetch = vi.fn()
+  vi.stubGlobal('fetch', fetch)
+  await scanner.submit('credential')
+  expect(fetch).not.toHaveBeenCalled()
+  expect(results).toEqual([{ kind: 'local-failure' }])
+  expect((await page.store().queued()).entries).toEqual([])
 })
