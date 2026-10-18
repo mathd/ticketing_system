@@ -439,7 +439,7 @@ caught them.
 
 **Keys.** `ACCESS_LIFECYCLE_*`, under the `access-lifecycle/` namespace, with key material distinct
 from `access-qr/` — a leaked credential-signing key must not also authorize rewriting history
-(). The namespace is enforced in code: QR material is rejected here and vice versa.
+(§D4). The namespace is enforced in code: QR material is rejected here and vice versa.
 
 **Rotation.** Quiesce, run `access seal-lifecycle-epoch` (retains each head's current signature
 under the outgoing key), add the new key to `ACCESS_LIFECYCLE_PUBLIC_KEYS` while **keeping the old
@@ -454,7 +454,7 @@ says a row must exist, so a deleted one is indistinguishable from a ticket that 
 the chain's baseline, and `access` waits on it. It is separate from `access-migrate` because it
 signs a head per ticket — cost scales with history, and ADR-008's surviving 30-second deadline
 bounds the migrate job the service depends on, so a slow backfill there would stop Access booting
-(ADR-022). Interrupt it freely: it chains one ticket per transaction and resumes.
+(§D9, amended for ADR-022). Interrupt it freely: it chains one ticket per transaction and resumes.
 It cannot prove legacy rows were honest; existing history is adopted, not audited.
 
 **Checkpoint freshness.** Default interval 60s (`ACCESS_LIFECYCLE_CHECKPOINT_INTERVAL`). Watch
@@ -463,7 +463,7 @@ distinguishable from dead) and `access.lifecycle.checkpoint.pending_oldest_age_s
 is the only signal there is — and note what it is a signal *of*: the worker stopped. It is **not**
 evidence of tampering, because the checkpoint detects nothing today; it is the structure TKT-11
 will anchor. Freshness is deliberately **not** wired into `/readyz`: that is the container's health
-probe, and closing every turnstile because scaffolding stalled is the customer-denying failure
+probe, and closing every turnstile because scaffolding stalled is the customer-denying failure §D6
 exists to avoid.
 
 **Alarms — and the gap you must close yourself.** Degraded admissions and integrity denials publish
@@ -473,7 +473,7 @@ unless `ACCESS_LIFECYCLE_ALARM_DURABLE` exists and filters that subject.
 
 **Be precise about what that check buys: an alarm is RETAINED, not read.** This repository ships
 **no consumer** for that durable — `nats-init` creates it and nothing drains it. So the default
-stack passes the boot check and is *still unmonitored*. ADR-021 's "an unmonitored deployment
+stack passes the boot check and is *still unmonitored*. ADR-021 §D6's "an unmonitored deployment
 must not run this scheme in fail-open" is a **deployment obligation TKT-67 cannot discharge**: no
 boot-time check can prove a human will act on a page. **Attach the durable to your on-call adapter
 before running fail-open in production.**
@@ -499,7 +499,7 @@ them fail-open is unbounded, full stop, and this section is the wording to reuse
 reaches a dashboard.
 
 **Pass admission policy (TKT-87,
-[ADR-025](adr/ADR-025-admission-events-and-offline-reconciliation.md) ).** A slot whose
+[ADR-025](adr/ADR-025-admission-events-and-offline-reconciliation.md) §D1/§D2).** A slot whose
 catalog `re_entry_policy` is `multi` or `count_limited` admits through repeatable occurrence-keyed
 `entry`/`exit` events; such a ticket never gains `redeemed`. Access learns the policy from the
 `re_entry` field riding additively on `platform.catalog.performance.published` (no schema bump —
@@ -519,7 +519,7 @@ by claimed device time, which is not attested**. It is alarmed conservatively on
 consulted by an admission decision and proves nothing. Access refuses to boot unless
 `ACCESS_POLICY_CONFLICT_DURABLE` exists and filters the subject; the same
 retained-not-read caveat as the other alarm classes applies. Quarantine admissions remain
-operator-only: they do not surface in `GET /orders/{ref}/tickets` (the open question,
+operator-only: they do not surface in `GET /orders/{ref}/tickets` (the §D10 open question,
 answered here).
 
 **Admission conflicts — the third alarm class, and the only phrasing to quote.** When
@@ -543,15 +543,15 @@ admission that already happened, and an occurrence that never syncs is not repre
 
 The payload carries four bounded identifiers, one device-claimed timestamp and one boolean —
 `alarm_id`, `organizer_id`, `ticket_id`, `occurrence_id`, `device_occurred_at`, `skew_flagged` — and
-no buyer, guest reference or raw scanner-operator identity (ADR-025  as amended by TKT-119;
-ADR-003). Be precise about what is enforced: `TestReconcileConflictAppendsDuplicateAdmitAndOwesAlarm`
+no buyer, guest reference or raw scanner-operator identity (ADR-025 §D9 as amended by TKT-119;
+ADR-003 §D3). Be precise about what is enforced: `TestReconcileConflictAppendsDuplicateAdmitAndOwesAlarm`
 pins the exact key set of the persisted envelope at both levels, decodes every value at both levels
 into the scalar it is contracted to be — rejecting `null` explicitly, which every one of those
 decodes otherwise accepts — so a new field or a nested object cannot arrive unnoticed; and it pins
 `conflictAlarmData`'s json tags **and field types** at the source, which is the only place a `,omitempty` field can be caught, since such a field is simply
 absent from any fixture that leaves it zero. There is deliberately **no `reason` field**: unlike the policy-conflict class
 (whose payload carries `rule`), this class has exactly one
-condition (ADR-025  scopes `duplicate_admit` to single-entry tickets, where any occurrence beyond
+condition (ADR-025 §D2 scopes `duplicate_admit` to single-entry tickets, where any occurrence beyond
 the one `redeemed` is the conflict), so **the subject is the reason** and a one-valued enum would
 carry no information. If a second condition is ever added to this class, introducing a reason space
 is an [ADR-017](adr/ADR-017-domain-event-schema-evolution.md) §3 decision on this contract — a
@@ -592,7 +592,7 @@ Operationally that means:
 
 - **A gate refusing `exchanged` is not an integrity problem.** The verdict is its own
   (`DecisionExchanged`), distinct from `refunded`, and it is checked **before** chain verification —
-  the degraded posture admits once (ADR-021), and an exchanged ticket must not be the one it
+  the degraded posture admits once (ADR-021 §D6), and an exchanged ticket must not be the one it
   admits. The buyer holding it has a live replacement under the **same** guest-order link.
 
 - **An admitted source ticket is refused before the target hold.** Commerce reads admission through
@@ -715,7 +715,7 @@ restart drains immediately, so the interval bounds the steady state, not recover
 **`ACCESS_URL` is required for readiness.** Without it commerce boots and still refunds money, but
 ticket voiding can never be discharged — by the runner or anything else — so `/readyz` answers `503`
 with `access_configured: unhealthy` while `/healthz` stays green. Rationale, and why this does not
-contradict ADR-021 : [ADR-062](adr/ADR-062-refund-reversal-reconciliation.md) §5.
+contradict ADR-021 §D6: [ADR-062](adr/ADR-062-refund-reversal-reconciliation.md) §5.
 
 ## Exchange obligation sweep
 

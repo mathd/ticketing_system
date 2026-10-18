@@ -4,8 +4,16 @@ import { expect, it } from 'vitest'
 const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
 const decision = /\bD[1-9][0-9]*(?:-[0-9]+)?[a-z]?\b/g
 const review = /\bP[RA][0-9]+(?:-[0-9]+)?\b/g
-it('DOC-01 keeps decision and review identifiers out of the operator guide', () => {
+function scannerOperatorGuide(): string {
   const guide = readFileSync(`${root}/docs/development.md`, 'utf8')
+  const start = guide.indexOf('\n### Scanner Entry outcomes and local records\n')
+  expect(start).toBeGreaterThan(-1)
+  const end = guide.indexOf('\n## ', start + 1)
+  expect(end).toBeGreaterThan(start)
+  return guide.slice(start, end)
+}
+it('DOC-01 keeps decision and review identifiers out of the operator guide', () => {
+  const guide = scannerOperatorGuide()
   expect(guide.match(decision)).toBeNull()
   expect(guide.match(review)).toBeNull()
 })
@@ -23,7 +31,7 @@ it('DOC-01 qualifies every decision identifier added to an ADR', () => {
 })
 
 it('DOC-01 retains the interim no-clock and slow-refusal warnings', () => {
-  const guide = readFileSync(`${root}/docs/development.md`, 'utf8')
+  const guide = scannerOperatorGuide()
   expect(guide).toContain('There is no scan clock or stalled-body deadline until TKT-559.')
   expect(guide).toContain('timeout can still select the network fallback until the deadline work ships.')
   expect(guide).toContain('A failed terminal write followed by actual page loss can still recover as a false admission.')
