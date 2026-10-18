@@ -264,6 +264,10 @@ function App() {
     const warnings = plan.unsendable.map((row) => `Pre-upgrade record ${String(row.key)} could not sync. It remains queued and listed in the export.`)
     const captured = pairing()
     if (!captured.token) return
+    const publishWarnings = () => {
+      if (mounted.current && isPairing(captured)) setReconcileWarnings([...warnings])
+    }
+    publishWarnings()
     let recorded = 0
     let conflicts = 0
     for (const batch of plan.batches) {
@@ -283,6 +287,7 @@ function App() {
         }
         if (response.status === 422 && batch.isolated) {
           warnings.push(`Pre-upgrade record ${String(batch.keys[0])} could not sync. It remains queued and listed in the export.`)
+          publishWarnings()
           continue
         }
         if (!response.ok) { void reportSyncFailure('unreadable'); return }
@@ -299,6 +304,7 @@ function App() {
         else if (result.result === 'conflict') conflicts += 1
         else warnings.push(`Reconciliation rejected for ${result.occurrence_id}. This result is not recorded.`)
       }
+      publishWarnings()
     }
     if (mounted.current && isPairing(captured)) {
       setReconcileWarnings(warnings)

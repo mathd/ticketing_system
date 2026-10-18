@@ -32,3 +32,22 @@ it('sends literal legacy direction classes and isolates an odd M02 beside a vali
   expect(sent.find(batch=>batch.some(row=>row.occurrence_id==='odd'))).toStrictEqual([{occurrence_id:'odd',qr_payload:{malformed:'credential'},occurred_at:odd.occurredAt}])
   expect(await rawGetAll(dbName,STORE.occurrences)).toEqual(expect.arrayContaining([odd,...rows.map(row=>({...row,state:'SYNCED',result:'recorded'}))]))
 })
+
+it('keeps an isolated M02 warning when the next batch fails', async () => {
+  const dbName = `legacy-warning-${crypto.randomUUID()}`
+  const odd = { occurrenceId:'a-odd',state:'QUEUED',qrPayload:{ malformed:'credential' },occurredAt:'2026-10-18T12:34:56.123Z',actuated:false }
+  const valid = { occurrenceId:'b-valid',state:'QUEUED',qrPayload:'credential',occurredAt:'2026-10-18T12:34:56.789Z',actuated:false }
+  await seedDatabase(dbName,2,V2_STORES,{ occurrences:[odd,valid] })
+  const page=createTestPage({dbName});runtime.storage=page.storage;await page.ready()
+  const sent:string[][]=[]
+  vi.stubGlobal('fetch',vi.fn(async(input:string,init?:RequestInit)=>{
+    if(input.includes('voided-tickets'))return new Response(JSON.stringify({ticket_ids:[],next_cursor:null}))
+    const batch=JSON.parse(init!.body as string).occurrences;sent.push(batch.map((row:{occurrence_id:string})=>row.occurrence_id))
+    return new Response('{}',{status:batch[0].occurrence_id==='a-odd'?422:500})
+  }))
+  render(<App/>);fireEvent.click(await screen.findByRole('button',{name:'Sync queued scans'}))
+  await screen.findByText(/^Sync failed: The server answered/)
+  expect(sent).toStrictEqual([['a-odd'],['b-valid']])
+  expect(screen.getByText('Pre-upgrade record a-odd could not sync. It remains queued and listed in the export.')).toBeDefined()
+  expect(await rawGetAll(dbName,STORE.occurrences)).toStrictEqual([odd,valid])
+})

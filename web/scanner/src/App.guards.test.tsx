@@ -80,6 +80,14 @@ it.each(cases.flatMap(state => [true, false, undefined].map(replay => ({ state, 
   expect(await rawGet(dbName, STORE.occurrences, scans[0].occurrence_id as string)).toStrictEqual(before)
 })
 
+it.each([true, false, undefined])('admits a fresh durable reservation with replay=%s', async replay => {
+  scanReply = async () => new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-10-18T09:00:01.456Z', ...(replay === undefined ? {} : { replay }) }), { status: 200 })
+  render(<App />); await scan()
+  await screen.findByRole('heading', { name: 'Accepted' })
+  const row = await rawGet(dbName, STORE.occurrences, scans[0].occurrence_id as string)
+  expect(row).toMatchObject({ state: 'ACTUATED', actuated: true, ownerId: page.coordinator.ownerId, direction: 'entry', localOutcome: { family: 'actuation', cause: 'reserved' } })
+})
+
 import { instrumentTransactions } from './test/idb-instrument'
 it('retains a failed queue latch through pairing cancellation and repairs only that queue', async () => {
   render(<App />)
@@ -95,8 +103,15 @@ it('retains a failed queue latch through pairing cancellation and repairs only t
     const first = page.coordinator.latched(scans[0].occurrence_id as string)
     await act(async () => { localStorage.setItem('scanner.device-token', 'token-b'); window.dispatchEvent(new StorageEvent('storage', { key: 'scanner.device-token', newValue: 'token-b' })) })
     expect(page.coordinator.latched(scans[0].occurrence_id as string)).toBe(first)
+    const write = page.store().persistDecision.bind(page.store())
+    let failArmed = true
+    vi.spyOn(page.store(), 'persistDecision').mockImplementation(async decision => {
+      if (failArmed) instrument.inject('throw', { stores: [STORE.occurrences], mode: 'readwrite', durability: 'strict' })
+      return write(decision)
+    })
     holding!.release('abort')
     await waitFor(() => expect(page.coordinator.repairWarnings()).toHaveLength(1))
+    failArmed = false
     fireEvent.click(await screen.findByRole('button', { name: 'Retry storage' }))
     await waitFor(async () => expect(await rawGet(dbName, STORE.occurrences, scans[0].occurrence_id as string)).toMatchObject({ state: 'QUEUED', localOutcome: { family: 'queue', cause: 'server_unavailable', status: 503 } }))
     fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
