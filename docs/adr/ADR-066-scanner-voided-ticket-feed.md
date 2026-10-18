@@ -203,6 +203,24 @@ TKT-271 ships this revocation refusal only. A device with no completed pull keep
 offline policy. Its screen says that it holds no revocation list yet. The 24-hour ceiling, refusal
 before the first pull, unreadable-time refusal and operator override belong to TKT-500.
 
+**Amended by ADR-085 (TKT-556).** [ADR-085](./ADR-085-scanner-local-outcome-model.md) §3.8
+supersedes the sentence "A listed ticket creates a queued `revocation_refused` occurrence". The rest
+of this section stays. The amended rules:
+
+- A local refusal is Entry-only. It is never an admission.
+- The scanner mints the refusal as an owned PENDING record, then queues it only after its post-mint
+  time check (TKT-399 D30).
+- A refusal that is late, or that the scanner could not mint, is never synced while the page lives.
+  The screen still refuses entry.
+- Page-loss recovery keeps the refusal type. It never turns a refusal into an admission.
+- An Exit scan of a listed ticket writes no record and sends no request. The screen says that the
+  exit was not recorded, that the ticket is no longer valid for entry, and that the holder may leave.
+  An absent exit can cause `exit_required` at the next Entry (owner decision TKT-556 D14-2).
+
+**Not implemented on main.** Main still mints the refusal directly QUEUED with no post-mint time
+check (`web/scanner/src/occurrences.ts:270-281`). The PENDING-first mint ships in ticket 2, the time
+check in ticket 3 and the Exit rule in ticket 4 (ADR-085 §8).
+
 ## Consequences
 
 - **A walk is not a consistent read, and the feed's completeness is across pulls
