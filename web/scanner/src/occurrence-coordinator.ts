@@ -114,7 +114,7 @@ export interface PageCoordinator {
   /** True only for a committed mint in MARKING with no final decision and no settled mark. */
   canReserve(occurrenceId: string): boolean
   /** The store calls this when it creates the actuation transaction. */
-  markStarted(occurrenceId: string, decidedAt: string): { reserved(): void; notReserved(): void; aborted(): void }
+  markStarted(occurrenceId: string, decidedAt: string): { reserved(existingDecidedAt?: string): void; notReserved(): void; aborted(): void }
 
   /** Latches the first final decision. A later proposal returns the existing latch unchanged. */
   latch(proposal: ProposedDecision): FinalDecision
@@ -324,12 +324,12 @@ export function createPageCoordinator({ owner, lock }: PageCoordinatorOptions): 
       entry.mark = 'pending'
       let settleMark!: () => void
       entry.markSettled = new Promise<void>((resolve) => { settleMark = resolve })
-      const settle = (evidence: 'reserved' | 'not_reserved') => {
+      const settle = (evidence: 'reserved' | 'not_reserved', confirmedAt = decidedAt) => {
         if (entry.mark !== 'pending') return
         entry.mark = evidence
         if (evidence === 'reserved') {
           if (!entry.final) {
-            entry.final = Object.freeze({ kind: 'actuation', occurrenceId, decidedAt })
+            entry.final = Object.freeze({ kind: 'actuation', occurrenceId, decidedAt: confirmedAt })
             entry.durable = 'committed'
           } else if (entry.final.kind !== 'actuation') {
             entry.durable = 'settled_as_actuation'
@@ -339,7 +339,7 @@ export function createPageCoordinator({ owner, lock }: PageCoordinatorOptions): 
         settleMark()
       }
       return {
-        reserved: () => settle('reserved'),
+        reserved: (existingDecidedAt) => settle('reserved', existingDecidedAt),
         notReserved: () => settle('not_reserved'),
         aborted: () => settle('not_reserved'),
       }

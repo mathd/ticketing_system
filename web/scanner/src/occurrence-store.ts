@@ -362,6 +362,7 @@ export function createOccurrenceStore(options: OccurrenceStoreOptions): Occurren
       const decidedAt = iso()
       const observer = coordinator.markStarted(occurrenceId, decidedAt)
       let result: ActuationResult = { reserved: false, why: 'missing' }
+      let existingDecidedAt: string | undefined
       try {
         return await runTransaction(db, 'reserveActuation', STORE.occurrences, 'readwrite', STRICT, async (tx) => {
           const os = tx.objectStore(STORE.occurrences)
@@ -371,7 +372,10 @@ export function createOccurrenceStore(options: OccurrenceStoreOptions): Occurren
           else if (!read.ok) result = { reserved: false, why: 'invalid_record' }
           else if (read.record.ownerId !== coordinator.ownerId) result = { reserved: false, why: 'foreign' }
           else if (scanType(read.record) !== 'normal') result = { reserved: false, why: 'refusal' }
-          else if (read.record.state === 'ACTUATED') result = { reserved: false, why: 'own_existing_actuation' }
+          else if (read.record.state === 'ACTUATED') {
+            result = { reserved: false, why: 'own_existing_actuation' }
+            existingDecidedAt = read.record.decidedAt
+          }
           else if (read.record.state !== 'PENDING') result = { reserved: false, why: 'ineligible_state' }
           // actuated:false needs no check here: readCurrentRecord refuses an actuated PENDING row.
           else if (!coordinator.canReserve(occurrenceId)) result = { reserved: false, why: 'not_marking' }
@@ -387,7 +391,11 @@ export function createOccurrenceStore(options: OccurrenceStoreOptions): Occurren
           }
           return result
         }, {
-          onComplete: () => (result.reserved ? observer.reserved() : observer.notReserved()),
+          onComplete: () => {
+            if (result.reserved) observer.reserved()
+            else if (result.why === 'own_existing_actuation') observer.reserved(existingDecidedAt)
+            else observer.notReserved()
+          },
           onAbort: observer.aborted,
         })
       } catch (error) {

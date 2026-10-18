@@ -208,6 +208,10 @@ describe('actuation reservation', () => {
     const { scan } = await marking(a)
     await rawPut(dbName, STORE.occurrences, { ...pendingRow(scan), state: 'ACTUATED', actuated: true, localOutcome: { family: 'actuation', cause: 'reserved' }, decidedAt: decided })
     expect(await a.store().reserveActuation(scan.occurrenceId)).toEqual({ reserved: false, why: 'own_existing_actuation' })
+    expect(a.coordinator.latched(scan.occurrenceId)).toEqual({ kind: 'actuation', occurrenceId: scan.occurrenceId, decidedAt: decided })
+    expect(a.coordinator.pendingTargets()).toEqual([])
+    expect(await a.coordinator.repairAll()).toEqual([])
+    expect(await rawGet(dbName, STORE.occurrences, scan.occurrenceId)).toStrictEqual({ ...pendingRow(scan), state: 'ACTUATED', actuated: true, localOutcome: { family: 'actuation', cause: 'reserved' }, decidedAt: decided })
     const missing = captured()
     a.coordinator.register(missing)
     // A row that was never minted here cannot be reserved.
