@@ -138,7 +138,8 @@ class ReviewTests(unittest.TestCase):
         cases = [
             (record(), "HUMAN_REVIEW", 0),
             (record("Medium"), "HUMAN_REVIEW", 0),
-            (record("Medium", stage="plan-review"), "REVIEW_AGAIN", 1),
+            (record("Medium", stage="plan-review"), "HUMAN_REVIEW", 0),
+            (record("P2", 4, stage="plan-review"), "HUMAN_REVIEW", 0),
             (record("High"), "REVIEW_AGAIN", 1),
             (record("High", 4), "STOP", 1),
         ]
@@ -219,27 +220,38 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(review_round.review_action(record(), policy()), "HUMAN_REVIEW")
 
     def test_every_high_severity_requires_review_even_when_fixed(self):
-        for severity in ("Critical", "High", "P0", "P1"):
-            with self.subTest(severity=severity):
-                self.assertEqual(
-                    review_round.review_action(record(severity), policy()),
-                    "REVIEW_AGAIN",
-                )
+        for stage in ("plan-review", "ai-review", "sprint-review"):
+            for severity in ("Critical", "High", "P0", "P1"):
+                for number, expected in ((1, "REVIEW_AGAIN"), (4, "STOP")):
+                    with self.subTest(stage=stage, severity=severity, round=number):
+                        self.assertEqual(
+                            review_round.review_action(
+                                record(severity, number, stage=stage), policy()
+                            ),
+                            expected,
+                        )
 
     def test_verified_noncritical_fixes_do_not_repeat_deliverable_review(self):
-        for severity in ("Medium", "Low", "Nit", "P2", "P3", "P4"):
-            with self.subTest(severity=severity):
-                self.assertEqual(
-                    review_round.review_action(record(severity), policy()),
-                    "HUMAN_REVIEW",
-                )
+        for stage in ("plan-review", "ai-review", "sprint-review"):
+            for severity in ("Medium", "Low", "Nit", "P2", "P3", "P4"):
+                for number in (1, 4):
+                    with self.subTest(stage=stage, severity=severity, round=number):
+                        candidate = record(severity, number, stage=stage)
+                        candidate["materialChange"] = False
+                        self.assertEqual(
+                            review_round.review_action(candidate, policy()),
+                            "HUMAN_REVIEW",
+                        )
 
-    def test_plan_review_keeps_medium_repeat_requirement(self):
+    def test_medium_plan_finding_still_needs_disposition_and_verification(self):
         for severity in ("Medium", "P2"):
-            candidate = record(severity, stage="plan-review")
-            self.assertEqual(
-                review_round.review_action(candidate, policy()), "REVIEW_AGAIN"
-            )
+            with self.subTest(severity=severity):
+                candidate = record(severity, stage="plan-review")
+                candidate["dispositions"] = {}
+                self.assertEqual(review_round.review_action(candidate, policy()), "FIX")
+                candidate = record(severity, stage="plan-review")
+                candidate["verificationPassed"] = False
+                self.assertEqual(review_round.review_action(candidate, policy()), "FIX")
 
     def test_material_change_requires_review_without_severity_trigger(self):
         for stage in ("plan-review", "ai-review", "sprint-review"):

@@ -10,7 +10,7 @@
   "models": {
     "plan": "gpt-6.1-sol",
     "planReview": "opus-5.5",
-    "implement": "opus-5.5",
+    "implement": "sonnet-5.5",
     "aiReview": "gpt-6.1-sol",
     "research": "gpt-6-luna:high"
   },
