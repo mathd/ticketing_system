@@ -33,8 +33,10 @@ const (
 	defaultAlarmStreamValue = "PLATFORM"
 )
 
+// openDB is the database for every DB-using CLI command. It validates the
+// configuration before any dial (TKT-557, D21), like run and migrate.
 func openDB() (*sql.DB, error) {
-	db, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
+	db, err := openAccessDB(os.Getenv("DATABASE_URL"))
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}

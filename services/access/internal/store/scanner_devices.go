@@ -85,12 +85,20 @@ func (p *Postgres) AuthenticateScannerDevice(ctx context.Context, token string) 
 	if strings.TrimSpace(token) == "" {
 		return ScannerDevice{}, ErrScannerDeviceUnknown
 	}
+	// A pre-decision step (TKT-557). The step completes after the complete row
+	// read and BEFORE the no-row result becomes the unknown-device refusal, so
+	// D39 expiry wins over a late revoked or unknown read.
+	step := startBoundedStep(ctx, preDecisionStepBound, p.scheduler())
+	defer step.release()
 	var device ScannerDevice
-	err := p.db.QueryRowContext(ctx,
+	err := p.db.QueryRowContext(step.ctx,
 		`SELECT id, organizer_id, label, created_at
 		   FROM scanner_devices
 		  WHERE token_hash = $1 AND revoked_at IS NULL`,
 		hashScannerToken(token)).Scan(&device.ID, &device.OrganizerID, &device.Label, &device.CreatedAt)
+	if avail := step.finish().unavailable(SiteDeviceLookup, err); avail != nil {
+		return ScannerDevice{}, avail
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return ScannerDevice{}, ErrScannerDeviceUnknown
 	}
@@ -104,9 +112,25 @@ func (p *Postgres) AuthenticateScannerDevice(ctx context.Context, token string) 
 // statement outside the scan's transaction and its failure is not a scan's
 // failure — a turnstile must not refuse a valid ticket because a bookkeeping
 // UPDATE lost a race (ADR-025 §D6's posture: the door opens).
+//
+// One autocommit statement under the shared step bound (TKT-557, D27 and D35).
+// The subquery locks the row for this statement, or finds no row when another
+// transaction holds it: a held row lock skips the update instead of waiting,
+// and last_seen_at stays stale. A table lock, a pool wait, a reset ping, a
+// dial or network I/O can still wait, and the PROVISIONAL touchStepBound ends
+// that wait (TKT-560 qualifies it). Expiry during I/O can discard the
+// connection. The result is discarded: Touch never changes authentication.
 func (p *Postgres) TouchScannerDevice(ctx context.Context, id uuid.UUID) {
-	_, _ = p.db.ExecContext(ctx, `UPDATE scanner_devices SET last_seen_at = now() WHERE id = $1`, id)
+	step := startBoundedStep(ctx, touchStepBound, p.scheduler())
+	defer step.release()
+	_, _ = p.db.ExecContext(step.ctx, touchScannerDeviceSQL, id)
+	_ = step.finish()
 }
+
+// touchScannerDeviceSQL is the advisory Touch. FOR NO KEY UPDATE, not FOR
+// UPDATE: Touch changes last_seen_at, not the row key (D35).
+const touchScannerDeviceSQL = `UPDATE scanner_devices SET last_seen_at = now()
+	 WHERE id = (SELECT id FROM scanner_devices WHERE id = $1 FOR NO KEY UPDATE SKIP LOCKED)`
 
 // RevokeScannerDevice retires a device. Idempotent: revoking an already-revoked
 // device is a success, because the operator's intent ("this phone must not

@@ -33,6 +33,18 @@ Durations use Go duration syntax and must be positive. Database counts must be p
 fails at startup when a value is invalid; silently falling back would hide a broken capacity
 contract. Compose forwards these variables to every applicable process.
 
+**Access and the gateway need `HTTP_WRITE_TIMEOUT` of at least `30s`** (TKT-557, ADR-085 §2.4b).
+Both processes refuse to start when the resolved value is below `30s`. The error names the variable
+and the minimum. The check runs before the process opens any resource or listener. The scanner can
+show a result up to 30 s after a scan, so a shorter write deadline would lose more committed answers.
+Compose forwards one value to both processes, and Compose itself accepts `29s`: the processes refuse
+it. The other services keep their current policy.
+
+Equality is allowed, and it does not close the race. The gateway starts its write deadline before
+the forwarded Access request starts its own, so with equal values the gateway deadline can expire
+first and lose a response that Access committed. `HTTP_READ_TIMEOUT` is a request-read deadline, not
+a handler deadline: nothing guarantees a total handler time.
+
 ## Gateway
 
 The HTTP variables above, `PORT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, plus one URL per registered route:
@@ -135,6 +147,45 @@ The scan routes require `X-Scanner-Token` from an enrolled device (ai-review S1)
 environment variable configures it: devices are enrolled per organizer with
 `access enrol-scanner` and stored hashed. See `docs/development.md` § Scanner device
 enrolment.
+
+**Provisional pre-decision bounds** (TKT-557, ADR-085 §8 ticket 0). Access limits four steps that
+run before any ticket decision to **500 ms each**: the device lookup, the initial policy read of a
+live scan, and the single and pass transaction acquisitions. A step that passes its bound answers
+`503`. The advisory device Touch after a successful lookup has its own **500 ms** bound and never
+changes the answer. Both values are **PROVISIONAL**: TKT-557 ships them without load proof, and
+TKT-560 qualifies them. They are code constants, not settings; a changed value needs an ADR-085
+amendment. **Venue use after TKT-558 requires TKT-560 Done and the owner's selection of the bound
+and of the acceptable offline-spill rate.** Nothing enforces that order: the operator must follow it.
+The bound sets how many healthy but slow scans go offline at normal peak, not only latency.
+
+## Access: `DATABASE_URL` must set `sslmode=disable`
+
+Every Access command that opens its database refuses `DATABASE_URL` unless the string sets
+`sslmode=disable` **explicitly** and the parsed configuration enables no TLS and no TLS fallback
+(TKT-557, ADR-085 decision D21). This covers the server, `migrate`, and every database command of the
+CLI (`lifecycle-backfill`, `verify-lifecycle`, `seal-lifecycle-epoch`, `set-lifecycle-mode` and the
+scanner commands). `healthcheck` and `keygen` open no database. The refusal comes before any dial,
+and its text does not contain the URL.
+
+- The last `sslmode` in the string decides, as in pgx, in URL and keyword form. A keyword value can
+  be quoted; text inside a value is never read as a key.
+- `PGSSLMODE` in the environment cannot supply the setting, and it cannot override it.
+- A later `ssl=true` in a URL turns TLS on, so that URL is refused too.
+
+The three Access URLs in `compose.yaml` set it. Other services are not affected.
+
+**Why, and what it costs.** Access answers a connect-time restart (SQLSTATE 57P03) or a full server
+(53300) with a pre-decision `503` only when every connect attempt fails with a known class. With the
+pgx default (`prefer`), a failed TLS attempt adds an error with no type, and the answer would be
+`500`; after TKT-558 a routine database restart would then stop the gates. The Compose PostgreSQL has
+no TLS, so `prefer` already ends in plaintext there: this costs no encryption. It is a
+**Compose-only restriction**. A deployment with database TLS needs a new ADR and a new real-driver
+probe first.
+
+**DNS is availability only inside Compose.** A device lookup or scan step whose connect fails on DNS
+answers `503`, because in Compose the name `postgres` is the database service and a DNS failure means
+it is stopped or disconnected. Outside that topology a wrong host name gives the same error, and the
+scanner can then admit offline. The check above does not prove that the host name is correct.
 
 ## Database passwords have no defaults
 

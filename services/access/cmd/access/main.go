@@ -6,7 +6,6 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
-	"database/sql"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -18,7 +17,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
@@ -43,6 +42,12 @@ const serviceName = "access"
 // It opens exactly one operation — the staff redelivery of a completed order's
 // tickets — and nothing else on this service's internal surface.
 const staffWriteTokenEnv = "ACCESS_STAFF_WRITE_TOKEN"
+
+// minimumWriteTimeout is the smallest HTTP_WRITE_TIMEOUT Access accepts
+// (TKT-557, D5). The gateway in front holds the same minimum. Equal values
+// still let the gateway's earlier write deadline lose a committed response;
+// this guard removes the configuration that makes that likely, not the race.
+const minimumWriteTimeout = 30 * time.Second
 
 func main() {
 	result := execute(os.Args[1:], productionCommandCallbacks(), run)
@@ -141,7 +146,8 @@ func migrate() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	db, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
+	// Validated before any dial (TKT-557, D21).
+	db, err := openAccessDB(os.Getenv("DATABASE_URL"))
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
 	}
@@ -181,11 +187,20 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("http configuration: %w", err)
 	}
+	if err := httpConfig.RequireWriteTimeoutAtLeast(minimumWriteTimeout); err != nil {
+		return fmt.Errorf("http configuration: %w", err)
+	}
 	validateResponses, err := runtimecfg.ResponseValidationFromEnv()
 	if err != nil {
 		return fmt.Errorf("response validation configuration: %w", err)
 	}
 	dbConfig, err := runtimecfg.DatabaseFromEnv()
+	if err != nil {
+		return fmt.Errorf("database configuration: %w", err)
+	}
+	// Before any resource (TKT-557, D21): the availability ledger is only
+	// valid on the explicit-disable form.
+	dsnConfig, err := accessDatabaseConfig(os.Getenv("DATABASE_URL"))
 	if err != nil {
 		return fmt.Errorf("database configuration: %w", err)
 	}
@@ -202,10 +217,7 @@ func run() error {
 		_ = shutdown(sctx)
 	}()
 
-	db, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
-	if err != nil {
-		return fmt.Errorf("open db: %w", err)
-	}
+	db := stdlib.OpenDB(*dsnConfig)
 	defer func() { _ = db.Close() }()
 	dbConfig.Apply(db)
 	// Migrations ran out-of-band before this process started (ADR-022).

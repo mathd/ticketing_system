@@ -489,7 +489,7 @@ func TestVoidedFeedMigrationSchema(t *testing.T) {
 
 	var def string
 	if err := db.QueryRowContext(ctx,
-		`SELECT indexdef FROM pg_indexes WHERE indexname = $1`, feedOrganizerIndex).Scan(&def); err != nil {
+		`SELECT indexdef FROM pg_indexes WHERE indexname = $1 AND schemaname = current_schema()`, feedOrganizerIndex).Scan(&def); err != nil {
 		t.Fatalf("%s is absent after migrating: %v", feedOrganizerIndex, err)
 	}
 	if !strings.Contains(def, "(organizer_id, id)") {
@@ -497,7 +497,7 @@ func TestVoidedFeedMigrationSchema(t *testing.T) {
 	}
 	var valid bool
 	if err := db.QueryRowContext(ctx,
-		`SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = $1`,
+		`SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = $1 AND c.relnamespace=current_schema()::regnamespace`,
 		feedOrganizerIndex).Scan(&valid); err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +572,7 @@ func TestVoidedFeedMigrationIsIrreversible(t *testing.T) {
 	}
 	var n int
 	if err := db.QueryRowContext(ctx,
-		`SELECT count(*) FROM pg_class WHERE relname = $1`, feedOrganizerIndex).Scan(&n); err != nil || n != 1 {
+		`SELECT count(*) FROM pg_class WHERE relname = $1 AND relnamespace=current_schema()::regnamespace`, feedOrganizerIndex).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("a failed down attempt altered the schema (n=%d err=%v)", n, err)
 	}
 }

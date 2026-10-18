@@ -37,7 +37,7 @@ func (p *Postgres) Scan(ctx context.Context, in ScanInput) (RedeemResult, error)
 	if direction != AdmissionEntry && direction != AdmissionExit {
 		return RedeemResult{}, fmt.Errorf("direction %q is not an admission direction", direction)
 	}
-	policy, err := p.slotPolicy(ctx, p.db, in.SlotID)
+	policy, err := p.livePolicy(ctx, in.SlotID)
 	if err != nil {
 		return RedeemResult{}, err
 	}
@@ -70,11 +70,15 @@ func (p *Postgres) admitPass(ctx context.Context, in RedeemInput, direction Admi
 		return RedeemResult{}, errors.New("a gate occurrence carries its claimed admission time")
 	}
 
-	tx, err := p.db.BeginTx(ctx, nil)
+	// Same pre-decision acquisition as the single path (TKT-557).
+	tx, release, err := p.beginLive(ctx, SitePassBegin)
 	if err != nil {
 		return RedeemResult{}, err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer func() {
+		_ = tx.Rollback()
+		release()
+	}()
 
 	var id TicketIdentity
 	err = tx.QueryRowContext(ctx, `SELECT order_id,organizer_id,slot_id FROM tickets WHERE id=$1 FOR UPDATE`, in.TicketID).

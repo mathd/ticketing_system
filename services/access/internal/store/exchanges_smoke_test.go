@@ -305,7 +305,7 @@ func TestExchangedLifecycleMigrationIsIrreversible(t *testing.T) {
 	// The singleton index still names `exchanged`, so the failed attempt changed nothing.
 	var def string
 	if err := db.QueryRowContext(ctx,
-		`SELECT indexdef FROM pg_indexes WHERE indexname='lifecycle_events_singleton_type_uidx'`).Scan(&def); err != nil {
+		`SELECT indexdef FROM pg_indexes WHERE indexname='lifecycle_events_singleton_type_uidx' AND schemaname=current_schema()`).Scan(&def); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(def, "exchanged") {

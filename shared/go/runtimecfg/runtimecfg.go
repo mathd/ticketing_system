@@ -41,6 +41,19 @@ func HTTPFromEnv() (HTTP, error) {
 	return HTTP{readHeader, read, write, idle}, nil
 }
 
+// RequireWriteTimeoutAtLeast refuses resolved settings whose write timeout is
+// below minimum (TKT-557). A process whose own contract needs a minimum calls
+// it right after HTTPFromEnv, before it creates any resource: Access and the
+// gateway need 30 s. The global defaults do not change, and other services
+// keep their current policy. The error names the variable and the minimum and
+// echoes nothing secret.
+func (c HTTP) RequireWriteTimeoutAtLeast(minimum time.Duration) error {
+	if c.WriteTimeout < minimum {
+		return fmt.Errorf("HTTP_WRITE_TIMEOUT must be at least %s for this process, got %s", minimum, c.WriteTimeout)
+	}
+	return nil
+}
+
 func (c HTTP) Apply(server *http.Server) {
 	server.ReadHeaderTimeout = c.ReadHeaderTimeout
 	server.ReadTimeout = c.ReadTimeout

@@ -34,7 +34,19 @@ if [ "${SMOKE_HERMETIC:-0}" != "1" ]; then
 fi
 
 compose() { docker compose -p "$PROJECT" "${COMPOSE_FILES[@]}" "$@"; }
-cleanup() { compose down -v --remove-orphans >/dev/null 2>&1 || true; }
+# The recovery-held PostgreSQL for the Access suite (TKT-557). It is owned by
+# this run's exact label and captured id; see the helper for the rules.
+. "$ROOT/scripts/smoke-recovery.sh"
+# The captured recovery container goes first (its logs are kept on a failure),
+# then any container a hard-killed earlier run of THIS checkout left with the
+# exact label, then the stack. EXIT also runs on INT and TERM (the traps below
+# exit), so every path removes the container and its anonymous volume.
+cleanup() {
+  local status=$?
+  recovery_remove_owned "$status"
+  recovery_preclean || true
+  compose down -v --remove-orphans >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -128,8 +140,17 @@ cd "$ROOT/services/access"
 # and not one of them has ever run here — three were failing on main when this was
 # found, invisibly, because the gate never executed the package. TKT-162 added
 # more api-tier tests, which would have been dark on arrival.
+#
+# ACCESS_RECOVERY_TEST_DATABASE_URL (TKT-557, ADR-085 §8 ticket 0, D28): the
+# availability ledger admits connect-time SQLSTATE 57P03 as a pre-decision 503,
+# and ADR-085 requires a real database for that ledger. A failed start fails
+# the run here; the tests refuse to skip or to fall back to a simulation. Only
+# this suite gets the URL, and the container is removed as soon as it is done.
+recovery_start
 ACCESS_MIGRATION_TEST_DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/postgres" \
+ACCESS_RECOVERY_TEST_DATABASE_URL="$RECOVERY_DSN" \
 go test -tags smoke -count=1 ./internal/...
+recovery_remove_owned 0
 
 cd "$ROOT/services/catalog"
 # No -run filter, for the same reason as commerce above: an allowlist means a newly

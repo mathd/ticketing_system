@@ -87,6 +87,9 @@ type RedeemResult struct {
 type Postgres struct {
 	db  *sql.DB
 	cfg Config
+	// steps is the pre-decision step clock (TKT-557). Nil is the real clock;
+	// only unit tests set it, to force timer and handoff orders.
+	steps stepScheduler
 }
 
 // New builds the store. Config carries the lifecycle signer and keyring: every
@@ -299,11 +302,16 @@ func (p *Postgres) redeemSingle(ctx context.Context, in RedeemInput) (RedeemResu
 			return RedeemResult{}, errors.New("a gate occurrence carries its claimed admission time")
 		}
 	}
-	tx, err := p.db.BeginTx(ctx, nil)
+	// The live acquisition is a pre-decision step (TKT-557): bounded, and
+	// classified only until handoff. Later statements use the request context.
+	tx, release, err := p.beginLive(ctx, SiteSingleBegin)
 	if err != nil {
 		return RedeemResult{}, err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer func() {
+		_ = tx.Rollback()
+		release()
+	}()
 
 	var id TicketIdentity
 	err = tx.QueryRowContext(ctx, `SELECT order_id,organizer_id,slot_id FROM tickets WHERE id=$1 FOR UPDATE`, in.TicketID).

@@ -5,6 +5,7 @@ go 1.27.2
 replace ticketing/shared => ../../shared/go
 
 require (
+	github.com/felixge/httpsnoop v1.1.0
 	github.com/getkin/kin-openapi v0.149.0
 	github.com/go-chi/chi/v5 v5.4.0
 	github.com/google/uuid v1.6.0
@@ -25,7 +26,6 @@ require (
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-openapi/jsonpointer v1.0.2 // indirect

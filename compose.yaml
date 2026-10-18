@@ -384,7 +384,7 @@ services:
     environment:
       # DDL only, so no lifecycle key material here: migrate cannot sign, and
       # giving it the seed would imply it could.
-      DATABASE_URL: postgres://access:${ACCESS_DB_PASSWORD}@postgres:5432/access
+      DATABASE_URL: postgres://access:${ACCESS_DB_PASSWORD}@postgres:5432/access?sslmode=disable
 
   # Adopts pre-0003 lifecycle history into the signed chain (ADR-021 §D9).
   #
@@ -405,7 +405,7 @@ services:
       access-migrate:
         condition: service_completed_successfully
     environment:
-      DATABASE_URL: postgres://access:${ACCESS_DB_PASSWORD}@postgres:5432/access
+      DATABASE_URL: postgres://access:${ACCESS_DB_PASSWORD}@postgres:5432/access?sslmode=disable
       ACCESS_LIFECYCLE_PRIVATE_KEY: ${ACCESS_LIFECYCLE_PRIVATE_KEY:?run `make up` once to generate local signing keys}
       ACCESS_LIFECYCLE_KID: ${ACCESS_LIFECYCLE_KID:-access-lifecycle/local-v1}
       ACCESS_LIFECYCLE_PUBLIC_KEYS: ${ACCESS_LIFECYCLE_PUBLIC_KEYS:?run `make up` once to generate local signing keys}
@@ -423,7 +423,9 @@ services:
     build: { context: ., dockerfile: build/go.Dockerfile, args: { PKG: ticketing/services/access/cmd/access } }
     environment:
       <<: *go-env
-      DATABASE_URL: postgres://access:${ACCESS_DB_PASSWORD}@postgres:5432/access
+      # Explicit sslmode=disable on all three Access URLs: every Access command
+      # refuses any other form (TKT-557, ADR-085 D21). This PostgreSQL has no TLS.
+      DATABASE_URL: postgres://access:${ACCESS_DB_PASSWORD}@postgres:5432/access?sslmode=disable
       # Per-service NATS publisher/subscriber credential (TKT-170, ADR-072). Held by
       # access alone — deliberately NOT in the shared &go-env anchor.
       NATS_URL: nats://access:${NATS_ACCESS_PASSWORD:?no default is shipped - run 'make up' once to generate a local credential}@nats:4222
