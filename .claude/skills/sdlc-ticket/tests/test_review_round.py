@@ -253,6 +253,20 @@ class ReviewTests(unittest.TestCase):
                 candidate["verificationPassed"] = False
                 self.assertEqual(review_round.review_action(candidate, policy()), "FIX")
 
+    def test_rejected_medium_plan_finding_needs_no_refutation_check(self):
+        for severity in ("Medium", "P2"):
+            for number in (1, 4):
+                with self.subTest(severity=severity, round=number):
+                    candidate = record(severity, number, stage="plan-review")
+                    candidate["dispositions"]["F1"] = "rejected"
+                    candidate["dispositionEvidence"]["F1"] = (
+                        "The plan already specifies the client revision check."
+                    )
+                    candidate["refutationChecks"] = {}
+                    self.assertEqual(
+                        review_round.review_action(candidate, policy()), "HUMAN_REVIEW"
+                    )
+
     def test_material_change_requires_review_without_severity_trigger(self):
         for stage in ("plan-review", "ai-review", "sprint-review"):
             candidate = record("Low", stage=stage)

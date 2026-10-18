@@ -87,10 +87,9 @@ Use the original normalized severity, never an author's reclassification. Findin
 threshold still need a disposition and verification; their fixes are handed off **not re-reviewed**,
 and the review-guide says so. A material change repeats the round at any severity.
 
-Ticket reviews use this threshold to reduce repeat rounds for smaller corrections. Sprint review
-checks documentation, test quality and other issues across the completed tickets through its four
-review areas (`sdlc-sprint-review`). Findings already identified in a ticket still need the
-disposition and verification required by § One round.
+Ticket reviews use this threshold to reduce repeat rounds for smaller corrections. It applies to
+all tickets. In sprint mode, sprint review checks documentation, test quality and other issues
+across the completed tickets through its four review areas (`sdlc-sprint-review`).
 
 Why a fix diff deserves care even below the threshold: in TKT-22, 30 of 42 findings were defects in
 code written to fix an earlier finding (`quality-practices.md` §2). Judge `materialChange` on the
@@ -118,6 +117,9 @@ this is a STOP condition (SKILL.md § Autonomous mode) — the agent never autho
 itself, and silence or a timeout is not authorization.
 
 ## Refutations
+
+A rejected finding below the repeat threshold needs recorded counter-evidence, without a reviewer
+refutation check.
 
 For a finding at the stage's repeat threshold that you reject, ask the **same reviewer** to check
 the refutation against the **original frozen artifact** before deciding whether to repeat the round.
