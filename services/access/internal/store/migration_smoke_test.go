@@ -474,7 +474,7 @@ func TestRepeatableAdmissionMigrationEnforcesPartialSingletonUniqueness(t *testi
 	// CHECK on event_type.
 	var predicate string
 	if err := db.QueryRowContext(ctx, `SELECT pg_get_expr(ix.indpred, ix.indrelid) FROM pg_index ix
-		JOIN pg_class c ON c.oid=ix.indexrelid WHERE c.relname='lifecycle_events_singleton_type_uidx'`).
+		JOIN pg_class c ON c.oid=ix.indexrelid WHERE c.relname='lifecycle_events_singleton_type_uidx' AND c.relnamespace=current_schema()::regnamespace`).
 		Scan(&predicate); err != nil {
 		t.Fatalf("partial unique index missing: %v", err)
 	}
@@ -484,13 +484,13 @@ func TestRepeatableAdmissionMigrationEnforcesPartialSingletonUniqueness(t *testi
 		}
 	}
 	var n int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_class WHERE relname='lifecycle_events_ticket_idx'`).Scan(&n); err != nil || n != 1 {
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_class WHERE relname='lifecycle_events_ticket_idx' AND relnamespace=current_schema()::regnamespace`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("lifecycle_events_ticket_idx missing (n=%d err=%v): repeatable-row reads would seq-scan", n, err)
 	}
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_constraint WHERE conrelid='lifecycle_events'::regclass AND contype='c' AND pg_get_constraintdef(oid) LIKE '%event_type%'`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("want exactly one event_type CHECK after 0004, got %d (err=%v)", n, err)
 	}
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_constraint WHERE conname='lifecycle_events_ticket_id_event_type_key'`).Scan(&n); err != nil || n != 0 {
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_constraint WHERE conname='lifecycle_events_ticket_id_event_type_key' AND connamespace=current_schema()::regnamespace`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("table-wide UNIQUE still present after 0004 (n=%d err=%v)", n, err)
 	}
 }
@@ -567,7 +567,7 @@ func TestRepeatableAdmissionMigrationIsIrreversible(t *testing.T) {
 		t.Fatal("migration 0004 rolled back; immutable ticket history is not protected")
 	}
 	var n int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_class WHERE relname='lifecycle_events_singleton_type_uidx'`).Scan(&n); err != nil || n != 1 {
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_class WHERE relname='lifecycle_events_singleton_type_uidx' AND relnamespace=current_schema()::regnamespace`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("failed down attempt altered the schema (n=%d err=%v)", n, err)
 	}
 }
@@ -772,7 +772,7 @@ func TestPassPolicyMigrationSchema(t *testing.T) {
 	// The union read (trace ∪ quarantine) is indexed by ticket or every pass
 	// scan seq-scans quarantine (ADR-019's lesson, generalized by 0004).
 	var n int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_class WHERE relname='lifecycle_integrity_quarantine_ticket_idx'`).Scan(&n); err != nil || n != 1 {
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_class WHERE relname='lifecycle_integrity_quarantine_ticket_idx' AND relnamespace=current_schema()::regnamespace`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("lifecycle_integrity_quarantine_ticket_idx missing (n=%d err=%v)", n, err)
 	}
 }

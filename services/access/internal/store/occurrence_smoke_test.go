@@ -1035,7 +1035,7 @@ func TestPerOccurrenceQuarantineMigrationIsIrreversible(t *testing.T) {
 		t.Fatal("migration 0005 rolled back; quarantine history is not protected")
 	}
 	var n int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_class WHERE relname='lifecycle_integrity_quarantine_occurrence_uidx'`).Scan(&n); err != nil || n != 1 {
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_class WHERE relname='lifecycle_integrity_quarantine_occurrence_uidx' AND relnamespace=current_schema()::regnamespace`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("failed down attempt altered the schema (n=%d err=%v)", n, err)
 	}
 }
