@@ -497,6 +497,36 @@ func (h *routerHarness) serve(router http.Handler, req *http.Request) *httptest.
 	return rec
 }
 
+// routerWatchdog bounds one request in the step-expiry fixture. It is
+// independent of the production step timer and below 3 s.
+const routerWatchdog = 2500 * time.Millisecond
+
+// serveWithin runs one request under the independent watchdog and returns
+// the answer and the elapsed time. If the request does not return within
+// routerWatchdog, the case fails and the request is cancelled. A cancelled
+// request's answer is never read, so the watchdog cannot supply a 503.
+func (h *routerHarness) serveWithin(t *testing.T, router http.Handler, req *http.Request) (*httptest.ResponseRecorder, time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(req.Context())
+	defer cancel()
+	done := make(chan *httptest.ResponseRecorder, 1)
+	start := time.Now()
+	go func() { done <- h.serve(router, req.WithContext(ctx)) }()
+	select {
+	case rec := <-done:
+		return rec, time.Since(start)
+	case <-time.After(routerWatchdog):
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Error("the request did not return 5s after the watchdog cancelled it")
+	}
+	t.Fatalf("watchdog: the request did not return within %s; it was cancelled, and its answer is not evidence", routerWatchdog)
+	return nil, 0
+}
+
 // admissions counts admission facts for one ticket through the healthy
 // handle: redeemed or entry events, and quarantine-side records.
 func (h *routerHarness) admissions(t *testing.T, ctx context.Context, tk smokeTicket) int {
@@ -603,7 +633,9 @@ func TestRouterStoreUnavailableAtPolicyAndBegin(t *testing.T) {
 }
 
 // D39 expiry at each site through the Router: a real backlog-full dial
-// blocks, the production step timer fires, and the fixed 503 answers.
+// blocks, the production step timer fires, and the fixed 503 answers. An
+// independent watchdog below 3 s bounds each request; if the step does not
+// end it, the case fails instead of hanging until the package timeout.
 func TestRouterStepExpiryAtEverySite(t *testing.T) {
 	for _, tc := range []struct {
 		site, after string
@@ -625,14 +657,9 @@ func TestRouterStepExpiryAtEverySite(t *testing.T) {
 			} else {
 				h.f.ArmAfter(tc.after, testdb.FaultBlockedDial)
 			}
-			start := time.Now()
-			rec := h.serve(h.server().Router(nil, true), h.request(http.MethodPost, "/scans", scanBody(t, tk, uuid.NewString())))
-			elapsed := time.Since(start)
+			rec, elapsed := h.serveWithin(t, h.server().Router(nil, true), h.request(http.MethodPost, "/scans", scanBody(t, tk, uuid.NewString())))
 			h.f.Disarm()
 			requireExactJSON(t, rec, 503, tc.body)
-			if elapsed >= 3*time.Second {
-				t.Fatalf("the 503 took %s", elapsed)
-			}
 			if h.f.BlockedDials() < 1 {
 				t.Fatal("the blocked dial was never entered")
 			}
