@@ -103,10 +103,11 @@ const (
 type CutMode string
 
 const (
-	// CutFIN closes the client side with a FIN before it forwards the bytes.
+	// CutFIN closes the client side with a FIN before it forwards the bytes
+	// that complete the pattern.
 	CutFIN CutMode = "fin"
 	// CutRST closes the client side with an RST (SO_LINGER=0) before it
-	// forwards the bytes.
+	// forwards the bytes that complete the pattern.
 	CutRST CutMode = "rst"
 	// Withhold forwards the bytes and then holds every server reply until the
 	// client closes.
@@ -670,9 +671,10 @@ func (f *Fixture) BlockedDials() int64 {
 	return f.blocked.entered.Load()
 }
 
-// CutOn arms the proxy once: the next client bytes that contain pattern
-// (case insensitive) meet mode. It returns a channel that closes when the cut
-// happens.
+// CutOn arms the proxy once: when the client bytes that one connection sends
+// after this call complete pattern (case insensitive), that connection meets
+// mode. The match crosses socket reads. It returns a channel that closes when
+// the cut happens.
 func (f *Fixture) CutOn(pattern string, mode CutMode) <-chan struct{} {
 	f.t.Helper()
 	if f.proxy == nil {
@@ -790,15 +792,42 @@ func (p *proxy) arm(pattern string, mode CutMode) <-chan struct{} {
 	return p.rule.fired
 }
 
-func (p *proxy) match(chunk []byte) *cutRule {
+// clientStream is the match state of one client connection: the rule it
+// last saw and at most len(pattern)-1 bytes that it read under that rule.
+type clientStream struct {
+	rule *cutRule
+	tail []byte
+}
+
+// match reports the armed rule when chunk completes its pattern in the
+// connection's byte stream. A TCP read boundary is not a statement boundary
+// (ai-review R1-1), so the match crosses reads. Only bytes read after the rule
+// was armed count, and the buffer holds at most len(pattern)-1 bytes. The
+// caller acts before it forwards chunk, so the server never holds a complete
+// pattern that a cut was armed for.
+func (p *proxy) match(s *clientStream, chunk []byte) *cutRule {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.rule == nil || !bytes.Contains(bytes.ToLower(chunk), p.rule.pattern) {
+	if p.rule == nil {
 		return nil
 	}
-	rule := p.rule
-	p.rule = nil
-	return rule
+	if s.rule != p.rule {
+		// Bytes read under no rule are never kept, and bytes read under an
+		// earlier rule never complete this one.
+		s.rule, s.tail = p.rule, nil
+	}
+	window := append(s.tail, bytes.ToLower(chunk)...)
+	if bytes.Contains(window, p.rule.pattern) {
+		rule := p.rule
+		p.rule = nil
+		s.rule, s.tail = nil, nil
+		return rule
+	}
+	if keep := len(p.rule.pattern) - 1; len(window) > keep {
+		window = window[len(window)-keep:]
+	}
+	s.tail = append([]byte(nil), window...)
+	return nil
 }
 
 func (p *proxy) handle(client net.Conn) {
@@ -825,11 +854,12 @@ func (p *proxy) handle(client net.Conn) {
 			_ = client.Close()
 		}
 	}()
+	stream := &clientStream{}
 	buf := make([]byte, 32<<10)
 	for {
 		n, err := client.Read(buf)
 		if n > 0 {
-			if rule := p.match(buf[:n]); rule != nil {
+			if rule := p.match(stream, buf[:n]); rule != nil {
 				switch rule.mode {
 				case CutFIN:
 					withhold.Store(true)
