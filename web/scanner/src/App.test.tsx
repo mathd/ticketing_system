@@ -376,3 +376,27 @@ describe('device pairing', () => {
     expect(screen.queryByText(/offline scan/i)).toBeNull()
   })
 })
+
+it('cancels a held camera detection across auth refusal and pairing B; fresh B detection works',async()=>{
+  const pending=deferred<Array<{rawValue:string}>>()
+  const detect=vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValue([{rawValue:'fresh-b'}])
+  vi.stubGlobal('BarcodeDetector',class{detect=detect})
+  const {stream,stop}=fakeStream();stubCamera(async()=>stream)
+  vi.spyOn(HTMLMediaElement.prototype,'play').mockResolvedValue()
+  const sent:Record<string,unknown>[]=[]
+  vi.stubGlobal('fetch',vi.fn(async(input:Request|string)=>{
+    if(typeof input==='string')return new Response(JSON.stringify({ticket_ids:[],next_cursor:null}))
+    sent.push(await input.clone().json())
+    return sent.length===1?new Response('',{status:401}):new Response(JSON.stringify({decision:'accepted',scanned_at:'2026-10-18T12:34:56.789Z'}))
+  }))
+  render(<App/>);fireEvent.click(screen.getByRole('button',{name:'Use camera'}));await waitFor(()=>expect(detect).toHaveBeenCalledOnce())
+  pasteCredential('manual-a');await screen.findByLabelText('Pairing token');expect(stop).toHaveBeenCalled()
+  fireEvent.change(screen.getByLabelText('Pairing token'),{target:{value:'token-b'}});fireEvent.submit(screen.getByRole('form',{name:'Device pairing'}))
+  await screen.findByLabelText('Ticket credential');expect(screen.queryByRole('alert',{name:'Scan result'})).toBeNull()
+  const original=await rawGetAll(dbName,STORE.occurrences)
+  await act(async()=>{pending.resolve([{rawValue:'stale-a'}]);await pending.promise})
+  expect(sent.map(row=>row.qr_payload)).toEqual(['manual-a']);expect(await rawGetAll(dbName,STORE.occurrences)).toStrictEqual(original)
+  fireEvent.click(screen.getByRole('button',{name:'Use camera'}));await screen.findByRole('heading',{name:'Accepted'})
+  expect(sent.map(row=>row.qr_payload)).toEqual(['manual-a','fresh-b'])
+  expect((await rawGetAll(dbName,STORE.occurrences) as {state:string}[]).filter(row=>row.state==='ACTUATED')).toHaveLength(1)
+})

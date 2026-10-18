@@ -173,6 +173,17 @@ it('queue-latch-no-storage-api at the actual App classification boundary', async
   scanReply = async () => { armed = true; return new Response('', { status: 503 }) }
   const latch = page.coordinator.latch.bind(page.coordinator)
   vi.spyOn(page.coordinator, 'latch').mockImplementation((proposal) => { if (armed) events.push('latch'); return latch(proposal) })
+  const api=page.store() as unknown as Record<string,(...args:unknown[])=>unknown>
+  for(const [name,method] of Object.entries(api)){
+    if(typeof method!=='function')continue
+    vi.spyOn(api,name).mockImplementation((...args)=>{if(armed)events.push(name);return Reflect.apply(method,api,args)})
+  }
+  const factory=indexedDB as unknown as Record<string,(...args:unknown[])=>unknown>
+  for(const name of ['open','deleteDatabase','databases']){
+    if(typeof factory[name]!=='function')continue
+    const method=factory[name]
+    vi.spyOn(factory,name).mockImplementation((...args)=>{if(armed)events.push(name);return Reflect.apply(method,indexedDB,args)})
+  }
   const tx = IDBDatabase.prototype.transaction
   vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (this: IDBDatabase, ...args: Parameters<typeof tx>) {
     if (armed) events.push('transaction')
