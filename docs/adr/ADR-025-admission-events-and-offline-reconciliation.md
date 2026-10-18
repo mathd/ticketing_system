@@ -207,6 +207,40 @@ conflicts. Together every physical admission that Access learns about is represe
    without session storage, or a second tab left open after the first crashes, a bounded recovery
    path. Actuation still requires `PENDING`, `actuated:false`, and the current owner id in one
    IndexedDB transaction. Recovery can therefore make a request retryable, never gate-opening.
+
+   **Amended by ADR-085 (TKT-556).** [ADR-085](./ADR-085-scanner-local-outcome-model.md) holds
+   the scanner local outcome model that amends this section. This section's occurrence identity,
+   distinguishable replay result, pending-before-send, own-row actuation and mark-before-open stay
+   binding. ADR-085 supersedes these parts of this section:
+
+   - **Ownership and recovery.** One page-owner lock lasts for the page's life. A connection close,
+     store replacement or version change does not release it. A lease expiry alone never permits
+     recovery while that lock is held. Only actual page loss permits recovery of a new-format
+     PENDING row, and every compatible page then shows a recovery notice. Legacy PENDING rows are
+     held for operator export and acknowledgement, not recovered. ADR-085 §2.1, §2.3 and §7.4.
+   - **What may reach reconciliation.** The page decides each occurrence once, before its final
+     outcome write. Only an in-time queue decision from a verified producer makes a new row
+     reconcilable. A live 401, a 409/422 (readable or not), a 500, an unreadable 200 and a local
+     exception are terminal. While the page lives they are never synced, even when the terminal write
+     fails; page loss before that write commits stays the TKT-399 D30 residual. ADR-085 §2.4, §3
+     and §4 (I1).
+   - **Time.** The owner's time rule TKT-399 D30 applies at the scan boundary: 3 s to mint and send,
+     30 s to decide an admission, and no sync for a scan that the limit stopped. ADR-085 §3.1 and
+     §3.7.
+   - **Storage.** The occurrence database moves to version 3 with an explicit legacy format, so an
+     old tab cannot read new rows. ADR-085 §7.
+
+   **Premise of the offline fallback: Compose-only topology.** The scanner selects the offline
+   result for exactly HTTP 502, 503 and 504 when the scan is in time and its session is current,
+   with residual U (owner decision TKT-556 D40). This
+   assumes the Docker Compose topology, where the gateway is the only HTTP hop in front of Access.
+   The fixed client cannot tell an intermediary's 502/503/504 from the gateway's. Any intermediary
+   before the gateway therefore needs a new ADR and qualification before deployment. ADR-085 §2.4a.
+
+   **Not implemented on main.** None of these amended rules is implemented on main until its
+   delivery ticket ships (ADR-085 §8: tickets 0, 2, 3 and 4). ADR-085 §1.3 lists main's current
+   gaps, including Entry P7-1 and a queued live 401.
+
 4. **Idempotency stays outside the append path.** Event-id replay is resolved *before*
    `appendLifecycle`, under the ticket lock — the append module is never invoked for an
    already-recorded occurrence (its documented contract at

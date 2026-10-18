@@ -1559,6 +1559,50 @@ caller who does not hold an enrolled device's token from admitting, redeeming or
 rewriting scan history. It constrains nobody with write access to the access database,
 who can enrol their own device.
 
+### Scanner outcomes: what main does today, and what is planned (TKT-556)
+
+[ADR-085](./adr/ADR-085-scanner-local-outcome-model.md) records the scanner local outcome model: the
+scanner decides each scan once, before it writes the outcome, and a failed write never changes that
+decision. **None of this model is shipped.** The scanner on main still behaves as this guide
+describes, with the limits below. ADR-085 §1.3 lists the same gaps with code references.
+
+**Current limitations on main.** Know these before you rely on the scanner:
+
+- **A rejected Entry scan can sync as an admission.** If the device cannot write the rejection (a
+  storage error), a later storage open can recover the scan and send it to Access as an admission,
+  although the screen said Rejected. Access then records an admission that did not happen.
+- **A `401` on a live scan is queued as an offline scan,** and it syncs after re-pairing. Access
+  answers `401` for any device lookup error, a database outage included. During an Access database
+  outage, live scans can therefore be queued and later recorded as admissions.
+- **The scanner reads the body before it checks the status, and a failure goes to the offline
+  queue.** A refusal (`409`/`422`) or an accepted `200` whose body the scanner cannot decode, a `500`,
+  an unreadable body at any status, or any status other than `200`, `409` and `422` can show
+  **Queued offline … Admit per venue offline policy**, and the scan later syncs as an admission.
+- **A revocation-list refusal is queued at once,** with no time check after it is written.
+- **There is no scan time limit.** The scanner has no 3 s send limit and no 30 s decision limit. A
+  slow store or network can show an admission result long after the scan.
+- **Access has no panic recovery and no write-timeout check.** A panic in Access closes the
+  connection, and the gateway can answer `502`. Nothing checks that the Access and gateway
+  `HTTP_WRITE_TIMEOUT` is at least the scanner's 30 s limit.
+- **`invalid_credential` does not prove a bad signature.** Access also uses it for a request, schema,
+  body-size or route failure, a body-read timeout and a validator internal error. It does not prove
+  that ticket verification ran.
+- **Only the Docker Compose topology is supported.** The gateway is the only HTTP hop in front of
+  Access. Do not put a proxy or load balancer in front of the gateway: any intermediary needs a new
+  ADR and qualification before deployment (ADR-085, owner decision TKT-556 D40).
+
+**Delivery map.** The delivery tickets merge in the order 1 → 0 → 2 → 3 → 4. Ticket 0 can merge
+together with ticket 2, never after it. Each ticket updates this section when it ships, and removes
+only the limitations that it fixes.
+
+| Ticket | Scope | What changes for operators |
+|---|---|---|
+| 1, TKT-556 (documentation only) | ADR-085, the ADR-025 §3 and ADR-066 §8 amendment notes, this section | Nothing in the scanner. |
+| 0, Access and gateway | Device lookup answers `401` (not enrolled), `503` (lookup unavailable) or `500` (lookup failed) on scans, reconciliation and the voided feed; bounded pre-decision `503`; panic recovery with an exact `500`; write-timeout check | Until ticket 2 ships, the main scanner still queues the new lookup `500` and panic `500` as offline admissions, as it does today for `401` and `502`. It also queues the new `503` and keeps pairing. Sync keeps eligible scans and the feed keeps its list on these errors. |
+| 2, Entry outcome core | Terminal `401`, `409`/`422`, `500` and unreadable answers; repair of failed writes; storage version 3 barrier; held legacy scans with a count, a warning, an export and an acknowledgement; recovery notices on every page | Re-pair and rescan after a `401`. The export file contains ticket credentials: keep it safe and do not share it. Scans queued by main before the upgrade still sync, and some of them can be false admissions; their ids are in the export. There is still no scan clock: a slow refusal that the gateway write timeout hides can still show the offline result until ticket 3. |
+| 3, Scan time | 3 s send limit and 30 s decision limit, two clocks, stopped-scan and slow-answer results | A scan stopped by the limit is never synced. A crash after a failed write can still recover the scan; the next page shows a recovery notice. |
+| 4, Pass Exit mode | Entry/Exit mode, Exit results with "the holder may leave", revoked-ticket Exit with no record | A revoked ticket's Exit is not recorded, so the next Entry on a requires-exit pass can answer `exit_required`. |
+
 ## Finding misconfigured rule currencies (TKT-243)
 
 A price or fee rule whose `currency` differs from the currency of a ticket type it applies to is
