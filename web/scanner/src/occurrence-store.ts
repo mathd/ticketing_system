@@ -120,16 +120,6 @@ export class StorageWriteError extends Error {
   }
 }
 
-/** The database at version 3 lacks a required store. Its data stays; no scan or sync may use it. */
-export class IncompatibleSchemaError extends Error {
-  readonly missing: string[]
-  constructor(missing: string[]) {
-    super(`occurrence database is incompatible: missing ${missing.join(', ')}`)
-    this.name = 'IncompatibleSchemaError'
-    this.missing = missing
-  }
-}
-
 const STRICT: IDBTransactionOptions = { durability: 'strict' }
 const DEFAULT: IDBTransactionOptions = { durability: 'default' }
 

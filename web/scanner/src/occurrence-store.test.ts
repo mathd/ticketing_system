@@ -1,3 +1,4 @@
+import { forceCloseDatabase } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { FinalDecision, ProposedDecision } from './occurrence-coordinator'
 import { STORE, StorageWriteError } from './occurrence-store'
@@ -561,5 +562,83 @@ describe('durability options (TKT-558 D14)', () => {
     const recovery = instrument.calls.filter((call) => call.storeNames.includes(STORE.recoveryNotices) && call.mode === 'readwrite')
     expect(recovery).toHaveLength(1)
     expect(recovery[0].options).toEqual({ durability: 'strict' })
+  })
+})
+
+describe('reservation through a connection event (I3-09, store half)', () => {
+  const forceClose = (db: IDBDatabase) => forceCloseDatabase(db as never)
+  function versionChangeThenAbortUpgrade(): Promise<void> {
+    return new Promise((resolve) => {
+      const request = indexedDB.open(dbName, 4)
+      request.onupgradeneeded = () => request.transaction!.abort()
+      request.onerror = () => resolve()
+      request.onsuccess = () => { request.result.close(); resolve() }
+    })
+  }
+
+  it.each(['unexpected close', 'version change'] as const)('commits an own reservation held through an %s and latches ACT', async (event) => {
+    const a = page()
+    await a.ready()
+    const { scan } = await mintOn(a)
+    a.coordinator.beginMarking(scan.occurrenceId)
+    instrument = instrumentTransactions()
+    const hold = instrument.hold(OCC_RW_STRICT)
+    const reserving = a.store().reserveActuation(scan.occurrenceId)
+    await bounded(hold.started, 'mark held')
+    const db = a.store().db
+    const changing = event === 'version change' ? versionChangeThenAbortUpgrade() : (forceClose(db), Promise.resolve())
+    // A version change drains before the held mark settles. fake-indexeddb's forced close
+    // waits for the active transaction, so its close follows the release.
+    if (event === 'version change') await eventually(() => a.storage.state().status === 'draining', 'draining')
+    hold.release()
+    expect(await bounded(reserving, 'reservation')).toEqual({ reserved: true })
+    expect(a.coordinator.latched(scan.occurrenceId)?.kind).toBe('actuation')
+    await bounded(changing, 'connection event settles')
+    await a.waitFor(event === 'version change' ? 'closed' : 'failed')
+    expect((await rawGet(dbName, STORE.occurrences, scan.occurrenceId) as Record<string, unknown>).state).toBe('ACTUATED')
+  })
+})
+
+describe('revocation set', () => {
+  const ticket = 'a8e94ed1-a02b-4cb7-a47b-a607f7b3872d'
+
+  it('keeps ids from one pull after another fingerprint completes a pull', async () => {
+    const a = page()
+    await a.ready()
+    await a.store().mergeRevoked([ticket])
+    await a.store().completeRevocationPull('fingerprint-b', '2026-09-25T12:00:00Z')
+    expect(await a.store().isRevoked(ticket)).toBe(true)
+  })
+
+  it('records completion separately for each token fingerprint', async () => {
+    const a = page()
+    await a.ready()
+    await a.store().completeRevocationPull('fingerprint-a', '2026-09-25T12:00:00Z')
+    expect(await a.store().revocationPull('fingerprint-a')).toEqual({ completedAt: '2026-09-25T12:00:00Z' })
+    expect(await a.store().revocationPull('fingerprint-b')).toEqual({})
+    await a.store().completeRevocationPull('fingerprint-b', '2026-09-25T12:15:00Z')
+    expect(await a.store().revocationPull('fingerprint-a')).toEqual({ completedAt: '2026-09-25T12:00:00Z' })
+    expect(await a.store().revocationPull('fingerprint-b')).toEqual({ completedAt: '2026-09-25T12:15:00Z' })
+  })
+
+  it('normalizes merged ids before lookup', async () => {
+    const a = page()
+    await a.ready()
+    await a.store().mergeRevoked([ticket.toUpperCase()])
+    expect(await a.store().isRevoked(ticket)).toBe(true)
+    expect(await a.store().isRevoked(ticket.toUpperCase())).toBe(true)
+  })
+
+  it('never removes an id when another pull completes or a write fails', async () => {
+    const a = page()
+    await a.ready()
+    await a.store().mergeRevoked([ticket])
+    await a.store().completeRevocationPull('fingerprint-a', '2026-09-25T12:00:00Z')
+    instrument = instrumentTransactions()
+    instrument.inject('abort', { stores: [STORE.revocations], mode: 'readwrite' })
+    await expect(a.store().mergeRevoked(['3f8fb96c-44f9-4a66-8c12-7d91cfae4d72'])).rejects.toThrow()
+    await a.store().completeRevocationPull('fingerprint-b', '2026-09-25T12:15:00Z')
+    expect(await a.store().isRevoked(ticket)).toBe(true)
+    expect(await a.store().isRevoked('3f8fb96c-44f9-4a66-8c12-7d91cfae4d72')).toBe(false)
   })
 })

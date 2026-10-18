@@ -5,7 +5,7 @@ import { ownerLockName } from './occurrence-lock'
 import { STORE } from './occurrence-store'
 import { instrumentTransactions, type Instrument } from './test/idb-instrument'
 import { bounded, createTestPage, destroyAllPages, eventually, lockAvailable, mintOn, settle, type TestPage } from './test/page-fixture'
-import { rawGet, rawGetAll } from './test/raw-db'
+import { openRaw, rawGet, rawGetAll } from './test/raw-db'
 
 // ST tier: connection lifecycle. A version change repairs on the old connection
 // before it closes (TKT-558 D8, ADR-085 D27). An unexpected close fails only its
@@ -258,5 +258,41 @@ describe('readiness with failed repairs (RD-06) and database deletion (RD-07)', 
     const fresh = await mintOn(a)
     expect(await state(fresh.scan.occurrenceId)).toBe('PENDING')
     await eventually(() => a.storage.state().status === 'ready', 'still ready')
+  })
+})
+
+describe('readiness failures', () => {
+  it('fails on a newer database version and leaves it unchanged', async () => {
+    const future = await openRaw(dbName, 4, (db) => { db.createObjectStore('future', { keyPath: 'id' }) })
+    future.close()
+    const a = page('owner-a')
+    a.storage.start()
+    await a.waitFor('failed')
+    expect(a.storage.state()).toMatchObject({ status: 'failed', cause: 'open_failed' })
+    const raw = await openRaw(dbName)
+    expect([raw.version, [...raw.objectStoreNames]]).toEqual([4, ['future']])
+    raw.close()
+  })
+
+  it('fails without Web Locks, so no page can mint without its owner lock', async () => {
+    const original = Object.getOwnPropertyDescriptor(navigator, 'locks')
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined })
+    try {
+      const a = page('owner-a')
+      a.storage.start()
+      await a.waitFor('failed')
+      expect(a.storage.state()).toMatchObject({ status: 'failed', cause: 'lock_unavailable' })
+      expect(a.storage.readyStore()).toBeNull()
+    } finally {
+      if (original) Object.defineProperty(navigator, 'locks', original)
+    }
+  })
+
+  it('keeps readiness after an outcome-only write failure', async () => {
+    const a = page('owner-a')
+    await a.ready()
+    await failedTargets(a)
+    expect(a.storage.state().status).toBe('ready')
+    expect(a.storage.readyStore()).not.toBeNull()
   })
 })
