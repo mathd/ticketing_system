@@ -1563,17 +1563,21 @@ who can enrol their own device.
 
 [ADR-085](./adr/ADR-085-scanner-local-outcome-model.md) records the scanner local outcome model: the
 scanner decides each scan once, before it writes the outcome, and a failed write never changes that
-decision. **None of this model is shipped.** The scanner on main still behaves as this guide
-describes, with the limits below. ADR-085 §1.3 lists the same gaps with code references.
+decision. **Ticket 0, the Access response contract, is shipped (TKT-557).** The scanner client model,
+tickets 2 to 4, is **not** shipped: the scanner on main still behaves as this guide describes, with
+the limits below. ADR-085 §1.3 lists the same gaps with code references.
 
 **Current limitations on main.** Know these before you rely on the scanner:
 
 - **A rejected Entry scan can sync as an admission.** If the device cannot write the rejection (a
   storage error), a later storage open can recover the scan and send it to Access as an admission,
   although the screen said Rejected. Access then records an admission that did not happen.
-- **A `401` on a live scan is queued as an offline scan,** and it syncs after re-pairing. Access
-  answers `401` for any device lookup error, a database outage included. During an Access database
-  outage, live scans can therefore be queued and later recorded as admissions.
+- **A `401` on a live scan is queued as an offline scan,** and it syncs after re-pairing. Since
+  TKT-557, Access answers `401` only for a refused device (blank, unknown or revoked token, or a
+  server that cannot check enrolment). A device lookup that cannot answer is `503`, and any other
+  lookup failure is `500`. The main scanner still queues all three as offline scans (see Access
+  response contract below), so during a database outage live scans can still be queued and later
+  recorded as admissions until ticket 2 ships.
 - **The scanner reads the body before it checks the status, and a failure goes to the offline
   queue.** A refusal (`409`/`422`) or an accepted `200` whose body the scanner cannot decode, a `500`,
   an unreadable body at any status, or any status other than `200`, `409` and `422` can show
@@ -1581,15 +1585,91 @@ describes, with the limits below. ADR-085 §1.3 lists the same gaps with code re
 - **A revocation-list refusal is queued at once,** with no time check after it is written.
 - **There is no scan time limit.** The scanner has no 3 s send limit and no 30 s decision limit. A
   slow store or network can show an admission result long after the scan.
-- **Access has no panic recovery and no write-timeout check.** A panic in Access closes the
-  connection, and the gateway can answer `502`. Nothing checks that the Access and gateway
-  `HTTP_WRITE_TIMEOUT` is at least the scanner's 30 s limit.
+- **A response can still be lost after Access decided.** Access now recovers a panic before the
+  response headers with an exact `500`, and refuses a write timeout below 30 s (TKT-557). A panic after
+  the headers, a killed process, a shutdown deadline, a network loss or an expired write still lose
+  the response, and the decision or commit can exist without an answer.
 - **`invalid_credential` does not prove a bad signature.** Access also uses it for a request, schema,
   body-size or route failure, a body-read timeout and a validator internal error. It does not prove
   that ticket verification ran.
 - **Only the Docker Compose topology is supported.** The gateway is the only HTTP hop in front of
   Access. Do not put a proxy or load balancer in front of the gateway: any intermediary needs a new
   ADR and qualification before deployment (ADR-085, owner decision TKT-556 D40).
+
+#### Access response contract (ticket 0, TKT-557)
+
+Access answers the three scanner routes with these exact statuses and bodies. S is a live scan
+(`POST /scans`), R is reconciliation (`POST /scans/reconciliations`) and F is the voided feed
+(`GET /scans/voided-tickets`).
+
+| Origin | Routes | Status and body |
+|---|---|---|
+| Missing, blank, unknown or revoked device token; a server with no enrolment port; an unknown auth scheme | S, R, F | `401` `{"error":"scanner device is not enrolled"}` |
+| The device lookup could not answer, before any decision | S, R, F | `503` `{"error":"scanner device lookup unavailable"}` |
+| Any other device lookup failure | S, R, F | `500` `{"error":"scanner device lookup failed"}` |
+| The initial policy read or the transaction acquisition could not answer, before any ticket decision | S | `503` `{"error":"scanner store unavailable"}` |
+| No ticket verifier configured (existing) | S, R | `503` `{"error":"scanner unavailable"}` |
+| Credential mismatch or occurrence collision (existing) | S | `422` with the existing rejected reason |
+| Any later scan store failure, including a statement or commit after the decision began | S | `500` `{"error":"redeem ticket"}` |
+| A store failure on one reconciliation row; earlier rows can already be committed | R | `500` `{"error":"reconcile admissions"}` or `{"error":"record scanner refusal"}` |
+| A panic before the response headers, on any Access operation | all | `500` `{"error":"request failed"}` |
+| A response that violates the contract (response validation on) | all | `500` `{"error":"response violates OpenAPI contract"}` |
+
+**What a `503` proves.** Every Access `503` above comes from a step that runs before any ticket
+decision in **this HTTP request**, so this request decided nothing. It does not prove that an earlier
+attempt for the same scan decided nothing: a browser can resend a request transparently. The
+occurrence stays uncertain (ADR-085 P13).
+
+**Bounded steps.** The device lookup, the initial policy read and the single and pass transaction
+acquisitions each stop after **500 ms** and answer `503`. Then the scanner can go offline instead of
+waiting. The advisory device Touch after a successful lookup also stops after **500 ms**; it never
+changes the answer, and when another session holds the device row it skips the update, so
+`last_seen_at` can stay stale. One live scan meets at most four bounds in series (lookup, Touch,
+policy read, one acquisition), a nominal 2 s; that is not a total request limit. Both 500 ms values are **PROVISIONAL**: TKT-557 ships them without load proof, and TKT-560
+qualifies them. **Venue use after TKT-558 requires TKT-560 Done and the owner's selection of the
+bound and of the acceptable offline-spill rate.** Nothing enforces this order.
+
+The cost: a healthy but saturated database, for example a full connection pool at peak, also answers
+`503` after the bound. After TKT-558 that is an offline admission without the live duplicate check;
+a single-entry duplicate then shows up later as `duplicate_admit` with an alarm. A timer `503` proves
+that a step passed its bound, not that the database was down.
+
+**Which database failures are `503`.** Only failures that a real driver test proved, at the step
+where it proved them: a connect that fails on DNS, connection refused, a server starting up
+(SQLSTATE 57P03) or a full server or role (53300), with every connect attempt in one of these
+classes; a terminated backend (57P01) at any of the four steps; and a cut connection at the steps
+where the gate produces it. Everything else stays `500`, which after TKT-558 stops the gate: a closed
+application pool (until Access has a working pool again), wrong database credentials, an unknown SQL
+or configuration error, a socket timeout that fires before the server bound, a reset or end of file
+during connection startup, and 57P03 or 53300 from a statement instead of a connect. The 57P03 and
+53300 classes need `sslmode=disable` in `DATABASE_URL`, which Access requires (see
+`docs/configuration.md` § Access: `DATABASE_URL` must set `sslmode=disable`).
+
+**Panic recovery and lost responses.** A panic before the response headers gives the exact `500`
+above on all eight Access operations. That `500` does **not** mean that nothing happened: a handler
+can panic after a store commit. A panic after the headers aborts the response and keeps the status
+that was already sent. A killed process, a shutdown deadline, a network loss or an expired write can
+still lose a response. Both servers refuse an `HTTP_WRITE_TIMEOUT` below 30 s; with equal values the
+gateway deadline can still expire first and lose a committed answer. The recovered `500` on the other
+Access operations changes no eligibility: Commerce leaves a refund's ticket-voiding obligation
+outstanding on any non-`200` and retries it (`services/commerce/internal/refunds/service.go:270-275`),
+Commerce answers an exchange with `502` "access admission unavailable" on any non-`200` admission read
+(`services/commerce/internal/api/exchanges.go:366-369`), and the back office reports a redelivery
+`500` and a transport failure alike as ambiguous (`web/backoffice/src/lib/access.ts:192`, `:213-215`).
+These reads do not prove that the later retry succeeds.
+
+**Until ticket 2 ships, the main scanner is unchanged.** It still queues a new lookup `500` and a
+recovery `500` as offline admissions, as it does for `401` and `502`. It also queues the new lookup
+`503` and policy or acquisition `503`, and keeps its pairing on those errors. A live `401` still
+queues and clears the current pairing. Sync keeps eligible scans, and a failed feed pull keeps its
+list and its completed-pull time. A terminal `500` and a terminal live `401` are future client
+behavior (ticket 2, TKT-558), not shipped by TKT-557.
+
+**Supported topology.** Docker Compose, with the gateway as the only hop in front of Access. A DNS
+failure counts as availability only there, where the name `postgres` is the database service. Any
+intermediary in front of the gateway needs a new ADR and qualification before deployment; the scanner
+has no switch for it (owner decision TKT-556 D40). Staff can force offline mode by cutting the
+network. That is a known workaround, not an availability guarantee.
 
 **Delivery map.** The delivery tickets merge in the order 1 → 0 → 2 → 3 → 4. Ticket 0 can merge
 together with ticket 2, never after it. Each ticket updates this section when it ships, and removes
@@ -1598,7 +1678,7 @@ only the limitations that it fixes.
 | Ticket | Scope | What changes for operators |
 |---|---|---|
 | 1, TKT-556 (documentation only) | ADR-085, the ADR-025 §3 and ADR-066 §8 amendment notes, this section | Nothing in the scanner. |
-| 0, Access and gateway | Device lookup answers `401` (not enrolled), `503` (lookup unavailable) or `500` (lookup failed) on scans, reconciliation and the voided feed; bounded pre-decision `503`; panic recovery with an exact `500`; write-timeout check | Until ticket 2 ships, the main scanner still queues the new lookup `500` and panic `500` as offline admissions, as it does today for `401` and `502`. It also queues the new `503` and keeps pairing. Sync keeps eligible scans and the feed keeps its list on these errors. |
+| 0, Access and gateway, **shipped (TKT-557)** | Device lookup answers `401` (not enrolled), `503` (lookup unavailable) or `500` (lookup failed) on scans, reconciliation and the voided feed; bounded pre-decision `503` (PROVISIONAL 500 ms, TKT-560 qualifies it); panic recovery with an exact `500`; write-timeout and `sslmode=disable` startup checks | Until ticket 2 ships, the main scanner still queues the new lookup `500` and recovery `500` as offline admissions, as it does today for `401` and `502`. It also queues the new lookup `503` and policy or acquisition `503`, and keeps pairing. Sync keeps eligible scans and the feed keeps its list and completed-pull time on these errors. Venue use after TKT-558 waits for TKT-560 Done and the owner's bound and offline-spill selection. |
 | 2, Entry outcome core | Terminal `401`, `409`/`422`, `500` and unreadable answers; repair of failed writes; storage version 3 barrier; held legacy scans with a count, a warning, an export and an acknowledgement; recovery notices on every page | Re-pair and rescan after a `401`. The export file contains ticket credentials: keep it safe and do not share it. Scans queued by main before the upgrade still sync, and some of them can be false admissions; their ids are in the export. There is still no scan clock: a slow refusal that the gateway write timeout hides can still show the offline result until ticket 3. |
 | 3, Scan time | 3 s send limit and 30 s decision limit, two clocks, stopped-scan and slow-answer results | A scan stopped by the limit is never synced. A crash after a failed write can still recover the scan; the next page shows a recovery notice. |
 | 4, Pass Exit mode | Entry/Exit mode, Exit results with "the holder may leave", revoked-ticket Exit with no record | A revoked ticket's Exit is not recorded, so the next Entry on a requires-exit pass can answer `exit_required`. |
