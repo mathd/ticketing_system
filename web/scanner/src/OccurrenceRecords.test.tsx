@@ -18,7 +18,7 @@ let dbName: string
 
 let instrument: Instrument | undefined
 let downloaded: Blob[]
-const original = { occurrenceId: 'held-a', state: 'PENDING', qrPayload: 'private-credential', occurredAt: '2026-10-18T12:34:56.789Z', actuated: false, extra: { key: 'preserved' } }
+const original = { occurrenceId: 'held-a', state: 'PENDING', qrPayload: 'private-credential', occurredAt: '2026-10-18T12:34:56.789Z', actuated: false, extra: { key: 'preserved' }, ownerId: undefined }
 const other = { occurrenceId: 'held-b', state: 'unknown', qrPayload: 'another-credential' }
 const legacyQueue = { occurrenceId: 'legacy-q', state: 'QUEUED', qrPayload: 'queue-credential', occurredAt: '2026-10-18T12:34:56.123Z', actuated: false }
 beforeEach(async () => {
@@ -37,8 +37,12 @@ beforeEach(async () => {
 })
 afterEach(() => { cleanup(); instrument?.restore(); instrument = undefined; destroyAllPages(); localStorage.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 async function exportRecords() {
-  fireEvent.click(await screen.findByRole('button', { name: 'Export local records' }))
-  await screen.findByText('Export requested. The browser cannot confirm that the file was saved.')
+  const before = downloaded.length
+  const button = await screen.findByRole('button', { name: 'Export local records' })
+  fireEvent.click(button)
+  await waitFor(() => expect(downloaded).toHaveLength(before + 1))
+  await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false))
+  expect(screen.getByText('Export requested. The browser cannot confirm that the file was saved.')).toBeDefined()
 }
 const ack = () => screen.getByRole('button', { name: 'Acknowledge selected held records' })
 
@@ -60,6 +64,16 @@ it.each([false, true])('shows hold and M02 controls in paired=%s with selected-o
   expect(await rawGet(dbName, STORE.heldDisposals, 'held-a')).toMatchObject({ disposition: 'operator_acknowledged_without_sync' })
   expect(await rawGet(dbName, STORE.heldDisposals, 'held-b')).toBeUndefined()
   expect(downloaded).toHaveLength(1)
+  const text = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader(); reader.onload = () => resolve(reader.result as string); reader.onerror = () => reject(reader.error); reader.readAsText(downloaded[0])
+  })
+  const document = JSON.parse(text)
+  expect(document.schemaVersion).toBe(1)
+  expect(document.source).toStrictEqual({ databaseName: dbName, databaseVersion: 3, legacyFormat: 0, currentFormat: 1 })
+  expect(document.held[0]).toStrictEqual({ occurrenceId: 'held-a', legacyClass: 'M01', holdReason: 'legacy_pending', format: 0, type: 'normal', disposal: { status: 'unresolved' }, fields: {
+    actuated: { presence: 'value', value: false }, createdAt: { presence: 'absent' }, direction: { presence: 'absent' }, extra: { presence: 'value', value: { key: 'preserved' } }, leaseExpiresAt: { presence: 'absent' }, localDecision: { presence: 'absent' }, occurredAt: { presence: 'value', value: '2026-10-18T12:34:56.789Z' }, occurrenceId: { presence: 'value', value: 'held-a' }, ownerId: { presence: 'undefined' }, qrPayload: { presence: 'value', value: 'private-credential' }, result: { presence: 'absent' }, state: { presence: 'value', value: 'PENDING' },
+  } })
+  expect(document.legacyQueued).toStrictEqual([{ occurrenceId: 'legacy-q', legacyClass: 'M02', state: { presence: 'value', value: 'QUEUED' }, occurredAt: { presence: 'value', value: '2026-10-18T12:34:56.123Z' } }])
   expect(await rawGetAll(dbName, STORE.exportReceipts)).toHaveLength(1)
 })
 
@@ -148,4 +162,26 @@ it('shows a durable recovery notice after retirement and acknowledges only the n
   view.unmount(); render(<App />)
   await waitFor(() => expect(page.storage.readyStore()).toBeTruthy())
   expect(screen.queryByRole('heading', { name: 'Recovered scan' })).toBeNull()
+})
+
+it('exports an isolated M02 at held zero before and after retirement', async () => {
+  page.destroy()
+  const only = `${dbName}-only-m02`
+  await seedDatabase(only, 2, V2_STORES, { occurrences: [legacyQueue] })
+  page = createTestPage({ dbName: only }); runtime.storage = page.storage; await page.ready()
+  localStorage.setItem('scanner.device-token', 'token')
+  render(<App />)
+  for (const state of ['QUEUED', 'SYNCED']) {
+    await exportRecords()
+    const text = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader(); reader.onload = () => resolve(reader.result as string); reader.onerror = () => reject(reader.error); reader.readAsText(downloaded.at(-1)!)
+    })
+    const file = JSON.parse(text)
+    expect(file).toStrictEqual({ schemaVersion: 1, exportId: expect.any(String), exportedAt: expect.any(String), source: { databaseName: only, databaseVersion: 3, legacyFormat: 0, currentFormat: 1 }, held: [], legacyQueued: [{ occurrenceId: 'legacy-q', legacyClass: 'M02', state: { presence: 'value', value: state }, occurredAt: { presence: 'value', value: '2026-10-18T12:34:56.123Z' } }] })
+    expect(screen.queryByRole('button', { name: 'Acknowledge selected held records' })).toBeNull()
+    if (state === 'QUEUED') {
+      fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
+      await screen.findByText('Synced 1 offline scan(s).')
+    }
+  }
 })
