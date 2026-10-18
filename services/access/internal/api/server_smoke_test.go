@@ -473,7 +473,14 @@ func (h *routerHarness) issue(t *testing.T, ctx context.Context, pass bool) smok
 
 func scanBody(t *testing.T, tk smokeTicket, occ string) string {
 	t.Helper()
-	return `{"qr_payload":` + mustJSON(t, tk.payload) + `,"occurrence_id":"` + occ + `","occurred_at":"` + time.Now().UTC().Format(time.RFC3339) + `"}`
+	return scanBodyAt(t, tk, occ, time.Now().UTC().Truncate(time.Second))
+}
+
+// scanBodyAt is scanBody with a claimed occurrence time that the caller
+// keeps, so a readback can compare the persisted time with the submitted one.
+func scanBodyAt(t *testing.T, tk smokeTicket, occ string, at time.Time) string {
+	t.Helper()
+	return `{"qr_payload":` + mustJSON(t, tk.payload) + `,"occurrence_id":"` + occ + `","occurred_at":"` + at.Format(time.RFC3339) + `"}`
 }
 
 func (h *routerHarness) request(method, path, body string) *http.Request {
@@ -548,6 +555,50 @@ func (h *routerHarness) occurrenceRecorded(t *testing.T, ctx context.Context, oc
 		t.Fatal(err)
 	}
 	return n
+}
+
+// requireExactOccurrence reads the lifecycle event whose id is occ through
+// the healthy handle. It compares every persisted field with values the test
+// derived itself: the ticket it issued, that ticket's order, organizer and
+// slot, the event type, and the submitted time. lifecycle_events has no
+// order, organizer or slot column; the append path signs them into the
+// integrity row's entry hash, so the hash is recomputed from the same derived
+// values. A presence count cannot see a wrong field under the right id.
+func (h *routerHarness) requireExactOccurrence(t *testing.T, ctx context.Context, occ string, tk smokeTicket, eventType string, at time.Time) {
+	t.Helper()
+	var (
+		ticketID, orderID, organizerID, slotID uuid.UUID
+		gotType                                string
+		gotAt                                  time.Time
+		sequence                               int64
+		previous, entry                        []byte
+	)
+	if err := h.f.Admin.QueryRowContext(ctx, `
+		SELECT e.ticket_id, t.order_id, t.organizer_id, t.slot_id, e.event_type, e.occurred_at,
+		       i.sequence, i.previous_hash, i.entry_hash
+		  FROM lifecycle_events e
+		  JOIN tickets t ON t.id = e.ticket_id
+		  JOIN lifecycle_event_integrity i ON i.event_id = e.id
+		 WHERE e.id = $1`, occ).Scan(&ticketID, &orderID, &organizerID, &slotID, &gotType, &gotAt, &sequence, &previous, &entry); err != nil {
+		t.Fatalf("read occurrence %s: %v", occ, err)
+	}
+	if ticketID != tk.id || orderID != tk.order || organizerID != h.organizer || slotID != tk.slot {
+		t.Errorf("occurrence %s is on ticket %s (order %s, organizer %s, slot %s), want ticket %s (order %s, organizer %s, slot %s)",
+			occ, ticketID, orderID, organizerID, slotID, tk.id, tk.order, h.organizer, tk.slot)
+	}
+	if gotType != eventType {
+		t.Errorf("occurrence %s has event type %q, want %q", occ, gotType, eventType)
+	}
+	if !gotAt.Equal(at) {
+		t.Errorf("occurrence %s occurred at %s, want the submitted %s", occ, gotAt.UTC(), at)
+	}
+	canonical := lifecycle.CanonicalEvent(lifecycle.Event{
+		TicketID: tk.id, OrderID: tk.order, OrganizerID: h.organizer, SlotID: tk.slot,
+		Sequence: sequence, EventID: uuid.MustParse(occ), Type: eventType, OccurredAt: at,
+	})
+	if !bytes.Equal(lifecycle.HashEntry(previous, canonical), entry) {
+		t.Errorf("occurrence %s: the integrity entry hash does not cover the submitted ticket, order, organizer, slot, type and time", occ)
+	}
 }
 
 var smokeRoutes = []struct{ name, method, path, operationID string }{
@@ -849,14 +900,18 @@ func TestRouterPartialReconcileBatchIs500WithRowOneCommitted(t *testing.T) {
 		t.Fatal(err)
 	}
 	occ1, occ2 := uuid.NewString(), uuid.NewString()
+	at1, at2 := time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC), time.Date(2026, 8, 10, 10, 1, 0, 0, time.UTC)
 	body := `{"occurrences":[` +
-		`{"qr_payload":` + mustJSON(t, first.payload) + `,"occurrence_id":"` + occ1 + `","occurred_at":"2026-08-10T10:00:00Z"},` +
-		`{"qr_payload":` + mustJSON(t, second.payload) + `,"occurrence_id":"` + occ2 + `","occurred_at":"2026-08-10T10:01:00Z"}]}`
+		`{"qr_payload":` + mustJSON(t, first.payload) + `,"occurrence_id":"` + occ1 + `","occurred_at":"` + at1.Format(time.RFC3339) + `"},` +
+		`{"qr_payload":` + mustJSON(t, second.payload) + `,"occurrence_id":"` + occ2 + `","occurred_at":"` + at2.Format(time.RFC3339) + `"}]}`
 	rec := h.serve(h.server().Router(nil, true), h.request(http.MethodPost, "/scans/reconciliations", body))
 	requireExactJSON(t, rec, 500, map[string]any{"error": "reconcile admissions"})
 	if n := h.occurrenceRecorded(t, ctx, occ1); n != 1 {
 		t.Fatalf("row 1 occurrence events = %d, want its committed one", n)
 	}
+	// A single-use ticket with no earlier admission: row 1 is its redemption,
+	// at the claimed time.
+	h.requireExactOccurrence(t, ctx, occ1, first, "redeemed", at1)
 	if n := h.occurrenceRecorded(t, ctx, occ2); n != 0 {
 		t.Fatalf("row 2 occurrence events = %d, want none", n)
 	}
@@ -900,7 +955,8 @@ func TestRouterRecoversAPanicAfterARealDecision(t *testing.T) {
 		tk := h.issue(t, ctx, false)
 		wrapper := &panicAfterScan{inner: h.st}
 		occ := uuid.NewString()
-		rec := h.serve(h.server().WithAdmissions(wrapper).Router(nil, true), h.request(http.MethodPost, "/scans", scanBody(t, tk, occ)))
+		at := time.Now().UTC().Truncate(time.Second)
+		rec := h.serve(h.server().WithAdmissions(wrapper).Router(nil, true), h.request(http.MethodPost, "/scans", scanBodyAt(t, tk, occ, at)))
 		requireExactJSON(t, rec, 500, map[string]any{"error": "request failed"})
 		if err := validateCaptured(t, apispec.Spec, http.MethodPost, "/scans", rec); err != nil {
 			t.Errorf("capture violates scanTicket: %v", err)
@@ -911,6 +967,7 @@ func TestRouterRecoversAPanicAfterARealDecision(t *testing.T) {
 		if n := h.occurrenceRecorded(t, ctx, occ); n != 1 {
 			t.Fatalf("committed occurrence events = %d, want exactly the one the store committed", n)
 		}
+		h.requireExactOccurrence(t, ctx, occ, tk, "redeemed", at)
 		if n := h.admissions(t, ctx, tk); n != 1 {
 			t.Fatalf("admission facts = %d, want 1", n)
 		}
@@ -921,13 +978,17 @@ func TestRouterRecoversAPanicAfterARealDecision(t *testing.T) {
 		h := newRouterHarness(t, ctx, testdb.Options{})
 		tk := h.issue(t, ctx, false)
 		first := uuid.NewString()
-		if rec := h.serve(h.server().Router(nil, true), h.request(http.MethodPost, "/scans", scanBody(t, tk, first))); rec.Code != http.StatusOK {
+		firstAt := time.Now().UTC().Truncate(time.Second)
+		if rec := h.serve(h.server().Router(nil, true), h.request(http.MethodPost, "/scans", scanBodyAt(t, tk, first, firstAt))); rec.Code != http.StatusOK {
 			t.Fatalf("first scan = %d %s", rec.Code, rec.Body.String())
 		}
 		wrapper := &panicAfterScan{inner: h.st}
 		second := uuid.NewString()
 		rec := h.serve(h.server().WithAdmissions(wrapper).Router(nil, true), h.request(http.MethodPost, "/scans", scanBody(t, tk, second)))
 		requireExactJSON(t, rec, 500, map[string]any{"error": "request failed"})
+		if err := validateCaptured(t, apispec.Spec, http.MethodPost, "/scans", rec); err != nil {
+			t.Errorf("capture violates scanTicket: %v", err)
+		}
 		if !wrapper.called || wrapper.err != nil || wrapper.result.Accepted || wrapper.result.Decision != store.DecisionAlreadyRedeemed {
 			t.Fatalf("the real store did not refuse first: called=%v result=%+v err=%v", wrapper.called, wrapper.result, wrapper.err)
 		}
@@ -937,6 +998,7 @@ func TestRouterRecoversAPanicAfterARealDecision(t *testing.T) {
 		if n := h.admissions(t, ctx, tk); n != 1 {
 			t.Fatalf("admission facts = %d, want only the first", n)
 		}
+		h.requireExactOccurrence(t, ctx, first, tk, "redeemed", firstAt)
 	})
 }
 
