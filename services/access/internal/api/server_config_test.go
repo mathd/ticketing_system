@@ -60,6 +60,19 @@ func (s *Server) WithScannerTelemetry(telemetry *scannerTelemetry) *Server {
 	return s
 }
 
+// WithAdmissions replaces the admission port (TKT-557). Tests only.
+func (s *Server) WithAdmissions(admissions scannerAdmissionStore) *Server {
+	s.admissions = admissions
+	return s
+}
+
+// withSpec makes Router enforce an isolated cloned contract (D9). Tests only;
+// production always uses the embedded spec.
+func (s *Server) withSpec(spec []byte) *Server {
+	s.spec = spec
+	return s
+}
+
 func TestNewWiresServerConfig(t *testing.T) {
 	st := &store.Postgres{}
 	telemetry := &scannerTelemetry{}
@@ -79,8 +92,11 @@ func TestNewWiresServerConfig(t *testing.T) {
 		PerformanceZones:  zones,
 	})
 
-	if server.st != st || server.devices != st || server.redeliveries != st {
+	if server.st != st || server.devices != st || server.redeliveries != st || server.admissions != st {
 		t.Fatal("store was not wired to every production store dependency")
+	}
+	if server.spec != nil {
+		t.Fatal("New set a contract override: production must enforce the embedded spec")
 	}
 	if server.token != "internal" || server.staffWriteToken != "staff" {
 		t.Fatal("credentials were not wired from ServerConfig")
@@ -96,5 +112,19 @@ func TestNewWiresServerConfig(t *testing.T) {
 	}
 	if server.publicURL != "https://tickets.example.test" {
 		t.Fatalf("publicURL = %q", server.publicURL)
+	}
+}
+
+// No store, or a nil one, leaves every store port a true nil interface — never a
+// typed nil that passes a != nil check and then panics (TKT-557, D8/D16).
+func TestNewLeavesPortsNilWithoutAStore(t *testing.T) {
+	for name, config := range map[string]ServerConfig{
+		"absent":    {},
+		"typed nil": {Store: (*store.Postgres)(nil)},
+	} {
+		server := New(config)
+		if server.admissions != nil || server.devices != nil || server.redeliveries != nil {
+			t.Fatalf("%s store: ports = %v/%v/%v, want true nil interfaces", name, server.admissions, server.devices, server.redeliveries)
+		}
 	}
 }

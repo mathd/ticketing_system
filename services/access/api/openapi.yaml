@@ -190,9 +190,10 @@ paths:
             the same answer, and the same reasoning, as the scan routes.
           content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
         '500': {$ref: '#/components/responses/Error'}
-        # Deliberately no 503: this handler has no service-unavailable branch,
-        # and declaring a status it cannot answer is drift in the other
-        # direction (ADR-028).
+        # The device lookup could not answer before any feed read (TKT-557,
+        # ADR-085 §8 ticket 0). The request hook answers it, outside the
+        # ordinary response validator, so a test validates the capture.
+        '503': {$ref: '#/components/responses/Error'}
   /orders/{ref}/tickets:
     get:
       operationId: getTickets

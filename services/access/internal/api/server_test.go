@@ -10,8 +10,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"runtime/debug"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,6 +57,43 @@ func (f *fakeDevices) AuthenticateScannerDevice(_ context.Context, token string)
 }
 
 func (f *fakeDevices) TouchScannerDevice(context.Context, uuid.UUID) { f.touched++ }
+
+// countingAdmissions is the admission port with call counts (TKT-557, D7).
+// Outer recovery now turns a store panic into a 500, so a recovered 500 can no
+// longer prove that a request reached the store: these counters do. Each call
+// answers a valid result, so a positive control proves the intended call ran
+// and was mapped, not only that something was reached.
+type countingAdmissions struct {
+	mu                         sync.Mutex
+	scans, reconciles, refusal int
+}
+
+func (c *countingAdmissions) Scan(_ context.Context, _ store.ScanInput) (store.RedeemResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.scans++
+	return store.RedeemResult{Accepted: true, Decision: store.DecisionAccepted, OccurredAt: time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC)}, nil
+}
+
+func (c *countingAdmissions) ReconcileAdmission(_ context.Context, in store.ReconcileOccurrence) (store.ReconcileResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reconciles++
+	return store.ReconcileResult{OccurrenceID: in.OccurrenceID, Outcome: store.ReconcileRecorded, OccurredAt: in.OccurredAt}, nil
+}
+
+func (c *countingAdmissions) RecordRevocationRefusal(_ context.Context, _, _, _, _, occurrenceID uuid.UUID, occurredAt time.Time, _ string) (store.ReconcileResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.refusal++
+	return store.ReconcileResult{OccurrenceID: occurrenceID, Outcome: store.ReconcileRecorded, OccurredAt: occurredAt}, nil
+}
+
+func (c *countingAdmissions) counts() (scans, reconciles, refusals int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.scans, c.reconciles, c.refusal
+}
 
 // enrolled builds a server whose scan routes accept testDeviceToken, for the
 // organizer the device is paired to.
@@ -333,7 +370,8 @@ func TestReconcileUnknownEventTypeRejectsOnlyItsItem(t *testing.T) {
 	if claims.OrganizerID != organizer {
 		t.Fatalf("fixture credential organizer = %s, want %s", claims.OrganizerID, organizer)
 	}
-	router := enrolled(newTestServer(nil, verifier), organizer).Router(nil, true)
+	admissions := &countingAdmissions{}
+	router := enrolled(newTestServer(nil, verifier), organizer).WithAdmissions(admissions).Router(nil, true)
 	reconcile := func(occurrenceID, eventType string) *http.Request {
 		body, err := json.Marshal(map[string]any{"occurrences": []map[string]string{{
 			"qr_payload": payload, "occurrence_id": occurrenceID, "occurred_at": "2026-07-17T09:00:00Z",
@@ -346,38 +384,23 @@ func TestReconcileUnknownEventTypeRejectsOnlyItsItem(t *testing.T) {
 		request.Header.Set("Content-Type", "application/json")
 		return request
 	}
-	// reachedRecording serves one request and reports if it reached admission
-	// recording. Only ServeHTTP runs under recover, so a setup or assertion
-	// failure is never hidden. A panic counts only when its stack contains the
-	// recording method; any other panic fails the test with its value and stack.
-	reachedRecording := func(recorder *httptest.ResponseRecorder, request *http.Request) (reached bool) {
-		defer func() {
-			recovered := recover()
-			if recovered == nil {
-				return
-			}
-			stack := debug.Stack()
-			if !bytes.Contains(stack, []byte("(*Postgres).ReconcileAdmission")) {
-				t.Fatalf("panic outside admission recording: %v\n%s", recovered, stack)
-			}
-			reached = true
-		}()
-		router.ServeHTTP(recorder, request)
-		return false
-	}
 
-	control := reconcile(uuid.NewString(), "exit")
+	// The positive control reaches admission recording ONCE and is mapped to
+	// its valid per-item result (TKT-557 D7: a port call count, not a panic).
+	controlID := uuid.NewString()
 	controlRecorder := httptest.NewRecorder()
-	if !reachedRecording(controlRecorder, control) {
-		t.Fatalf("valid exit control did not reach admission recording: status=%d body=%s", controlRecorder.Code, controlRecorder.Body.String())
+	router.ServeHTTP(controlRecorder, reconcile(controlID, "exit"))
+	if _, reconciles, _ := admissions.counts(); reconciles != 1 || controlRecorder.Code != http.StatusOK ||
+		!strings.Contains(controlRecorder.Body.String(), `"result":"recorded"`) || !strings.Contains(controlRecorder.Body.String(), controlID) {
+		t.Fatalf("valid exit control: reconciles=%d status=%d body=%s, want one recorded call", reconciles, controlRecorder.Code, controlRecorder.Body.String())
 	}
-	t.Log("positive control reached admission recording")
 
 	occurrenceID := uuid.NewString()
 	sideways := reconcile(occurrenceID, "sideways")
 	recorder := httptest.NewRecorder()
-	if reachedRecording(recorder, sideways) {
-		t.Fatal("unknown event_type reached admission recording")
+	router.ServeHTTP(recorder, sideways)
+	if scans, reconciles, refusals := admissions.counts(); scans != 0 || reconciles != 1 || refusals != 0 {
+		t.Fatalf("unknown event_type reached the admission port: scans=%d reconciles=%d refusals=%d", scans, reconciles, refusals)
 	}
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("reconcile with unknown event_type = %d, want 200 with a per-item result; body=%s", recorder.Code, recorder.Body.String())
@@ -442,8 +465,11 @@ func TestReconcileUnknownLocalDecisionRejectsOnlyItsItem(t *testing.T) {
 //
 // The assertion is on the status *being declared*, not merely on it being 400: the point
 // is that the route can no longer answer outside its own contract.
+//
+// TKT-557 (D13/D25): exactly 400. The store is nil, and outer recovery now
+// turns a store panic into a declared 500, so a set of declared statuses could
+// no longer fail. Exact 400 can.
 func TestInternalRoutesRejectMalformedRequestsWithADeclaredStatus(t *testing.T) {
-	declared := map[int]bool{400: true, 404: true, 409: true, 500: true, 503: true}
 	router := enrolled(newTestServer(nil, nil, "internal-token")).Router(nil, true)
 
 	for name, body := range map[string]string{
@@ -460,8 +486,8 @@ func TestInternalRoutesRejectMalformedRequestsWithADeclaredStatus(t *testing.T) 
 			request.Header.Set("X-Internal-Token", "internal-token")
 			recorder := httptest.NewRecorder()
 			router.ServeHTTP(recorder, request)
-			if !declared[recorder.Code] {
-				t.Fatalf("status %d is not declared by refundTickets; body=%s", recorder.Code, recorder.Body.String())
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status %d, want exactly 400 from refundTickets; body=%s", recorder.Code, recorder.Body.String())
 			}
 			if strings.Contains(recorder.Body.String(), "invalid_credential") {
 				t.Fatalf("internal route answered with the gate's scan-shaped rejection: %s", recorder.Body.String())
@@ -474,8 +500,8 @@ func TestInternalRoutesRejectMalformedRequestsWithADeclaredStatus(t *testing.T) 
 	request.Header.Set("X-Internal-Token", "internal-token")
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
-	if !declared[recorder.Code] {
-		t.Fatalf("orderAdmission returned undeclared status %d for malformed organizer_id: %s",
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("orderAdmission returned %d for malformed organizer_id, want exactly 400: %s",
 			recorder.Code, recorder.Body.String())
 	}
 }
@@ -645,7 +671,8 @@ func TestScanRoutesRefuseAnotherOrganizersTicket(t *testing.T) {
 	}
 
 	// A device enrolled for somebody else gets nowhere on either route.
-	router := enrolled(newTestServer(nil, verifier), uuid.New()).Router(nil, true)
+	foreign := &countingAdmissions{}
+	router := enrolled(newTestServer(nil, verifier), uuid.New()).WithAdmissions(foreign).Router(nil, true)
 
 	recorder := httptest.NewRecorder()
 	request := scanRequest(http.MethodPost, "/scans", bytes.NewReader(body))
@@ -681,20 +708,28 @@ func TestScanRoutesRefuseAnotherOrganizersTicket(t *testing.T) {
 	if len(batchResponse.Results) != 1 || batchResponse.Results[0].Result != "rejected" {
 		t.Errorf("reconcile results = %+v, want one rejected entry", batchResponse.Results)
 	}
+	if scans, reconciles, refusals := foreign.counts(); scans+reconciles+refusals != 0 {
+		t.Fatalf("a foreign organizer's ticket reached the admission port: scans=%d reconciles=%d refusals=%d", scans, reconciles, refusals)
+	}
 
-	// ...and the device enrolled for THIS organizer is let through to the store.
-	// Delete the scope check and the case above joins this one; invert it and
-	// this one joins the case above.
-	reached := func() (reached bool) {
-		defer func() { reached = recover() != nil }()
-		scanned := httptest.NewRecorder()
-		scan := scanRequest(http.MethodPost, "/scans", bytes.NewReader(body))
-		scan.Header.Set("Content-Type", "application/json")
-		enrolled(newTestServer(nil, verifier), organizer).Router(nil, true).ServeHTTP(scanned, scan)
-		return false
-	}()
-	if !reached {
-		t.Error("a device enrolled for the ticket's own organizer was refused before the store")
+	// ...and the device enrolled for THIS organizer reaches the admission port
+	// on both routes and gets the valid results back. Delete the scope check
+	// and the cases above join these; invert it and these join the cases above.
+	own := &countingAdmissions{}
+	ownRouter := enrolled(newTestServer(nil, verifier), organizer).WithAdmissions(own).Router(nil, true)
+	scanned := httptest.NewRecorder()
+	scan := scanRequest(http.MethodPost, "/scans", bytes.NewReader(body))
+	scan.Header.Set("Content-Type", "application/json")
+	ownRouter.ServeHTTP(scanned, scan)
+	if scans, _, _ := own.counts(); scans != 1 || scanned.Code != http.StatusOK || !strings.Contains(scanned.Body.String(), `"decision":"accepted"`) {
+		t.Fatalf("own organizer /scans: scans=%d status=%d body=%s, want one accepted call", scans, scanned.Code, scanned.Body.String())
+	}
+	synced := httptest.NewRecorder()
+	syncRequest := scanRequest(http.MethodPost, "/scans/reconciliations", bytes.NewReader(batch))
+	syncRequest.Header.Set("Content-Type", "application/json")
+	ownRouter.ServeHTTP(synced, syncRequest)
+	if _, reconciles, _ := own.counts(); reconciles != 1 || synced.Code != http.StatusOK || !strings.Contains(synced.Body.String(), `"result":"recorded"`) {
+		t.Fatalf("own organizer reconcile: reconciles=%d status=%d body=%s, want one recorded call", reconciles, synced.Code, synced.Body.String())
 	}
 }
 

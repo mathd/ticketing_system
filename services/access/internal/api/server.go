@@ -39,6 +39,18 @@ type scannerDeviceStore interface {
 	TouchScannerDevice(ctx context.Context, id uuid.UUID)
 }
 
+// scannerAdmissionStore is the narrow admission port (TKT-557, D8): the three
+// store calls that decide or record a gate admission. A port, so a test can
+// wrap the REAL store and panic after a real commit; every other read keeps
+// the concrete store. Nil is a configuration fault: a request that needs the
+// port answers 500 and never 503, because a missing port is not a database
+// outage and must not permit offline admission (D16).
+type scannerAdmissionStore interface {
+	Scan(ctx context.Context, in store.ScanInput) (store.RedeemResult, error)
+	ReconcileAdmission(ctx context.Context, in store.ReconcileOccurrence) (store.ReconcileResult, error)
+	RecordRevocationRefusal(ctx context.Context, ticketID, orderID, organizerID, slotID, occurrenceID uuid.UUID, occurredAt time.Time, decision string) (store.ReconcileResult, error)
+}
+
 // performanceZones reads each slot's performance time zone from Catalog (TKT-365,
 // ADR-083). It answers a map and no error: an id it cannot resolve is simply absent, and
 // the bundle then carries a null zone. Production passes catalog.Client.
@@ -52,6 +64,13 @@ type Server struct {
 	// check", which the authentication func treats as REFUSE — a server that
 	// cannot verify enrolment must not admit everyone.
 	devices scannerDeviceStore
+	// admissions decides and records gate admissions (TKT-557). Nil answers
+	// 500 when a valid request needs it.
+	admissions scannerAdmissionStore
+	// spec is the contract Router enforces. Nil means the embedded Access
+	// spec, which is what production always uses; only an isolated test sets
+	// a cloned document (D9).
+	spec []byte
 
 	// telemetry records authenticated polls of the deliberately-unlimited feed
 	// surface (TKT-272). Nil is a working server that simply emits nothing —
@@ -143,6 +162,7 @@ func New(config ServerConfig) *Server {
 		// in an interface is not nil, so an unguarded assignment would pass a != nil
 		// check and then panic inside the handler.
 		s.redeliveries = config.Store
+		s.admissions = config.Store
 	}
 	return s
 }
@@ -176,10 +196,19 @@ func (s *Server) registerRoutes(r chi.Router) {
 	r.Post("/internal/orders/{id}/redeliveries", s.redeliverOrderTickets)
 }
 
+// contractSpec is the document Router enforces: the embedded Access spec
+// unless an isolated test supplied a clone.
+func (s *Server) contractSpec() []byte {
+	if s.spec != nil {
+		return s.spec
+	}
+	return apispec.Spec
+}
+
 func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r := chi.NewRouter()
 	s.registerRoutes(r)
-	validated, err := contract.RequestValidatorWithSecurity(apispec.Spec, r, log, validateResponses, func(w http.ResponseWriter, req *http.Request, _ string, status int) {
+	validated, err := contract.RequestValidatorWithSecurity(s.contractSpec(), r, log, validateResponses, func(w http.ResponseWriter, req *http.Request, _ string, status int) {
 		// A refused scanner device (ai-review S1). It arrives here rather than from
 		// a handler because the contract DECLARES the requirement and the validator
 		// enforces it — which is what stops a newly added scan-shaped operation
@@ -189,6 +218,21 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 		// not paired" from "turn this person away", and the scan-shaped 422 below
 		// would say the second about the first.
 		if status == http.StatusUnauthorized {
+			// A failed LOOKUP is not a refused device (TKT-557, ADR-085 §8). The
+			// authentication func records why in the request's own slot, which is
+			// server state and never a request field. The raw slot is read here,
+			// not scannerIdentityFrom: a failed lookup has no organizer, and that
+			// helper deliberately hides such a slot. No error message is read.
+			if slot, ok := req.Context().Value(scannerOrganizerKey{}).(*scannerIdentity); ok && slot != nil {
+				switch slot.lookup {
+				case lookupUnavailable:
+					write(w, http.StatusServiceUnavailable, map[string]string{"error": "scanner device lookup unavailable"})
+					return
+				case lookupFailed:
+					write(w, http.StatusInternalServerError, map[string]string{"error": "scanner device lookup failed"})
+					return
+				}
+			}
 			write(w, http.StatusUnauthorized, map[string]string{"error": "scanner device is not enrolled"})
 			return
 		}
@@ -232,9 +276,12 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	// The slot the authentication func fills (see scannerOrganizerKey). It is
 	// installed outside the validator because the validator runs before any
 	// middleware the chi router could carry.
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	//
+	// Recovery wraps the completed chain (TKT-557): identity slot, request
+	// validator and security hook, response validator and handlers.
+	return recoverRequests(log, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		validated.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), scannerOrganizerKey{}, new(scannerIdentity))))
-	})
+	}))
 }
 
 var write = httpx.WriteJSONNoStore
@@ -398,8 +445,21 @@ func (s *Server) authenticateScannerDevice(ctx context.Context, input *openapi3f
 	}
 	device, err := s.devices.AuthenticateScannerDevice(ctx, input.RequestValidationInput.Request.Header.Get(scannerDeviceHeader))
 	if err != nil {
+		// TKT-557. A blank, unknown or revoked device stays the one refusal. A
+		// lookup that could not answer is not a refusal: the store's named
+		// pre-decision type is availability (503), anything else is a lookup
+		// failure (500). Both return before Touch, telemetry and the handler.
+		var unavailable *store.PreDecisionUnavailable
+		switch {
+		case errors.As(err, &unavailable):
+			markLookup(input, lookupUnavailable)
+		case !errors.Is(err, store.ErrScannerDeviceUnknown):
+			markLookup(input, lookupFailed)
+		}
 		return errors.New("unauthorized")
 	}
+	// Advisory, under its own PROVISIONAL step bound in the store (TKT-560
+	// qualifies it). Its result is discarded and can never set a lookup class.
 	s.devices.TouchScannerDevice(ctx, device.ID)
 
 	// TKT-272 (ai-review F1). Emitted HERE rather than in the handler, because
@@ -432,6 +492,14 @@ func (s *Server) authenticateScannerDevice(ctx context.Context, input *openapi3f
 	return nil
 }
 
+// markLookup records why the device lookup failed in the request's own slot,
+// for the request error mapper. The slot is allocated per request by Router.
+func markLookup(input *openapi3filter.AuthenticationInput, result scannerLookupResult) {
+	if slot, ok := input.RequestValidationInput.Request.Context().Value(scannerOrganizerKey{}).(*scannerIdentity); ok && slot != nil {
+		slot.lookup = result
+	}
+}
+
 // voidedFeedOperationID is the contract's operationId for the polling surface.
 // Matched on the RESOLVED route rather than the request path, so it identifies
 // the operation the router actually selected.
@@ -458,7 +526,21 @@ func isVoidedFeedOperation(input *openapi3filter.RequestValidationInput) bool {
 type scannerIdentity struct {
 	OrganizerID uuid.UUID
 	DeviceID    uuid.UUID
+	// lookup says why a device lookup failed (TKT-557). Zero after a refusal
+	// or a success. Server state, written only by authenticateScannerDevice.
+	lookup scannerLookupResult
 }
+
+// scannerLookupResult is the outcome of a FAILED device lookup.
+type scannerLookupResult int
+
+const (
+	lookupNotFailed scannerLookupResult = iota
+	// lookupUnavailable: the store returned its named pre-decision type. 503.
+	lookupUnavailable
+	// lookupFailed: any other lookup error except the unknown-device refusal. 500.
+	lookupFailed
+)
 
 // scannerOrganizerKey carries the authenticated device's identity from the
 // request validator to the handler.
@@ -571,7 +653,12 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "invalid_credential"})
 		return
 	}
-	result, err := s.st.Scan(r.Context(), store.ScanInput{
+	if s.admissions == nil {
+		// A configuration fault, not an outage: never 503 (D16).
+		write(w, http.StatusInternalServerError, map[string]string{"error": "redeem ticket"})
+		return
+	}
+	result, err := s.admissions.Scan(r.Context(), store.ScanInput{
 		RedeemInput: store.RedeemInput{
 			TicketID: claims.TicketID, OrderID: claims.OrderID, OrganizerID: claims.OrganizerID, SlotID: claims.SlotID,
 			OccurrenceID: occ, OccurredAt: occurredAt,
@@ -584,6 +671,15 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(err, store.ErrOccurrenceCollision) {
 		write(w, http.StatusUnprocessableEntity, map[string]string{"decision": "rejected", "reason": "occurrence_collision"})
+		return
+	}
+	// TKT-557. Only the store's named type, made at the initial policy read or
+	// a live acquisition, is availability: no ticket decision ran in THIS
+	// request. The raw error is never classified here, so a later statement or
+	// commit failure stays 500 even when its driver error looks the same.
+	var unavailable *store.PreDecisionUnavailable
+	if errors.As(err, &unavailable) {
+		write(w, http.StatusServiceUnavailable, map[string]string{"error": "scanner store unavailable"})
 		return
 	}
 	if err != nil {
@@ -706,8 +802,17 @@ func (s *Server) reconcile(w http.ResponseWriter, r *http.Request) {
 			results = append(results, rejected(entry.OccurrenceID))
 			continue
 		}
+		if s.admissions == nil {
+			// A configuration fault, not an outage: never 503 (D16).
+			if localDecision == "revocation_refused" {
+				write(w, http.StatusInternalServerError, map[string]string{"error": "record scanner refusal"})
+				return
+			}
+			write(w, http.StatusInternalServerError, map[string]string{"error": "reconcile admissions"})
+			return
+		}
 		if localDecision == "revocation_refused" {
-			result, err := s.st.RecordRevocationRefusal(r.Context(), claims.TicketID, claims.OrderID, claims.OrganizerID, claims.SlotID, occ, occurredAt, localDecision)
+			result, err := s.admissions.RecordRevocationRefusal(r.Context(), claims.TicketID, claims.OrderID, claims.OrganizerID, claims.SlotID, occ, occurredAt, localDecision)
 			if errors.Is(err, store.ErrTicketCredential) || errors.Is(err, store.ErrOccurrenceCollision) {
 				results = append(results, rejected(entry.OccurrenceID))
 				continue
@@ -719,7 +824,7 @@ func (s *Server) reconcile(w http.ResponseWriter, r *http.Request) {
 			results = append(results, map[string]any{"occurrence_id": entry.OccurrenceID, "result": string(result.Outcome), "occurred_at": result.OccurredAt})
 			continue
 		}
-		result, err := s.st.ReconcileAdmission(r.Context(), store.ReconcileOccurrence{
+		result, err := s.admissions.ReconcileAdmission(r.Context(), store.ReconcileOccurrence{
 			TicketID: claims.TicketID, OrderID: claims.OrderID, OrganizerID: claims.OrganizerID, SlotID: claims.SlotID,
 			OccurrenceID: occ, OccurredAt: occurredAt, Type: eventType,
 		})
