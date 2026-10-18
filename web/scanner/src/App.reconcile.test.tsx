@@ -27,6 +27,7 @@ beforeEach(async () => {
     page.coordinator.latch({ kind: 'queue', occurrenceId: scan.occurrenceId, outcome: { family: 'queue', cause: 'transport_failure' }, decidedAt: '2026-10-18T12:34:56.789Z' })
     await page.coordinator.persist(scan.occurrenceId)
   }
+  keys.sort()
   localStorage.setItem('scanner.device-token', 'token')
   answer = (rows) => new Response(JSON.stringify(recorded(rows)), { status: 200 })
   vi.stubGlobal('fetch', vi.fn(async (input: string, init?: RequestInit) => input.includes('voided-tickets')

@@ -120,6 +120,8 @@ it.each(['commit', 'abort'] as const)('settles pairing cancellation against a he
     expect(terminalWrites).toBe(0)
     holding[0].release(finish)
     await waitFor(async () => expect(await rawGet(dbName, STORE.occurrences, scans[0].occurrence_id as string)).toMatchObject({ state: finish === 'commit' ? 'ACTUATED' : 'RESOLVED' }))
+    await act(async () => { await page.coordinator.repairAll() })
+    expect(page.coordinator.view(scans[0].occurrence_id as string)?.durable).toBe(finish === 'commit' ? 'settled_as_actuation' : 'committed')
     expect(terminalWrites).toBe(finish === 'commit' ? 0 : 1)
     expect(screen.queryByRole('heading', { name: 'Accepted' })).toBeNull()
     expect(screen.queryByRole('heading', { name: 'Scan cancelled' })).toBeNull()

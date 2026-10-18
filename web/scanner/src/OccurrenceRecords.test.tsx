@@ -95,6 +95,7 @@ it('waits for receipt transaction completion before enabling acknowledgement', a
   try {
     fireEvent.click(screen.getByRole('button', { name: 'Export local records' }))
     await held.started
+    await act(async () => { await Promise.resolve() })
     expect(ack().hasAttribute('disabled')).toBe(true)
     expect(screen.queryByText('Export requested. The browser cannot confirm that the file was saved.')).toBeNull()
     await act(async () => { held.release() })
