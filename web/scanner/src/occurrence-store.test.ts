@@ -139,6 +139,25 @@ describe('actuation reservation', () => {
     expect(await a.store().reserveActuation(scan.occurrenceId)).toEqual({ reserved: false, why: 'not_marking' })
   })
 
+  it('resolves and latches ACT only after the mark transaction completes (I3-07, store half)', async () => {
+    const a = page()
+    await a.ready()
+    const { scan } = await marking(a)
+    instrument = instrumentTransactions()
+    const hold = instrument.hold(OCC_RW_STRICT)
+    let settled = false
+    const reserving = a.store().reserveActuation(scan.occurrenceId).then((result) => { settled = true; return result })
+    const call = await bounded(hold.started, 'mark transaction')
+    await eventually(() => call.events.includes('write-success'), 'mark request success')
+    await settle(10)
+    expect(settled).toBe(false)
+    expect(a.coordinator.latched(scan.occurrenceId)).toBeUndefined()
+    expect(a.coordinator.view(scan.occurrenceId)?.mark).toBe('pending')
+    hold.release()
+    expect(await bounded(reserving, 'reservation')).toEqual({ reserved: true })
+    expect(a.coordinator.latched(scan.occurrenceId)?.kind).toBe('actuation')
+  })
+
   it('refuses a row owned by another page, with every other predicate passing (I3-03)', async () => {
     const a = page()
     await a.ready()
