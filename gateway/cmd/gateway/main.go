@@ -188,9 +188,19 @@ func port() string {
 	return "8080"
 }
 
+// minimumWriteTimeout is the smallest HTTP_WRITE_TIMEOUT the gateway accepts
+// (TKT-557, D5), the same minimum as Access behind it. The gateway's write
+// deadline starts earlier than Access's, so equal values can still lose a
+// committed response; the guard refuses the configuration that makes that
+// likely, not the race.
+const minimumWriteTimeout = 30 * time.Second
+
 func run() error {
 	httpConfig, err := runtimecfg.HTTPFromEnv()
 	if err != nil {
+		return fmt.Errorf("http configuration: %w", err)
+	}
+	if err := httpConfig.RequireWriteTimeoutAtLeast(minimumWriteTimeout); err != nil {
 		return fmt.Errorf("http configuration: %w", err)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -2,13 +2,33 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
+
+// gatewayChildEnv makes this test binary run the real gateway entrypoint in a
+// child process (TKT-557). TestMain dispatches it.
+const gatewayChildEnv = "TKT557_GATEWAY_CHILD"
+
+func TestMain(m *testing.M) {
+	if os.Getenv(gatewayChildEnv) == "run" {
+		if err := run(); err != nil {
+			fmt.Fprintf(os.Stderr, "child error: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 type discardInfoLogger struct{}
 
@@ -286,6 +306,83 @@ func TestSecurityHeadersOnEveryAnswer(t *testing.T) {
 			}
 			if got := resp.Header.Values("X-Frame-Options"); len(got) != 1 || got[0] != tc.wantFrame {
 				t.Errorf("X-Frame-Options = %v, want [%s]", got, tc.wantFrame)
+			}
+		})
+	}
+}
+
+// TKT-557 (D5): the gateway refuses a resolved HTTP_WRITE_TIMEOUT below 30 s
+// before any resource or listener. The child has no route configuration, so a
+// deleted guard fails later on a different error; it never listens.
+func TestGatewayStartupRefusesAWriteTimeoutBelow30s(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^$")
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), gatewayChildEnv + "=run",
+		"HTTP_WRITE_TIMEOUT=29s", "OTEL_SDK_DISABLED=true", "PORT=0"}
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("the gateway did not stop within 30s: the guard did not refuse; output:\n%s", out)
+	}
+	if err == nil || !strings.Contains(string(out), "HTTP_WRITE_TIMEOUT must be at least 30s") {
+		t.Fatalf("err=%v, want the write-timeout refusal; output:\n%s", err, out)
+	}
+	if strings.Contains(string(out), "listening") {
+		t.Fatal("the refused gateway started a listener")
+	}
+}
+
+// TKT-557 (COS-3): the gateway forwards Access's exact 500 and 503 answers
+// unchanged — status, body and the Access headers — and adds its own security
+// headers. It has no error rewrite: it cannot know whether Access committed.
+func TestGatewayForwardsAccessFailuresUnchanged(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		body   string
+	}{
+		{http.StatusServiceUnavailable, `{"error":"scanner device lookup unavailable"}` + "\n"},
+		{http.StatusServiceUnavailable, `{"error":"scanner store unavailable"}` + "\n"},
+		{http.StatusInternalServerError, `{"error":"request failed"}` + "\n"},
+		{http.StatusInternalServerError, `{"error":"scanner device lookup failed"}` + "\n"},
+	} {
+		t.Run(fmt.Sprintf("%d %s", tc.status, strings.TrimSpace(tc.body)), func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/scans" {
+					t.Errorf("upstream path = %q, want /scans", r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "no-store")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer upstream.Close()
+			upstreamURL, err := url.Parse(upstream.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mux := http.NewServeMux()
+			mux.Handle("/api/access/internal/", http.HandlerFunc(edgeDenied))
+			mux.Handle("/api/access/", apiProxy(upstreamURL, "/api/access/", true))
+			srv := httptest.NewServer(securityHeaders(denyEncodedSeparators(mux)))
+			defer srv.Close()
+
+			resp, err := srv.Client().Post(srv.URL+"/api/access/scans", "application/json", strings.NewReader(`{"qr_payload":"x"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != tc.status || string(body) != tc.body {
+				t.Fatalf("forwarded %d %q, want %d %q unchanged", resp.StatusCode, body, tc.status, tc.body)
+			}
+			if resp.Header.Get("Content-Type") != "application/json" || resp.Header.Get("Cache-Control") != "no-store" {
+				t.Errorf("Access headers changed: Content-Type=%q Cache-Control=%q", resp.Header.Get("Content-Type"), resp.Header.Get("Cache-Control"))
+			}
+			if resp.Header.Get("X-Content-Type-Options") != "nosniff" || resp.Header.Get("Content-Security-Policy") != "frame-ancestors 'none'" || resp.Header.Get("X-Frame-Options") != "DENY" {
+				t.Errorf("security headers missing: %v", resp.Header)
 			}
 		})
 	}

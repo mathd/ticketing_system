@@ -440,3 +440,44 @@ func TestOptionalCredentialAppliesNoLengthFloor(t *testing.T) {
 		t.Fatalf("OptionalCredential must apply no length floor: %v", err)
 	}
 }
+
+// TKT-557: Access and the gateway refuse a resolved write timeout below 30 s.
+// The values are literals, independent of any production constant, and the
+// global default stays 30 s (TestHTTPDefaultsAndOverrides).
+func TestRequireWriteTimeoutAtLeast(t *testing.T) {
+	for _, tc := range []struct {
+		name, value string
+		set         bool
+		wantErr     bool
+	}{
+		{name: "default", set: false},
+		{name: "explicit 30s", value: "30s", set: true},
+		{name: "45s", value: "45s", set: true},
+		{name: "29.999s", value: "29.999s", set: true, wantErr: true},
+		{name: "1ms below", value: "29999ms", set: true, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.set {
+				t.Setenv("HTTP_WRITE_TIMEOUT", tc.value)
+			}
+			config, err := HTTPFromEnv()
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = config.RequireWriteTimeoutAtLeast(30 * time.Second)
+			if tc.wantErr != (err != nil) {
+				t.Fatalf("err = %v, want error %v", err, tc.wantErr)
+			}
+			if err != nil && (!strings.Contains(err.Error(), "HTTP_WRITE_TIMEOUT") || !strings.Contains(err.Error(), "30s")) {
+				t.Fatalf("error %q must name HTTP_WRITE_TIMEOUT and the 30s minimum", err)
+			}
+		})
+	}
+	// Zero and invalid syntax never reach the check: the resolver refuses them.
+	for _, value := range []string{"0", "0s", "thirty"} {
+		t.Setenv("HTTP_WRITE_TIMEOUT", value)
+		if _, err := HTTPFromEnv(); err == nil {
+			t.Fatalf("HTTP_WRITE_TIMEOUT=%q resolved without error", value)
+		}
+	}
+}
