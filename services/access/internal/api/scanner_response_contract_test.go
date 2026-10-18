@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -710,19 +712,61 @@ func servePanics(handler http.Handler, rec *httptest.ResponseRecorder) (escaped 
 	return nil
 }
 
+// fullRecorder adds the optional writer paths a real connection has, so each
+// one reaches its own httpsnoop hook: ReadFrom and FlushError.
+type fullRecorder struct{ *httptest.ResponseRecorder }
+
+func (f fullRecorder) ReadFrom(src io.Reader) (int64, error) {
+	return io.Copy(struct{ io.Writer }{f.ResponseRecorder}, src)
+}
+
+func (f fullRecorder) FlushError() error {
+	f.Flush()
+	return nil
+}
+
+// hijackRecorder supports Hijack. After a hijack the response is the
+// handler's connection, so recovery must not write to it.
+type hijackRecorder struct {
+	*httptest.ResponseRecorder
+	hijacked, wroteAfterHijack bool
+}
+
+func (h *hijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h.hijacked = true
+	client, server := net.Pipe()
+	go func() { _, _ = io.Copy(io.Discard, server) }()
+	return client, bufio.NewReadWriter(bufio.NewReader(client), bufio.NewWriter(client)), nil
+}
+
+func (h *hijackRecorder) WriteHeader(code int) {
+	if h.hijacked {
+		h.wroteAfterHijack = true
+		return
+	}
+	h.ResponseRecorder.WriteHeader(code)
+}
+
+func (h *hijackRecorder) Write(b []byte) (int, error) {
+	if h.hijacked {
+		h.wroteAfterHijack = true
+		return 0, http.ErrHijacked
+	}
+	return h.ResponseRecorder.Write(b)
+}
+
 // After final headers recovery aborts: the original status and partial bytes
-// stay, and no error JSON is appended. Every write path through the wrapper.
+// stay, and no error JSON is appended. Each write path through the wrapper is
+// its ONLY path to the network in its case, so each case exercises one hook.
 func TestRecoveryAbortsAfterFinalHeaders(t *testing.T) {
 	for name, write := range map[string]func(w http.ResponseWriter){
 		"implicit Write":       func(w http.ResponseWriter) { _, _ = w.Write([]byte("partial")) },
 		"explicit WriteHeader": func(w http.ResponseWriter) { w.WriteHeader(http.StatusAccepted) },
-		"Flush": func(w http.ResponseWriter) {
-			w.WriteHeader(http.StatusOK)
-			w.(http.Flusher).Flush()
-		},
-		"WriteString": func(w http.ResponseWriter) { _, _ = io.WriteString(w, "partial") },
+		"Flush":                func(w http.ResponseWriter) { w.(http.Flusher).Flush() },
+		"FlushError":           func(w http.ResponseWriter) { _ = http.NewResponseController(w).Flush() },
+		"WriteString":          func(w http.ResponseWriter) { _, _ = io.WriteString(w, "partial") },
 		"ReadFrom": func(w http.ResponseWriter) {
-			_, _ = io.Copy(w, struct{ io.Reader }{strings.NewReader("partial")})
+			_, _ = w.(io.ReaderFrom).ReadFrom(strings.NewReader("partial"))
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -731,7 +775,11 @@ func TestRecoveryAbortsAfterFinalHeaders(t *testing.T) {
 				panic("after headers")
 			}))
 			rec := httptest.NewRecorder()
-			escaped := servePanics(handler, rec)
+			escaped := func() (escaped any) {
+				defer func() { escaped = recover() }()
+				handler.ServeHTTP(fullRecorder{rec}, httptest.NewRequest(http.MethodGet, "/", nil))
+				return nil
+			}()
 			if !errors.Is(asError(escaped), http.ErrAbortHandler) {
 				t.Fatalf("escaped = %v, want http.ErrAbortHandler", escaped)
 			}
@@ -743,6 +791,29 @@ func TestRecoveryAbortsAfterFinalHeaders(t *testing.T) {
 			}
 		})
 	}
+	// A hijacked connection is no longer replaceable either.
+	t.Run("Hijack", func(t *testing.T) {
+		rec := &hijackRecorder{ResponseRecorder: httptest.NewRecorder()}
+		handler := recoverRequests(nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+			}
+			defer func() { _ = conn.Close() }()
+			panic("after hijack")
+		}))
+		escaped := func() (escaped any) {
+			defer func() { escaped = recover() }()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+			return nil
+		}()
+		if !errors.Is(asError(escaped), http.ErrAbortHandler) {
+			t.Fatalf("escaped = %v, want http.ErrAbortHandler", escaped)
+		}
+		if rec.wroteAfterHijack {
+			t.Fatal("recovery wrote a response to a hijacked connection")
+		}
+	})
 	// 1xx informational headers are not final: a panic after one still gets
 	// the clean 500.
 	handler := recoverRequests(nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
