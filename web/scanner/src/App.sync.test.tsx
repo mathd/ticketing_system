@@ -371,8 +371,9 @@ describe('a failed sync of the offline queue', () => {
     const signal = await started.promise
     window.dispatchEvent(new Event('online'))
     await act(async () => { await vi.advanceTimersByTimeAsync(reconcileTimeoutMs) })
+    vi.useRealTimers()
     expect(await storedRows()).toEqual(before)
-    expect(screen.getByText(offlineNote)).toBeDefined()
+    expect(await screen.findByText(offlineNote)).toBeDefined()
     expect(signal.aborted).toBe(true)
     await followUp.promise
     expect(calls).toBe(2)
