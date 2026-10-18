@@ -4,6 +4,12 @@
 
 import { createPrivateKey, randomUUID, sign } from 'node:crypto';
 import { chromium } from 'playwright-core';
+import { installTransportMutation } from './lib/scanner-mutations.mjs';
+import { recovery } from './lib/scanner-recovery.mjs';
+import { nativeControls } from './lib/scanner-native.mjs';
+import { entryCore } from './lib/scanner-entry-core.mjs';
+import { storageCore } from './lib/scanner-storage-core.mjs';
+import { oldReader } from './lib/scanner-old-reader.mjs';
 import { ORGANIZER, enrolScanner, resultRecorder, sql } from './lib/support.mjs';
 
 const BASE = process.env.BASE ?? 'http://localhost:18080';
@@ -19,7 +25,7 @@ if (!PG || !ACCESS_PORT || !QR_SEED || !QR_KID || !INTERNAL_TOKEN) {
 }
 
 const recorder = resultRecorder('scanner');
-const { check } = recorder;
+const check = (...args) => { recorder.check(...args); console.log(`${args[1] ? 'PASS' : 'FAIL'} ${args[0]}`); };
 const token = enrolScanner(ACCESS, `browser gate ${Date.now()}`);
 const ticketID = randomUUID();
 const orderID = randomUUID();
@@ -55,7 +61,8 @@ sql(
      (id, order_id, guest_order_ref, organizer_id, buyer_id, slot_id, ticket_type_id, qr_payload, issued_at)
    VALUES
      ('${ticketID}', '${orderID}', '${guestRef}', '${ORGANIZER}', '${buyerID}', '${slotID}',
-      '${ticketTypeID}', '${credential}', '${issuedAt.toISOString()}');`,
+      '${ticketTypeID}', '${credential}', '${issuedAt.toISOString()}');
+   INSERT INTO slot_re_entry_policies(slot_id,organizer_id,mode,requires_exit) VALUES('${slotID}','${ORGANIZER}','multi',false);`,
 );
 const refundResponse = await fetch(`http://localhost:${ACCESS_PORT}/internal/orders/${orderID}/refunds`, {
   method: 'POST',
@@ -66,14 +73,17 @@ if (!refundResponse.ok) throw new Error(`Access refund returned ${refundResponse
 const lifecycleTypesBeforeRefusal = sql(
   PG,
   'access',
-  `SELECT COALESCE(json_agg(event_type ORDER BY occurred_at, id), '[]'::json)::text
+  `SELECT COALESCE(json_agg(row_to_json(lifecycle_events) ORDER BY occurred_at, id), '[]'::json)::text
      FROM lifecycle_events WHERE ticket_id='${ticketID}'`,
 );
 
 const browser = await chromium.launch({ channel: 'chrome' });
+const newContext=browser.newContext.bind(browser);
+browser.newContext=async(...args)=>{const context=await newContext(...args);context.setDefaultTimeout(10000);context.setDefaultNavigationTimeout(15000);return context;};
 
 try {
   const context = await browser.newContext({ baseURL: BASE });
+  await installTransportMutation(context);
   const page = await context.newPage();
   const scanRequests = [];
   const reconcileRequests = [];
@@ -162,6 +172,7 @@ try {
   const refusal = offlineRequest.postDataJSON().occurrences?.[0];
   if (!refusal) throw new Error('reconciliation did not carry the queued refusal');
   check('reconciliation carries the refusal decision', refusal.local_decision === 'revocation_refused');
+  check('the refusal creates no lifecycle quarantine', Number(sql(PG,'access',`SELECT count(*) FROM lifecycle_integrity_quarantine WHERE ticket_id='${ticketID}'`))===0);
   const exactRow = JSON.parse(sql(
     PG,
     'access',
@@ -186,7 +197,7 @@ try {
   );
   check(
     'the refusal leaves the full ordered lifecycle unchanged',
-    sql(PG, 'access', `SELECT COALESCE(json_agg(event_type ORDER BY occurred_at, id), '[]'::json)::text
+    sql(PG, 'access', `SELECT COALESCE(json_agg(row_to_json(lifecycle_events) ORDER BY occurred_at, id), '[]'::json)::text
       FROM lifecycle_events WHERE ticket_id='${ticketID}'`) === lifecycleTypesBeforeRefusal,
   );
 
@@ -211,6 +222,15 @@ try {
     'the form is usable after the request finishes',
     !(await page.getByRole('button', { name: 'Check ticket' }).isDisabled()),
   );
+  const shared = { browser, BASE, PG, QR_SEED, QR_KID, token, check, ACCESS_PORT, INTERNAL_TOKEN };
+  Object.assign(shared, await entryCore(shared));
+  await storageCore(shared);
+  await oldReader(shared);
+  await recovery(shared);
+  await nativeControls(shared);
+} catch (error) {
+  check('scanner browser execution', false, error.stack ?? String(error));
+  process.exitCode = 1;
 } finally {
   await browser.close();
   if (!recorder.finish()) process.exitCode = 1;

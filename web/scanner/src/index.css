@@ -11,3 +11,8 @@ video { display: block; width: 100%; margin-top: 1rem; border-radius: .5rem; bac
 .camera-note { margin-bottom: 0; }
 .result.accepted { border-color: #15803d; background: #f0fdf4; }
 .result.rejected { border-color: #b91c1c; background: #fef2f2; }
+
+.local-records fieldset { display: flex; flex-direction: column; gap: .75rem; margin-top: 1rem; }
+.local-records label { font-weight: 400; overflow-wrap: anywhere; }
+.local-records input[type="checkbox"] { width: auto; margin-right: .5rem; }
+.local-records p { overflow-wrap: anywhere; }

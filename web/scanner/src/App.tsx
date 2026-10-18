@@ -1,107 +1,37 @@
 import { useEffect, useRef, useState } from 'react'
-import {
-  decodeAccessError,
-  decodeReconcileResponse,
-  decodeScanResponse,
-  type ReconcileResponse,
-  type ReconcileRequest,
-  type ScanRequest,
-} from './access-contract'
-import { createOccurrenceOwner, replaceOccurrenceOwner } from './occurrence-owner'
-import { openOccurrenceStore, type OccurrenceRecord, type OccurrenceStore } from './occurrences'
-import { decodeTicketID } from './revocation'
+import { decodeReconcileResponse, type ReconcileResponse } from './access-contract'
+import { createEntryScanner, type EntryResult, type Pairing } from './entry-scan'
+import { pageStorage, type StorageReadiness } from './occurrence-readiness'
+import { type QueuedEntry } from './occurrence-store'
+import { planReconcileBatches } from './reconcile-batch'
+import { OccurrenceRecords } from './OccurrenceRecords'
+import { CANNOT_REPAIR, presentResult, readableTime, REPAIR_NEEDED, STORAGE_UNAVAILABLE, STORAGE_UNREADY } from './scan-result'
 
-type ScanOutcome =
-  | { kind: 'accepted'; scannedAt: string; replay: boolean }
-  | { kind: 'rejected'; reason: string; originalScanAt?: string }
-  | { kind: 'revocation-refused' }
-  | { kind: 'queued'; cause: 'offline' | 'unreadable' | 'local' }
-  | { kind: 'duplicate-response' }
-
-// What the operator is told about a queued scan. Each string says only what the code
-// established (TKT-305): the old single message claimed "No connection" for all three,
-// including the case where the server answered and failed. The three read differently
-// on purpose — one sends staff to the network, one upstream, one to this device — and
-// the instruction that follows them ("saved on this device, admit per venue policy") is
-// the same in every case, because the queue behaviour is.
-const QUEUED_CAUSE = {
-  offline: 'No connection',
-  unreadable: 'The server answered but the reply could not be read',
-  local: 'The scan was sent but could not be recorded on this device',
-} as const
-
-type BarcodeDetectorInstance = {
-  detect(source: HTMLVideoElement): Promise<Array<{ rawValue?: string }>>
-}
-
+type BarcodeDetectorInstance = { detect(source: HTMLVideoElement): Promise<Array<{ rawValue?: string }>> }
 type BarcodeDetectorConstructor = new (options: { formats: string[] }) => BarcodeDetectorInstance
+declare global { interface Window { BarcodeDetector?: BarcodeDetectorConstructor } }
 
-declare global {
-  interface Window {
-    BarcodeDetector?: BarcodeDetectorConstructor
-  }
-}
-
-const scanURL = '/api/access/scans'
 const reconcileURL = '/api/access/scans/reconciliations'
-export const reconcileTimeoutMs = 15_000
 const revocationsURL = '/api/access/scans/voided-tickets'
-const storageBeforeScanMessage = 'This device cannot save scans right now. No ticket was checked. Try again after restoring browser storage.'
-const storageAfterResponseMessage = 'This device could not save the server result. Do not rescan until browser storage is restored.'
-const storageRefusalMessage = 'This device could not save the refusal. Do not admit this ticket.'
-
-// The enrolled device's credential.
-//
-// Held per DEVICE, in this browser's storage, and never compiled into the bundle:
-// this app is static and served to every phone that loads /scanner/, so a shared
-// token baked in at build time would be published, not secret. An operator enrols
-// a gate with `access enrol-scanner` and pairs it once, here.
-//
-// localStorage rather than the IndexedDB queue: it is read synchronously on every
-// request, it must survive a reload, and it is one string. Same origin, same
-// device-loss exposure as the queue itself — a lost phone is answered by revoking
-// that device, which is the whole reason the credential is per device.
+export const reconcileTimeoutMs = 15_000
 const deviceTokenKey = 'scanner.device-token'
 const scannerTokenHeader = 'X-Scanner-Token'
-const pageOccurrenceOwner = createOccurrenceOwner()
-
+const QUEUED_CAUSE = { offline: 'No connection', unreadable: 'The server answered but the reply could not be read' } as const
 function readDeviceToken(): string {
-  try {
-    return localStorage.getItem(deviceTokenKey)?.trim() ?? ''
-  } catch {
-    // Private-mode browsers can throw on access. An unpaired scanner is a
-    // legible state; a crashed one is not.
-    return ''
-  }
+  try { return localStorage.getItem(deviceTokenKey)?.trim() ?? '' } catch { return '' }
 }
-
-// scanHeaders is the ONE place the credential is attached, so a new call to the
-// access API cannot forget it and discover the omission as a 401 at a live door.
 function scanHeaders(token: string): HeadersInit {
   return { 'Content-Type': 'application/json', [scannerTokenHeader]: token }
 }
-
 async function tokenFingerprint(token: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
-
-// The sync line (TKT-315). Tagged so a failure note can outlive a pairing change and so a
-// network failure never replaces the instruction to pair: matching on the text would
-// decide that by accident. A failure that arrives while the pairing instruction stands is
-// carried under it, so pairing shows it instead of a blank line.
 type SyncNote =
   | { kind: 'failure'; id: string; text: string }
   | { kind: 'success'; text: string }
   | { kind: 'pairing'; text: string; failure?: { id: string; text: string } }
   | null
-
-function readableTime(value?: string) {
-  return value ? new Date(value).toLocaleString() : undefined
-}
-
-// What the sync line keeps once nothing awaits sync. A failure is false then, so it goes. A
-// pairing line keeps its text but loses the failure it carried. A success line stays.
 function withoutStaleFailure(previous: SyncNote): SyncNote {
   if (previous?.kind === 'failure') return null
   if (previous?.kind === 'pairing' && previous.failure) return { kind: 'pairing', text: previous.text }
@@ -109,37 +39,45 @@ function withoutStaleFailure(previous: SyncNote): SyncNote {
 }
 
 function App() {
+  const storage = useRef(pageStorage).current
+  const [readiness, setReadiness] = useState<StorageReadiness>(storage.state)
   const [payload, setPayload] = useState('')
-  const [outcome, setOutcome] = useState<ScanOutcome | null>(null)
+  const [outcome, setOutcome] = useState<EntryResult | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [queuedCount, setQueuedCount] = useState(0)
   const [syncNote, setSyncNote] = useState<SyncNote>(null)
+  const [reconcileWarnings, setReconcileWarnings] = useState<string[]>([])
   const [cameraMessage, setCameraMessage] = useState('')
   const [cameraActive, setCameraActive] = useState(false)
   const [deviceToken, setDeviceToken] = useState(readDeviceToken)
   const [pairingInput, setPairingInput] = useState('')
+  const [pairingBusy, setPairingBusy] = useState(false)
   const [storageFailure, setStorageFailure] = useState<string | null>(null)
   const [hasRevocationPull, setHasRevocationPull] = useState(false)
+  const [recordsRefresh, setRecordsRefresh] = useState(0)
   const video = useRef<HTMLVideoElement>(null)
   const stream = useRef<MediaStream | null>(null)
   const frame = useRef<number | null>(null)
   const mounted = useRef(true)
-  // The time of the last sync that completed in this page session. A ref, not state: the
-  // online listener is registered by the first render and must read the current value.
   const lastSuccessfulSyncAt = useRef<string | null>(null)
   const syncFailureId = useRef(0)
   const syncInFlight = useRef(false)
   const syncRequested = useRef(false)
-  const storePromise = useRef<Promise<OccurrenceStore> | null>(null)
-  const occurrenceOwner = useRef(pageOccurrenceOwner)
   const deviceTokenRef = useRef(deviceToken)
-  deviceTokenRef.current = deviceToken
-  const reopenAfter = useRef<Promise<void>>(Promise.resolve())
-  const pullInFlight = useRef<{ token: string; promise: Promise<void> } | null>(null)
-  // Bumped by every stopCamera() and every startCamera() entry. A start captures its value and
-  // treats itself as stale once the counter moves on — so a stream resolving after unmount or a
-  // superseded start disposes of its own resource instead of touching the active one.
+  const pairingGeneration = useRef(0)
+  const pairingBusyRef = useRef(false)
+  const pullInFlight = useRef<{ pairing: Pairing; promise: Promise<void> } | null>(null)
   const generation = useRef(0)
+  const pairing = (): Pairing => ({ token: deviceTokenRef.current, generation: pairingGeneration.current })
+  const isPairing = (captured: Pairing) => captured.token === deviceTokenRef.current && captured.generation === pairingGeneration.current
+  const diagnostic = () => { if (mounted.current) setRecordsRefresh((value) => value + 1) }
+  const scanner = useRef<ReturnType<typeof createEntryScanner> | null>(null)
+  if (!scanner.current) scanner.current = createEntryScanner({ storage, pairing,
+    publish: (result) => { if (mounted.current) setOutcome(result) },
+    busy: (value) => { if (mounted.current) setSubmitting(value) }, diagnostic,
+    refusalQueued: () => { if (mounted.current) void syncQueued() },
+    authRefused: (captured) => clearPairing('This device is not paired. Enter its pairing token before admitting anyone.', captured, true),
+  })
 
   const stopCamera = () => {
     generation.current += 1
@@ -149,101 +87,94 @@ function App() {
     stream.current = null
     setCameraActive(false)
   }
-
-  const getStore = (): Promise<OccurrenceStore> => {
-    if (storePromise.current) return storePromise.current
-    const owner = occurrenceOwner.current
-    const attempt = reopenAfter.current.then(() => openOccurrenceStore('gate-occurrences', owner))
-    storePromise.current = attempt
-    return attempt
+  const getStore = () => {
+    const store = storage.readyStore()
+    if (!store) throw new Error('scanner storage is not ready')
+    return store
   }
-
-  const reportStorageFailure = (message = storageBeforeScanMessage) => {
-    const failedStore = storePromise.current
-    storePromise.current = null
-    if (failedStore) {
-      const releasedOwner = occurrenceOwner.current
-      occurrenceOwner.current = replaceOccurrenceOwner(releasedOwner)
-      const priorClose = reopenAfter.current
-      const failedClose = failedStore
-        .then((opened) => opened.close())
-        .catch(() => undefined)
-      reopenAfter.current = Promise.all([priorClose, failedClose]).then(() => undefined)
-    }
-    if (mounted.current) setStorageFailure(message)
-  }
-
-  const reportStorageReady = () => {
-    if (mounted.current) setStorageFailure(null)
+  const reportStorageFailure = () => { if (mounted.current) setStorageFailure(STORAGE_UNAVAILABLE) }
+  const reportStorageReady = () => { if (mounted.current && storage.readyStore()) setStorageFailure(null) }
+  const refreshQueued = async () => {
+    try {
+      const store = getStore()
+      await storage.coordinator.repairAll()
+      await store.recoverDeadOwners()
+      const queue = await store.queued()
+      if (mounted.current) {
+        setQueuedCount(queue.entries.length)
+        reportStorageReady()
+        diagnostic()
+      }
+    } catch { reportStorageFailure() }
   }
 
   useEffect(() => {
     mounted.current = true
-    void refreshQueued()
-    const timer = window.setInterval(() => {
-      if (deviceTokenRef.current) void pullRevocations()
-    }, 15 * 60 * 1000)
-    // Refresh and queue sync are independent so one failure does not suppress the other.
+    const update = (state: StorageReadiness) => {
+      setReadiness(state)
+      diagnostic()
+      if (state.status !== 'ready') stopCamera()
+      else {
+        reportStorageReady()
+        void refreshQueued()
+        if (deviceTokenRef.current) void pullRevocations()
+      }
+    }
+    const unsubscribe = storage.subscribe(update)
+    update(storage.state())
+    storage.start()
+    const timer = window.setInterval(() => { if (deviceTokenRef.current) void pullRevocations() }, 15 * 60 * 1000)
     const onOnline = () => {
       if (deviceTokenRef.current) void pullRevocations()
       void syncQueued()
+      void refreshQueued()
     }
-    window.addEventListener('online', onOnline)
-    return () => {
-      mounted.current = false
-      window.clearInterval(timer)
-      window.removeEventListener('online', onOnline)
-      const pendingStore = storePromise.current
-      storePromise.current = null
-      if (pendingStore) void pendingStore.then((opened) => opened.close()).catch(() => undefined)
+    const onPairingChange = (event: StorageEvent) => {
+      if (event.key !== deviceTokenKey || (event.newValue?.trim() ?? '') === deviceTokenRef.current) return
+      scanner.current!.cancel()
+      pairingGeneration.current += 1
+      deviceTokenRef.current = event.newValue?.trim() ?? ''
+      setDeviceToken(deviceTokenRef.current)
+      setOutcome(null)
+      setHasRevocationPull(false)
       stopCamera()
     }
+    window.addEventListener('online', onOnline)
+    window.addEventListener('storage', onPairingChange)
+    return () => {
+      mounted.current = false
+      unsubscribe()
+      window.clearInterval(timer)
+      window.removeEventListener('online', onOnline)
+      window.removeEventListener('storage', onPairingChange)
+      scanner.current!.cancel()
+      stopCamera()
+    }
+    // The page listeners read mutable refs. Subscribing again would cancel an active scan.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  useEffect(() => {
-    if (deviceToken) void pullRevocations()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deviceToken])
-
-  const refreshQueued = async () => {
-    try {
-      const store = await getStore()
-      const queue = await store.queued()
-      if (mounted.current) {
-        setQueuedCount(queue.length)
-        setStorageFailure(null)
-      }
-    } catch {
-      reportStorageFailure()
-    }
-  }
+  // Pairing changes start a feed pull. The readiness subscription covers storage opens.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (deviceToken && storage.readyStore()) void pullRevocations() }, [deviceToken])
 
   const pullRevocations = async (): Promise<void> => {
-    const token = deviceTokenRef.current
-    if (!token) return
+    const captured = pairing()
+    if (!captured.token || !storage.readyStore()) return
     const current = pullInFlight.current
-    if (current?.token === token) return current.promise
+    if (current && current.pairing.token === captured.token && current.pairing.generation === captured.generation) return current.promise
     const pull = (async () => {
       try {
-        const store = await getStore()
-        const fingerprint = await tokenFingerprint(token)
-        const previousPull = await store.revocationPull(fingerprint)
-        if (mounted.current && deviceTokenRef.current === token) {
-          setHasRevocationPull(!!previousPull.completedAt)
-        }
+        const store = getStore()
+        const fingerprint = await tokenFingerprint(captured.token)
+        const previous = await store.revocationPull(fingerprint)
+        if (mounted.current && isPairing(captured)) setHasRevocationPull(!!previous.completedAt)
         let cursor: string | null = null
         do {
-          // Stop when the screen has closed: a walk that outlives its component would
-          // go on calling fetch for a scanner nobody is looking at.
-          if (!mounted.current) return
+          if (!mounted.current || !isPairing(captured)) return
           const query = cursor === null ? '?limit=100' : `?limit=100&cursor=${encodeURIComponent(cursor)}`
-          const response = await fetch(`${revocationsURL}${query}`, {
-            headers: { [scannerTokenHeader]: token },
-          })
+          const response = await fetch(`${revocationsURL}${query}`, { headers: { [scannerTokenHeader]: captured.token } })
           if (response.status === 401) {
-            // A revoked device learns it here too, not only on its next scan.
-            clearPairing('This device is not paired. Enter its pairing token before admitting anyone.', token)
+            clearPairing('This device is not paired. Enter its pairing token before admitting anyone.', captured)
             return
           }
           if (!response.ok) return
@@ -256,129 +187,24 @@ function App() {
           cursor = page.next_cursor
         } while (cursor !== null)
         await store.completeRevocationPull(fingerprint, new Date().toISOString())
-        if (mounted.current && deviceTokenRef.current === token) {
-          setHasRevocationPull(true)
-        }
-      } catch {
-        // A failed page does not advance the completed-pull time.
-      }
+        if (mounted.current && isPairing(captured)) setHasRevocationPull(true)
+      } catch { /* A failed pull never advances its completed timestamp. */ }
     })()
-    const flight = { token, promise: pull }
+    const flight = { pairing: captured, promise: pull }
     pullInFlight.current = flight
-    try {
-      await pull
-    } finally {
-      if (pullInFlight.current === flight) pullInFlight.current = null
-    }
+    try { await pull } finally { if (pullInFlight.current === flight) pullInFlight.current = null }
   }
-
   const submit = async (value = payload) => {
-    if (!value.trim() || submitting) return
-    setSubmitting(true)
-    setOutcome(null)
-    try {
-      let store: OccurrenceStore
-      let record: OccurrenceRecord
-      let listed = false
-      try {
-        store = await getStore()
-        const ticketID = decodeTicketID(value.trim())
-        listed = !!ticketID && await store.isRevoked(ticketID)
-        if (listed) {
-          record = await store.mintRefusal(value.trim(), new Date().toISOString())
-          reportStorageReady()
-          setOutcome({ kind: 'revocation-refused' })
-          await refreshQueued()
-          void syncQueued()
-          return
-        }
-        // Commit the occurrence before sending the request (ADR-025 §D3).
-        record = await store.mint(value.trim(), new Date().toISOString())
-        reportStorageReady()
-      } catch {
-        if (listed) {
-          setOutcome({ kind: 'revocation-refused' })
-          reportStorageFailure(storageRefusalMessage)
-        } else {
-          reportStorageFailure()
-        }
-        return
-      }
-
-      // Track how far the exchange reached so the operator sees the cause the
-      // scanner established. Every failure still queues the occurrence.
-      let cause: 'offline' | 'unreadable' | 'local' = 'offline'
-      try {
-        const request: ScanRequest = {
-          qr_payload: record.qrPayload,
-          occurrence_id: record.occurrenceId,
-          occurred_at: record.occurredAt,
-        }
-        const response = await fetch(scanURL, {
-          method: 'POST',
-          headers: scanHeaders(deviceToken),
-          body: JSON.stringify(request),
-        })
-        cause = 'unreadable'
-        const body: unknown = await response.json()
-        if (response.status === 401) {
-          decodeAccessError(body)
-          cause = 'local'
-          // The ticket was not checked. Keep the occurrence and return the device
-          // to pairing instead of presenting a ticket rejection.
-          await store.markQueued(record.occurrenceId)
-          clearPairing('This device is not paired, so the ticket was not checked. Enter its pairing token before admitting anyone.', deviceToken)
-          await refreshQueued()
-          return
-        }
-        const result = decodeScanResponse(response.status, body)
-        cause = 'local'
-        if (result.decision === 'accepted') {
-          // A response opens the gate only through this device's pending record.
-          const opened = await store.actuate(record.occurrenceId)
-          if (opened) {
-            setOutcome({ kind: 'accepted', scannedAt: result.scanned_at, replay: result.replay === true })
-          } else {
-            setOutcome({ kind: 'duplicate-response' })
-          }
-        } else {
-          setOutcome({ kind: 'rejected', reason: result.reason, originalScanAt: result.original_scan_at })
-          try {
-            await store.markSynced(record.occurrenceId, result.reason)
-          } catch {
-            // Access has decided this ticket. Keep that decision on screen even
-            // when the local terminal-state write fails. Reopening under a new
-            // owner will recover the pending row for reconciliation.
-            reportStorageFailure(storageAfterResponseMessage)
-          }
-          return
-        }
-      } catch {
-        // Preserve the operator result even when the queue write also fails. A
-        // later store open recovers a record that remains PENDING.
-        let queueReadable = true
-        try {
-          await store.markQueued(record.occurrenceId)
-        } catch {
-          queueReadable = false
-          reportStorageFailure(cause === 'local' ? storageAfterResponseMessage : undefined)
-        }
-        setOutcome({ kind: 'queued', cause })
-        if (queueReadable) await refreshQueued()
-      }
-    } finally {
-      setSubmitting(false)
-    }
+    if (!value.trim()) return
+    if (!submitting) setOutcome(null)
+    await scanner.current!.submit(value)
+    if (mounted.current) void refreshQueued()
   }
 
-  // Attempts are serialised, so one note never has to describe two batches.
-  // The deadline keeps a stalled request from blocking the line.
-  // Show the failure first. A queue read can wait behind another tab's transaction.
-  // A standing pairing instruction carries the failure until the device is paired.
   const reportSyncFailure = async (cause: 'offline' | 'unreadable') => {
     const id = String(++syncFailureId.current)
     if (!mounted.current) return
-    const last = readableTime(lastSuccessfulSyncAt.current ?? undefined) ?? 'none'
+    const last = (lastSuccessfulSyncAt.current ? readableTime(lastSuccessfulSyncAt.current) : undefined) ?? 'none'
     const failureText = (count: number) => `Sync failed: ${QUEUED_CAUSE[cause]}. ${count} scan${count === 1 ? ' is' : 's are'} saved on this device and will be sent on the next sync. Last successful sync this session: ${last}.`
     const failure = { id, text: `Sync failed: ${QUEUED_CAUSE[cause]}. Checking the scans saved on this device…` }
     setSyncNote((previous) => previous?.kind === 'pairing' ? { ...previous, failure } : { kind: 'failure', ...failure })
@@ -390,7 +216,7 @@ function App() {
       return previous?.kind === 'pairing' ? { ...previous, failure: corrected } : { kind: 'failure', ...corrected }
     }
     try {
-      const queue = await (await getStore()).queued()
+      const queue = (await getStore().queued()).entries
       if (!mounted.current) return
       setQueuedCount(queue.length)
       setSyncNote((previous) => correctFailure(previous, queue.length ? failureText(queue.length) : undefined))
@@ -419,106 +245,77 @@ function App() {
     }
   }
 
-  const syncBatch = async () => {
-    let store: OccurrenceStore
-    let queue: OccurrenceRecord[]
-    try {
-      store = await getStore()
-      queue = await store.queued()
-      reportStorageReady()
-    } catch {
-      reportStorageFailure()
-      return
-    }
-    if (!queue.length) {
-      // Nothing on this device awaits sync, so a failure note that says scans are saved here
-      // is no longer true: another tab, or an earlier attempt, has sent them. Clear it and
-      // the count. A pairing line keeps its text but loses any failure it carried. A success
-      // line stays.
-      if (mounted.current) {
-        setQueuedCount(0)
-        setSyncNote(withoutStaleFailure)
-      }
-      return
-    }
-    // Every failure below leaves the queue untouched (ADR-066) and SAYS so (TKT-315): it used
-    // to return silently, so a venue could not tell "all reconciled" from "failing for hours".
-    // The causes are the scan path's (TKT-305), told apart the same way: no answer at all is
-    // "offline"; an answer that is not a 2xx, or a 2xx that cannot be decoded, is "unreadable".
-    const request: ReconcileRequest = {
-      occurrences: queue.map((record) => ({
-        qr_payload: record.qrPayload,
-        occurrence_id: record.occurrenceId,
-        occurred_at: record.occurredAt,
-        ...(record.localDecision ? { local_decision: record.localDecision } : {}),
-      })),
-    }
-    const token = deviceTokenRef.current
-    const headers = scanHeaders(token)
-    const body = JSON.stringify(request)
-    const controller = new AbortController()
-    const timer = window.setTimeout(() => controller.abort(), reconcileTimeoutMs)
-    let data: ReconcileResponse
-    try {
-      let response: Response
-      try {
-        response = await fetch(reconcileURL, {
-          method: 'POST',
-          headers,
-          body,
-          signal: controller.signal,
-        })
-      } catch {
-        void reportSyncFailure('offline')
-        return
-      }
-      if (response.status === 401) {
-        // The queue is untouched: an unpaired device must not discard a night of
-        // offline scans. Pair and sync again.
-        clearPairing('This device is not paired. Enter its pairing token to sync the queued scans.', token)
-        return
-      }
-      if (!response.ok) {
-        void reportSyncFailure('unreadable')
-        return
-      }
-      try {
-        data = decodeReconcileResponse(
-          await response.json(),
-          new Set(queue.map((record) => record.occurrenceId)),
-        )
-      } catch {
-        // A deadline during the body is unreadable. An answer already arrived.
-        void reportSyncFailure('unreadable')
-        return
-      }
-    } finally {
-      window.clearTimeout(timer)
-    }
 
-    let conflicts = 0
+  const syncBatch = async () => {
+    let queue: QueuedEntry[]
     try {
-      for (const entry of data.results) {
-        await store.markSynced(entry.occurrence_id, entry.result)
-        if (entry.result === 'conflict') conflicts += 1
-      }
-    } catch {
-      reportStorageFailure()
+      const store = getStore()
+      await storage.coordinator.repairAll()
+      await store.recoverDeadOwners()
+      queue = (await store.queued()).entries
+      reportStorageReady()
+      diagnostic()
+    } catch { reportStorageFailure(); return }
+    if (!queue.length) {
+      if (mounted.current) { setQueuedCount(0); setSyncNote(withoutStaleFailure) }
       return
     }
-    if (mounted.current) {
+    const plan = planReconcileBatches(queue)
+    const warnings = plan.unsendable.map((row) => `Pre-upgrade record ${String(row.key)} could not sync. It remains queued and listed in the export.`)
+    const captured = pairing()
+    if (!captured.token) return
+    const publishWarnings = () => {
+      if (mounted.current && isPairing(captured)) setReconcileWarnings([...warnings])
+    }
+    publishWarnings()
+    let recorded = 0
+    let conflicts = 0
+    for (const batch of plan.batches) {
+      if (!mounted.current || !isPairing(captured)) return
+      const controller = new AbortController()
+      const timer = window.setTimeout(() => controller.abort(), reconcileTimeoutMs)
+      let data: ReconcileResponse
+      try {
+        let response: Response
+        try {
+          response = await fetch(reconcileURL, { method: 'POST', headers: scanHeaders(captured.token),
+            body: JSON.stringify({ occurrences: batch.occurrences }), signal: controller.signal })
+        } catch { void reportSyncFailure('offline'); return }
+        if (response.status === 401) {
+          clearPairing('This device is not paired. Enter its pairing token to sync the queued scans.', captured)
+          return
+        }
+        if (response.status === 422 && batch.isolated) {
+          warnings.push(`Pre-upgrade record ${String(batch.keys[0])} could not sync. It remains queued and listed in the export.`)
+          publishWarnings()
+          continue
+        }
+        if (!response.ok) { void reportSyncFailure('unreadable'); return }
+        try {
+          data = decodeReconcileResponse(await response.json(), new Set(batch.keys.map(String)))
+        } catch { void reportSyncFailure('unreadable'); return }
+      } finally { window.clearTimeout(timer) }
+      try {
+        const applied = await getStore().applyReconcileResults(batch.keys, data.results)
+        if (applied.status !== 'applied') { reportStorageFailure(); return }
+      } catch { reportStorageFailure(); return }
+      for (const result of data.results) {
+        if (result.result === 'recorded' || result.result === 'synced') recorded += 1
+        else if (result.result === 'conflict') conflicts += 1
+        else warnings.push(`Reconciliation rejected for ${result.occurrence_id}. This result is not recorded.`)
+      }
+      publishWarnings()
+    }
+    if (mounted.current && isPairing(captured)) {
+      setReconcileWarnings(warnings)
       lastSuccessfulSyncAt.current = new Date().toISOString()
-      setSyncNote({
-        kind: 'success',
-        text: conflicts > 0
-          ? `Synced ${data.results.length} offline scan(s) — ${conflicts} conflict${conflicts > 1 ? 's' : ''} flagged for the operator.`
-          : `Synced ${data.results.length} offline scan(s).`,
-      })
+      setSyncNote({ kind: 'success', text: `Synced ${recorded} offline scan(s).${conflicts ? ` ${conflicts} conflict${conflicts === 1 ? '' : 's'} flagged for the operator.` : ''}` })
     }
     await refreshQueued()
   }
 
   const startCamera = async () => {
+    if (!storage.readyStore()) { setOutcome({ kind: 'storage-unready' }); return }
     if (!window.BarcodeDetector || !navigator.mediaDevices?.getUserMedia) {
       setCameraMessage('Camera QR detection is unavailable in this browser. Paste the credential instead.')
       return
@@ -609,133 +406,106 @@ function App() {
     void detect()
   }
 
-  // clearPairing sends the operator to the pairing screen with the reason they
-  // are seeing it. One destination for every "this device is not enrolled"
-  // answer, because two would eventually disagree about what to tell them.
-  const clearPairing = (reason: string, rejectedToken: string) => {
-    if (rejectedToken !== deviceTokenRef.current) return
-    try {
-      if (localStorage.getItem(deviceTokenKey) === rejectedToken) localStorage.removeItem(deviceTokenKey)
-    } catch {
-      // Storage unavailable; the in-memory clear below is what matters.
-    }
+
+  const clearPairing = (reason: string, rejected: Pairing, retainResult = false) => {
+    if (!isPairing(rejected)) return
+    scanner.current!.cancel()
+    pairingGeneration.current += 1
+    try { if (localStorage.getItem(deviceTokenKey) === rejected.token) localStorage.removeItem(deviceTokenKey) } catch { /* In-memory invalidation still applies. */ }
     deviceTokenRef.current = ''
     setDeviceToken('')
     setHasRevocationPull(false)
-    // A failure that still stands is carried under the reason, so pairing can show it (TKT-315).
+    if (!retainResult) setOutcome(null)
+    stopCamera()
     setSyncNote((previous) => {
       if (previous?.kind === 'failure') return { kind: 'pairing', text: reason, failure: { id: previous.id, text: previous.text } }
       if (previous?.kind === 'pairing' && previous.failure) return { kind: 'pairing', text: reason, failure: previous.failure }
       return { kind: 'pairing', text: reason }
     })
   }
-
   const pairDevice = async (event: React.FormEvent) => {
     event.preventDefault()
     const token = pairingInput.trim()
-    if (!token) return
-    const fingerprint = await tokenFingerprint(token)
+    if (!token || pairingBusyRef.current || !storage.readyStore()) return
+    const captured = pairing()
+    pairingBusyRef.current = true
+    setPairingBusy(true)
     try {
-      const pull = await (await getStore()).revocationPull(fingerprint)
+      const fingerprint = await tokenFingerprint(token)
+      const pull = await getStore().revocationPull(fingerprint)
+      if (!mounted.current || !isPairing(captured)) return
+      scanner.current!.cancel()
+      pairingGeneration.current += 1
+      deviceTokenRef.current = token
+      try { localStorage.setItem(deviceTokenKey, token) } catch { /* Pair for this page session. */ }
+      setDeviceToken(token)
       setHasRevocationPull(!!pull.completedAt)
-    } catch {
-      reportStorageFailure()
-      return
+      setPairingInput('')
+      setOutcome(null)
+      stopCamera()
+      setSyncNote((previous) => {
+        if (previous?.kind === 'failure') return previous
+        if (previous?.kind === 'pairing' && previous.failure) return { kind: 'failure', ...previous.failure }
+        return null
+      })
+    } catch { reportStorageFailure() } finally {
+      pairingBusyRef.current = false
+      if (mounted.current) setPairingBusy(false)
     }
-    try {
-      localStorage.setItem(deviceTokenKey, token)
-    } catch {
-      // Storage unavailable: pair for this session rather than refusing to work.
-      // The alternative is a gate that cannot open because a browser setting.
-    }
-    // Move the ref now, not on the next render: a 401 for the old token that
-    // arrives in between must see that this tab has moved on.
-    deviceTokenRef.current = token
-    setDeviceToken(token)
-    setPairingInput('')
-    // Pairing reconciles nothing: a failure note, or one carried under the pairing
-    // instruction, stays until a sync succeeds.
-    setSyncNote((previous) => {
-      if (previous?.kind === 'failure') return previous
-      if (previous?.kind === 'pairing' && previous.failure) return { kind: 'failure', ...previous.failure }
-      return null
-    })
   }
-
-  if (!deviceToken) {
-    return (
-      <main className="scanner">
-        <h1>Gate scanner</h1>
-        <section aria-label="Device pairing">
-          <h2>Pair this device</h2>
-          <p>
-            This scanner is not paired yet. An operator enrols it once with{' '}
-            <code>access enrol-scanner</code> and reads out the token it prints.
-          </p>
-          <form onSubmit={pairDevice}>
-            <label htmlFor="pairing-token">Pairing token</label>
-            <input
-              id="pairing-token"
-              type="password"
-              value={pairingInput}
-              onChange={(event) => setPairingInput(event.target.value)}
-              autoComplete="off"
-              placeholder="Paste the token from access enrol-scanner"
-            />
-            <div className="scanner-actions">
-              <button type="submit" disabled={!pairingInput.trim()}>Pair device</button>
-            </div>
-          </form>
-          {queuedCount > 0 && (
-            <p className="queue-note" role="status">
-              {`${queuedCount} offline scan${queuedCount > 1 ? 's' : ''} are still saved on this device and will sync once it is paired.`}
-            </p>
-          )}
-          {syncNote && <p className="sync-note" role="status">{syncNote.text}</p>}
-          {storageFailure && <p className="sync-note" role="alert">{storageFailure}</p>}
-        </section>
-      </main>
-    )
+  const retryStorage = async () => {
+    if (storage.readyStore()) {
+      await storage.coordinator.repairAll()
+      await refreshQueued()
+    } else storage.retry()
+    diagnostic()
   }
-
-  return (
-    <main className="scanner">
-      <h1>Gate scanner</h1>
+  const ready = readiness.status === 'ready'
+  const warnings = storage.coordinator.repairWarnings()
+  const result = outcome ? presentResult(outcome) : null
+  return <main className="scanner">
+    <h1>Gate scanner</h1>
+    {!deviceToken ? <section aria-label="Device pairing">
+      <h2>{outcome?.kind === 'auth-refused' ? 'Device pairing' : 'Pair this device'}</h2>
+      <p>This scanner is not paired yet. An operator enrols it once with <code>access enrol-scanner</code> and reads out the token it prints.</p>
+      <form aria-label="Device pairing" onSubmit={(event) => void pairDevice(event)}>
+        <label htmlFor="pairing-token">Pairing token</label>
+        <input id="pairing-token" type="password" value={pairingInput} onChange={(event) => setPairingInput(event.target.value)} autoComplete="off" placeholder="Paste the token from access enrol-scanner" />
+        <button type="submit" disabled={!ready || pairingBusy || !pairingInput.trim()}>Pair device</button>
+      </form>
+      {queuedCount > 0 && <p className="queue-note" role="status">{queuedCount} offline scan{queuedCount === 1 ? '' : 's'} are still saved on this device and will sync once it is paired.</p>}
+    </section> : <>
       <p>Scan a ticket QR code or paste its credential to validate entry.</p>
       <section aria-label="Ticket scan input">
-        <label htmlFor="qr-payload">Ticket credential</label>
-        <textarea id="qr-payload" value={payload} onChange={(event) => setPayload(event.target.value)} placeholder="Paste QR credential" rows={4} />
-        <div className="scanner-actions">
-          <button type="button" onClick={() => void submit()} disabled={submitting || !payload.trim()}>{submitting ? 'Checking…' : 'Check ticket'}</button>
-          <button type="button" onClick={() => void startCamera()} disabled={cameraActive || submitting}>Use camera</button>
-          <button type="button" onClick={() => void pullRevocations()}>Refresh revocation list</button>
-          {cameraActive && <button type="button" onClick={stopCamera}>Stop camera</button>}
-        </div>
+        <form aria-label="Ticket scan" onSubmit={(event) => { event.preventDefault(); void submit() }}>
+          <label htmlFor="qr-payload">Ticket credential</label>
+          <textarea id="qr-payload" value={payload} onChange={(event) => setPayload(event.target.value)} placeholder="Paste QR credential" rows={4} />
+          <div className="scanner-actions">
+            <button type="submit" disabled={!ready || submitting || !payload.trim()}>Check ticket</button>
+            <button type="button" onClick={() => void startCamera()} disabled={!ready || cameraActive || submitting}>Use camera</button>
+            <button type="button" onClick={() => void pullRevocations()} disabled={!ready}>Refresh revocation list</button>
+            {cameraActive && <button type="button" onClick={stopCamera}>Stop camera</button>}
+          </div>
+        </form>
         <video ref={video} aria-label="Camera preview" muted playsInline hidden={!cameraActive} />
         {cameraMessage && <p className="camera-note" role="status">{cameraMessage}</p>}
-        {queuedCount > 0 && (
-          <p className="queue-note" role="status">
-            {`${queuedCount} queued offline scan${queuedCount > 1 ? 's' : ''} awaiting sync.`}{!hasRevocationPull ? ' This device holds no revocation list yet.' : ''}{' '}
-            <button type="button" onClick={() => void syncQueued()}>Sync queued scans</button>
-          </p>
-        )}
-        {syncNote && <p className="sync-note" role="status">{syncNote.text}</p>}
-        {storageFailure && <p className="sync-note" role="alert">{storageFailure}</p>}
+        {queuedCount > 0 && <p className="queue-note" role="status">{queuedCount} queued offline scan{queuedCount === 1 ? '' : 's'} awaiting sync.{' '}
+          <button type="button" disabled={!ready} onClick={() => void syncQueued()}>Sync queued scans</button></p>}
       </section>
       {!hasRevocationPull && <p className="queue-note" role="status">This device holds no revocation list yet.</p>}
-      {outcome?.kind === 'revocation-refused' && <section className="result rejected" role="alert"><h2>Not valid for entry</h2><p>This ticket is on the device's revocation list. Do not admit.</p></section>}
-      {outcome?.kind === 'accepted' && (
-        <section className="result accepted" role="status">
-          <h2>Accepted</h2>
-          <p>Entry recorded at {readableTime(outcome.scannedAt)}.</p>
-          {outcome.replay && <p>This scan was previously recorded — result replayed, entry counted once.</p>}
-        </section>
-      )}
-      {outcome?.kind === 'rejected' && <section className="result rejected" role="alert"><h2>Rejected</h2><p>{outcome.reason === 'already_redeemed' ? `Already redeemed at ${readableTime(outcome.originalScanAt)}.` : 'Credential is invalid or cannot be redeemed.'}</p></section>}
-      {outcome?.kind === 'queued' && <section className="result queued" role="status"><h2>Queued offline</h2><p>{QUEUED_CAUSE[outcome.cause]} — the scan is saved on this device and will sync when back online. Admit per venue offline policy.</p></section>}
-      {outcome?.kind === 'duplicate-response' && <section className="result rejected" role="alert"><h2>Already processed</h2><p>This scan was already handled on this device — no second entry.</p></section>}
-    </main>
-  )
+    </>}
+    {submitting && !result && <p role="status">Checking...</p>}
+    {result && <section aria-label="Scan result" className={`result ${result.tone}`} role={result.tone === 'rejected' ? 'alert' : 'status'}>
+      {result.heading && <h2>{result.heading}</h2>}{result.lines.map((line) => <p key={line}>{line}</p>)}
+    </section>}
+    {syncNote && <p className="sync-note" role="status">{syncNote.text}{syncNote.kind === 'pairing' && syncNote.failure && <><br />{syncNote.failure.text}</>}</p>}
+    {reconcileWarnings.map((warning) => <p role="alert" key={warning}>{warning}</p>)}
+    {!ready && <p role="alert">{STORAGE_UNREADY}</p>}
+    {(storageFailure || readiness.status === 'failed' || readiness.status === 'closed') && <p role="alert">{STORAGE_UNAVAILABLE}</p>}
+    {warnings.some((warning) => warning.kind === 'write_needs_repair') && <p role="alert">{REPAIR_NEEDED}</p>}
+    {warnings.some((warning) => warning.kind === 'cannot_repair') && <p role="alert">{CANNOT_REPAIR}</p>}
+    {(!ready || storageFailure || warnings.length > 0) && <button type="button" onClick={() => void retryStorage()} disabled={readiness.status === 'draining'}>Retry storage</button>}
+    <OccurrenceRecords storage={storage} refresh={recordsRefresh} />
+  </main>
 }
-
 export default App
