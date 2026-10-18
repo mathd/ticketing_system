@@ -30,7 +30,7 @@ sprint note. The board owns the list of members and the state. An epic or a coor
 a sprint. An Epic cannot be a member. Its children can.
 
 Keep the correctness, the security, the acceptance and the affected integration checks of the story
-inside its ticket. Code review repeats for Critical and High findings, and for a material change. A
+inside its ticket. Plan and code reviews repeat for Critical and High findings, and for a material change. A
 Medium correction needs verification only. The broader criteria of the sprint belong to
 `sdlc-sprint-review`. A story's Done does not mean that the release is validated or tagged.
 

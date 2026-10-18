@@ -179,11 +179,8 @@ def review_action(
         return "STOP"
     if record.get("verificationPassed") is not True:
         return "FIX"
-    repeat_levels = (
-        MATERIAL_SEVERITIES if record["stage"] == "plan-review" else REPEAT_SEVERITIES
-    )
     if material_change or any(
-        level in repeat_levels and key not in confirmed_refutations
+        level in REPEAT_SEVERITIES and key not in confirmed_refutations
         for key, level in findings
     ):
         return "STOP" if number == authorized_through else "REVIEW_AGAIN"

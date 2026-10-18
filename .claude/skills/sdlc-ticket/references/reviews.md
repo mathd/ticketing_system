@@ -79,13 +79,18 @@ substitution. Research calls (§ Researcher) are not rounds.
 
 | Stage | Findings that require another full round after fixes |
 |---|---|
-| `plan-review` | Critical, High, Medium |
+| `plan-review` | Critical, High |
 | `ai-review` | Critical, High |
 | `sprint-review` | Critical, High |
 
 Use the original normalized severity, never an author's reclassification. Findings below the
 threshold still need a disposition and verification; their fixes are handed off **not re-reviewed**,
 and the review-guide says so. A material change repeats the round at any severity.
+
+Ticket reviews use this threshold to reduce repeat rounds for smaller corrections. Sprint review
+checks documentation, test quality and other issues across the completed tickets through its four
+review areas (`sdlc-sprint-review`). Findings already identified in a ticket still need the
+disposition and verification required by § One round.
 
 Why a fix diff deserves care even below the threshold: in TKT-22, 30 of 42 findings were defects in
 code written to fix an earlier finding (`quality-practices.md` §2). Judge `materialChange` on the
