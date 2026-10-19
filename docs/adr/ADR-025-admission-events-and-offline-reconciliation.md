@@ -239,7 +239,11 @@ conflicts. Together every physical admission that Access learns about is represe
 
    **Partial delivery.** TKT-557 implements the Access response contract. TKT-558 implements
    Entry terminal classification, page ownership, version 3 isolation, held-row disposal and
-   recovery notices. Time checks remain in ticket 3 and Exit in ticket 4. The accepted text above
+   recovery notices. TKT-559 implements the Entry dual-clock limits, bounded waits and synchronous
+   in-time offline publication before persistence. Late mark completion retains ACT without opening.
+   New stopped rows warn and stay out of sync in old TKT-558 tabs; refresh those tabs. Exit remains
+   in ticket 4. Host strict-commit measurements are in docs/sprints/S-2/evidence/
+   TKT-559-strict-commits.json; venue qualification remains TKT-560. The accepted text above
    is historical where ADR-085 supersedes it.
 
 4. **Idempotency stays outside the append path.** Event-id replay is resolved *before*

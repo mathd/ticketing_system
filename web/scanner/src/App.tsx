@@ -1,3 +1,4 @@
+import { flushSync } from 'react-dom'
 import { useEffect, useRef, useState } from 'react'
 import { decodeReconcileResponse, type ReconcileResponse } from './access-contract'
 import { createEntryScanner, type EntryResult, type Pairing } from './entry-scan'
@@ -73,7 +74,7 @@ function App() {
   const diagnostic = () => { if (mounted.current) setRecordsRefresh((value) => value + 1) }
   const scanner = useRef<ReturnType<typeof createEntryScanner> | null>(null)
   if (!scanner.current) scanner.current = createEntryScanner({ storage, pairing,
-    publish: (result) => { if (mounted.current) setOutcome(result) },
+    publish: (result) => { if (mounted.current) flushSync(() => setOutcome(result)) },
     busy: (value) => { if (mounted.current) setSubmitting(value) }, diagnostic,
     refusalQueued: () => { if (mounted.current) void syncQueued() },
     authRefused: (captured) => clearPairing('This device is not paired. Enter its pairing token before admitting anyone.', captured, true),

@@ -7,6 +7,7 @@ import { chromium } from 'playwright-core';
 import { installTransportMutation } from './lib/scanner-mutations.mjs';
 import { recovery } from './lib/scanner-recovery.mjs';
 import { nativeControls } from './lib/scanner-native.mjs';
+import { timedEntry } from './lib/scanner-timing.mjs';
 import { entryCore } from './lib/scanner-entry-core.mjs';
 import { storageCore } from './lib/scanner-storage-core.mjs';
 import { oldReader } from './lib/scanner-old-reader.mjs';
@@ -224,6 +225,7 @@ try {
   );
   const shared = { browser, BASE, PG, QR_SEED, QR_KID, token, check, ACCESS_PORT, INTERNAL_TOKEN };
   Object.assign(shared, await entryCore(shared));
+  await timedEntry(shared);
   await storageCore(shared);
   await oldReader(shared);
   await recovery(shared);

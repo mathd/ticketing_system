@@ -7,6 +7,10 @@ it('fixes the admission instructions independently of the renderer', () => {
   expect(OFFLINE_INSTRUCTION).toBe('Admit per venue offline policy.')
 })
 const cases: Array<[EntryResult, string | undefined, string[]]> = [
+  [{ kind: 'stopped-before-send' }, 'Scan stopped', ['Scan took too long or its clock could not be checked. No request was sent. Do not admit from this result. Scan again.']],
+  [{ kind: 'sent-unconfirmed' }, 'Operator required', ['Scan response unconfirmed. Scanner did not open. Access may have recorded this scan. Get an operator; do not admit from this result.']],
+  [{ kind: 'accepted-too-late' }, 'Operator required', ['Access recorded this scan, but the scanner could not finish in time. The scanner did not open. Get an operator; do not admit from this result.']],
+  [{ kind: 'revocation-audit-not-saved' }, 'Not valid for entry', ["This ticket is on the device's revocation list. Do not admit. The refusal audit was not saved. Get an operator."]],
   [{ kind: 'duplicate' }, 'Already processed', ['This scan was already handled on this device. No second entry.']],
   [{ kind: 'mark-failed' }, 'Operator required', ['Access recorded this scan; the scanner did not open; get an operator.']],
   [{ kind: 'auth-refused' }, 'Pair this device', ['This attempt was not authorized. Do not admit from this result.', 'Pair this device and scan the ticket again.']],

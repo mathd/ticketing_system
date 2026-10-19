@@ -218,8 +218,10 @@ of this section stays. The amended rules:
   An absent exit can cause `exit_required` at the next Entry (owner decision TKT-556 D14-2).
 
 **Partial delivery.** TKT-558 mints Entry refusals as owned PENDING records, keeps the refusal tag
-through queueing and recovery, and protects the live page across connection replacement. Time
-checks remain in ticket 3 and the Exit rule remains in ticket 4, ADR-085 §8.
+through queueing and recovery, and protects the live page across connection replacement. TKT-559
+adds both Entry mint-time checks. A known listed ticket stays refused when time or clock checks fail,
+with an audit-not-saved instruction and no live-page sync. A stopped lookup that has not yet returned
+a list hit cannot later change its published result. The Exit rule remains in ticket 4, ADR-085 §8.
 
 ## Consequences
 

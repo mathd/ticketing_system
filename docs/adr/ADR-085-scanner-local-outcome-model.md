@@ -193,7 +193,7 @@ The scope is honest scanner code and storage failures. This is not containment o
 
 #### 2.2 Durable record, D4
 
-Delivery status: ticket 2 for `recordFormat`, `localOutcome`, `decidedAt`, explicit Entry direction and the typed refusal variant; ticket 4 for Exit direction. **Partial delivery:** TKT-558 implements the untimed Entry/storage subset. Time and Exit remain pending.
+Delivery status: ticket 2 for `recordFormat`, `localOutcome`, `decidedAt`, explicit Entry direction and the typed refusal variant; ticket 4 for Exit direction. **Partial delivery:** TKT-558 implements Entry/storage; TKT-559 implements Entry timing and stalled-body deadlines. Exit remains pending.
 
 Keep the existing immutable fields `occurrenceId`, `qrPayload`, `occurredAt`, and `createdAt`. Keep `ownerId` on every new PENDING row. Keep `leaseExpiresAt` as advisory recovery time. These names exist on M, E1. Add a required `direction` for every new normal scan, as B does at B:`web/scanner/src/occurrences.ts:559-572`. A local refusal is a distinct record variant with `localDecision='revocation_refused'` and no direction. It is entry-only. Do not put an exit into that variant.
 
@@ -207,7 +207,7 @@ TKT-558 adds three durable fields. The fields are `recordFormat`, with value 1 f
 | SYNCED | A valid reconcile response said `recorded` or `synced`. Terminal. Never actuates. |
 | RESOLVED | A live rejection, definitive live 401, stopped scan, unclassified local failure, unconfirmed status/body, local actuation failure, or reconcile `conflict`/`rejected`. Terminal. Never enters the queue again. |
 
-The local outcome tag has three families: queue, terminal, and actuation reservation. Queue records state whether the cause was classified transport failure, a proven pre-decision Access status or verified no-Access-response producer, a local refusal, or uncertain dead-page recovery. Terminal records keep the exact live rejection reason or unknown rejection reason, HTTP-authentication refusal, unconfirmed response status, stopped checkpoint and send status, unclassified local exception, local mark failure, cancellation, or reconcile failure. Actuation records keep the reservation and may add a no-opening/late annotation after the mark. TKT-558 implements the untimed Entry tags in `occurrence-model.ts`. Deadline and Exit annotations remain pending. They are not sent as new Access event fields. Keep the existing `result` for a validated reconcile result; do not overwrite the local decision with that result. `decidedAt` exists only when the page actually made that decision. Recovery must not invent an original decision time: leave it absent for uncertain recovery, with the uncertainty in the outcome tag.
+The local outcome tag has three families: queue, terminal, and actuation reservation. Queue records state whether the cause was classified transport failure, a proven pre-decision Access status or verified no-Access-response producer, a local refusal, or uncertain dead-page recovery. Terminal records keep the exact live rejection reason or unknown rejection reason, HTTP-authentication refusal, unconfirmed response status, stopped checkpoint and send status, unclassified local exception, local mark failure, cancellation, or reconcile failure. Actuation records keep the reservation and may add a no-opening/late annotation after the mark. TKT-558 implements the untimed Entry tags in `occurrence-model.ts`. TKT-559 adds Entry stopped checkpoints. Exit annotations remain pending. They are not sent as new Access event fields. Keep the existing `result` for a validated reconcile result; do not overwrite the local decision with that result. `decidedAt` exists only when the page actually made that decision. Recovery must not invent an original decision time: leave it absent for uncertain recovery, with the uncertainty in the outcome tag.
 
 Retain these five existing state names instead of introducing many independent booleans. The tagged outcome distinguishes why a terminal row exists. Validate state/outcome combinations at the production store boundary. A legacy row without the new outcome remains readable under the explicit legacy rules in section 7. A new-protocol decided row missing its required outcome is corrupt, not a legacy admission. PENDING legitimately has no durable final outcome. On the v2-to-v3 upgrade, stamp existing rows as legacy without changing their id, credential, time, state, or refusal tag. A missing format marker outside that migration is not permission to guess legacy. An unrecognized format stays local with a storage warning. Format numbering is separate from the IndexedDB version.
 
@@ -225,7 +225,7 @@ No generic "decided, release for recovery" operation exists. Once final, the dec
 
 #### 2.3 Allowed transitions and repair
 
-Delivery status: TKT-558 implements the Entry transitions, repair, page-loss recovery and durable recovery notices. Time checks remain in ticket 3 and Exit in ticket 4.
+Delivery status: TKT-558 implements the Entry transitions, repair, page-loss recovery and durable recovery notices. TKT-559 supplies Entry time checks; Exit remains in ticket 4.
 
 - Mint normal scans and refusals as owned PENDING. A local refusal must not be born QUEUED before its time check. This changes ADR-066 section 8 and `web/scanner/src/occurrences.ts:270-281`; D18 records the deviation and section 8 ticket 1 owns the ADR amendment.
 - PENDING can become QUEUED only with a matching coordinator queue decision, or through the explicit page-loss recovery exception below.
@@ -273,7 +273,7 @@ Each table row is the product of client knowledge, local row/transaction evidenc
 
 #### 2.4a Producer-by-layer matrix, D33
 
-Delivery status: TKT-557 supplies the Access producers. TKT-558 implements the Entry browser adapter and scanner-local rules. Time and Exit remain in tickets 3 and 4. The Compose-only premise remains binding.
+Delivery status: TKT-557 supplies the Access producers. TKT-558 implements the Entry browser adapter and scanner-local rules. TKT-559 supplies Entry timing; Exit remains in ticket 4. The Compose-only premise remains binding.
 
 This matrix records the code-path evidence of the TKT-556 producer audit, including the browser network stack layer. It has 11 layer rows and 17 columns, including the layer column. S means live `POST /scans`, R means `POST /scans/reconciliations`, and F means `GET /scans/voided-tickets`. Each cell names an origin or says `cannot produce` with an evidence key. Passing an upstream result does not make a layer its origin. The keys below give file:line evidence. Proposed changes are requirements, not executed evidence.
 
@@ -351,9 +351,21 @@ A post-latch storage exception tests same-decision repair, not local-failure cla
 
 #### 3.1 Time and response classification, D5-D7 and D24
 
-Delivery status: status-before-body classification and the ADR-085 D24 status set: ticket 2 for Entry, with the Access 503 producer from ticket 0; time checks: ticket 3; Exit copy: ticket 4. **Partial delivery:** TKT-558 implements the untimed Entry/storage subset. Time and Exit remain pending.
+TKT-559 delivery uses a local `stopped` terminal tag with send/decision checkpoint, stop reason and
+request-progress fields. Both the store writer and record decoder admit only pre-send stopped
+refusals. The record format stays 1 and database version stays 3. The frozen TKT-558 decoder rejects
+new stopped rows with a storage warning and excludes them from its queue. Refresh old tabs.
+Publication ends the submission; the page coordinator continues the same saved decision independently.
+If the opening deadline wins during a pending mark, publish O-LA at once, then retain committed ACT
+or write TERM after an abort. A later 401 cannot clear pairing after this result. If an unknown
+revocation lookup's deadline wins first, L01 stays final; a listed answer observed first, even late
+with its timer withheld, selects V03. Clock-reader exceptions preserve known denial, accepted-body
+and revocation knowledge. Host strict-commit observations are recorded in
+`docs/sprints/S-2/evidence/TKT-559-strict-commits.json`. They do not replace TKT-560 qualification.
 
-Time behavior in this section arrives in ticket 3, not ticket 2. In particular, the stalled-body R17/U02 cells and their deadline tests belong to ticket 3; ticket 2 covers truncated and invalid bodies and retains status-first terminal knowledge without claiming a deadline.
+Delivery status: status-before-body classification and the ADR-085 D24 status set: ticket 2 for Entry, with the Access 503 producer from ticket 0; time checks: ticket 3; Exit copy: ticket 4. **Partial delivery:** TKT-558 implements Entry/storage; TKT-559 implements Entry timing and stalled-body deadlines. Exit remains pending.
+
+TKT-559 delivers the Entry time behavior in this section, including stalled-body R17/U02 deadlines. TKT-558 supplied truncated/invalid-body classification and status-first knowledge. Exit time behavior remains in ticket 4.
 
 The send limit is strictly less than 3000 ms from submission or code detection. Check before mint and after mint immediately before live send. A refusal must pass both checks before its queue decision. The opening/offline decision limit is strictly less than 30000 ms from the same start. Check after the accepted answer, after the completed actuation reservation, and immediately before an offline queue decision. These values come from owner history TKT-399 D29/D30, not from an imported code constant.
 
@@ -373,7 +385,7 @@ The UI must check time and generation at the point it publishes an admission res
 
 #### 3.2 Operator codes and residual codes
 
-Delivery status: Entry codes in ticket 2; the time-dependent codes O-L0, O-LA and O-LU in ticket 3; Exit wording in ticket 4. **Partial delivery:** TKT-558 implements the untimed Entry/storage subset. Time and Exit remain pending.
+Delivery status: Entry codes in ticket 2; the time-dependent codes O-L0, O-LA and O-LU in ticket 3; Exit wording in ticket 4. **Partial delivery:** TKT-558 implements Entry/storage; TKT-559 implements Entry timing and stalled-body deadlines. Exit remains pending.
 
 "Opening" here means the scanner admission instruction after its actuation reservation. No physical gate actuator was verified; M's accepted path is the store mark and result update at `web/scanner/src/App.tsx:338-342`.
 
@@ -427,7 +439,7 @@ A slash separates alternatives controlled by transaction completion, not an impl
 
 #### 3.4 Accepted, duplicate, and authentication outcomes
 
-Delivery status: A01/D01/D02/U01: ticket 2 for Entry outcome/ownership; ticket 3 for elapsed-time branches; ticket 4 for Exit. **Partial delivery:** TKT-558 implements the untimed Entry subset. The time and Exit branches are not implemented.
+Delivery status: A01/D01/D02/U01: ticket 2 for Entry outcome/ownership; ticket 3 for elapsed-time branches; ticket 4 for Exit. **Partial delivery:** TKT-558 implements Entry outcomes; TKT-559 implements their Entry time branches. Exit branches remain pending.
 
 The accepted transaction is the atomic own-row actuation mark. CAS true is separate from Access's replay marker. A first accepted answer or a replay may open once if the mark succeeds. Connection close or version change does not itself cancel that permission. Observe transaction complete, then check time and session. If complete is observed in time, use A01 with residual 0. If completion is late, use L04. An unobserved/aborted mark uses G01 without opening. If a terminal result already latched, use Z01; later observation of a committed mark preserves ACT but never opens.
 
@@ -444,7 +456,7 @@ Within the verified topology, U01 has 0 only for this HTTP request because its 4
 
 #### 3.5 Every live rejection, by reason and direction
 
-Delivery status: R01-R17: ticket 2 for Entry classification/repair and truncated or invalid bodies; ticket 3 for stalled-body deadlines; ticket 4 for Exit. **Partial delivery:** TKT-558 implements the untimed Entry subset. The time and Exit branches are not implemented.
+Delivery status: R01-R17: ticket 2 for Entry classification/repair and truncated or invalid bodies; ticket 3 for stalled-body deadlines; ticket 4 for Exit. **Partial delivery:** TKT-558 implements Entry outcomes; TKT-559 implements their Entry time branches. Exit branches remain pending.
 
 Each reason has an Entry row (E) and an Exit row (X). This is a defensive client classification table. It does not claim that Access can produce each reason for both directions. The actual pass-policy branch is `services/access/internal/store/conflicts.go:123-145`; wire reasons and commercial-void reasons are mapped at `services/access/internal/api/server.go:597-629`. Additional known envelope denials `invalid_occurrence` and `occurrence_collision` are R15/R16, `services/access/internal/api/server.go:552-557`, `:584-587`. Invalid credentials are rejected at `services/access/internal/api/server.go:543-546`, `:559-572`. `revoked` here also covers a well-formed remote rejection with that reason; a local list hit is V01-V04. A proof of remote `revoked` reachability is **not verified**. Refusal to admit is the requirement, not an assumed backend append.
 
@@ -496,7 +508,7 @@ R17's truncated/invalid-body cases arrive in ticket 2; its stalled-body deadline
 
 #### 3.6 Offline, partial knowledge, local exceptions, storage, cancellation, and reload
 
-Delivery status: O01/O02/G01/S01/S02/C01/U02/U03/X01/W01/Z01: ticket 2 for Entry outcome/ownership/storage/recovery; ticket 0 supplies Access pre-decision 503 before or with ticket 2; ticket 3 supplies time and stalled-body behavior; ticket 4 supplies Exit. **Partial delivery:** TKT-558 implements the untimed Entry subset. The time and Exit branches are not implemented.
+Delivery status: O01/O02/G01/S01/S02/C01/U02/U03/X01/W01/Z01: ticket 2 for Entry outcome/ownership/storage/recovery; ticket 0 supplies Access pre-decision 503 before or with ticket 2; ticket 3 supplies time and stalled-body behavior; ticket 4 supplies Exit. **Partial delivery:** TKT-558 implements Entry outcomes; TKT-559 implements their Entry time branches. Exit branches remain pending.
 
 | Cell row and local outcome | S: write commits | F: write fails | C: store closes/replaced | T: another tab | V: version change | P: page lost |
 |---|---|---|---|---|---|---|
@@ -553,7 +565,7 @@ L02 has zero live POSTs, so U is absent. L05 has U only if send occurred; no liv
 
 #### 3.8 Local revocation and exits of revoked tickets
 
-Delivery status: V01-V03: ticket 2 for typed owned PENDING refusals, ticket 3 for their time checks and late/no-sync rules. V04-X: ticket 4. **Partial delivery:** TKT-558 implements the untimed Entry subset. The time and Exit branches are not implemented.
+Delivery status: V01-V03: ticket 2 for typed owned PENDING refusals, ticket 3 for their time checks and late/no-sync rules. V04-X: ticket 4. **Partial delivery:** TKT-558 implements Entry outcomes; TKT-559 implements their Entry time branches. Exit branches remain pending.
 
 | Cell row and local outcome | S: write commits | F: write fails | C: store closes/replaced | T: another tab | V: version change | P: page lost |
 |---|---|---|---|---|---|---|
@@ -571,7 +583,7 @@ These are design requirements. TKT-558 delivers their untimed Entry/storage subs
 - **I1. One final local outcome.** Before a final write, the page commits its decision to its coordinator. Only an in-time queue decision with verified producer eligibility makes a new live-page row reconcilable. ADR-085 D31 preserves already-QUEUED pre-upgrade rows even when their old producer fails this test, M02. Rejection, definitive live 401, unconfirmed status/body, unclassified local exception, stopped scan, cancellation, and failed actuation are terminal, even if every terminal write fails. Exceptions cannot change their meaning. Only actual page loss admits the explicit unknown-PENDING recovery exception in I8. For normal live-attempt fallback, only a verified producer that received no Access response, or an Access result proved to precede every decision in this HTTP request, can reach the queue path under the Compose-only premise. P13 retains occurrence U; no per-occurrence proof is claimed. Section 2.4 enumerates these producers; the ADR-085 D24 status set alone is not proof. Sent Exit uncertainty uses "Exit result unknown; the holder may leave", ADR-085 D36. X01 is terminal, never offline. Refusal and actual page-loss recovery are separate transitions. Answers P5-1, P5-2, P5-3, P7-1, A7-1, DR1-1/2, and DA1-1. Delivery: ticket 2, with Access dependency 0 and time behavior in 3; Exit in 4. **Partial delivery:** TKT-558 implements the untimed Entry and storage subset. Time and Exit branches remain pending.
 - **I2. Ownership follows the page.** Register the id before mint starts. Keep one page-owner lock through pending work, all decisions, failed writes, connection closure, replacement, version change, and component remount. The lease never defeats a held lock. No recovery path skips that lock. Answers A6-1, P5-1, P7-1, and A7-1. This also removes the per-outcome lock-release proof that failed in TKT-399. Delivery: ticket 2. **Partial delivery:** TKT-558 implements the untimed Entry and storage subset. Time and Exit branches remain pending.
 - **I3. Persistence precedes its external effect.** A complete mint transaction precedes live send. A complete own-row, never-actuated mark precedes the single accepted opening instruction. Re-check time and generation after the mark. A false compare-and-set or a missing row cannot authorize opening. Queue instructions use the separate I1 in-memory decision before queue persistence; they do not claim that the queue write already committed. Answers F4, P5-2, and duplicate cases. Delivery: ticket 2 for persistence, 3 for time; Exit in 4. **Partial delivery:** TKT-558 implements the untimed Entry and storage subset. Time and Exit branches remain pending.
-- **I4. Elapsed time governs every admission decision.** The 3000/30000 ms checks start at submission/detection and cover storage open, owner acquisition, recovery, mint, network, body decode, mark, and offline decision. A delayed timer or promise cannot bypass them. Use both production clock readings; fail closed on invalid or disagreeing readings. A delayed open never restarts an old presentation. Answers P2-1, A-1, P3-1/2, P4-1/2, and P5-2/3/4. Delivery: ticket 3; Exit in 4. **Not implemented on main** as the complete invariant.
+- **I4. Elapsed time governs every admission decision.** The 3000/30000 ms checks start at submission/detection and cover storage open, owner acquisition, recovery, mint, network, body decode, mark, and offline decision. A delayed timer or promise cannot bypass them. Use both production clock readings; fail closed on invalid or disagreeing readings. A delayed open never restarts an old presentation. Answers P2-1, A-1, P3-1/2, P4-1/2, and P5-2/3/4. Delivery: ticket 3; Exit in 4. **Partial delivery:** TKT-559 implements Entry checks and synchronous readiness refusal. Exit remains in ticket 4.
 - **I5. Type and identity do not change.** Capture direction, credential, occurrence id/time, and pairing generation before waiting. All persistence and retries preserve them. Legacy absence means entry only under a known legacy format. Owner ADR-085 D13-3 holds legacy PENDING rather than inferring an admission. Owner ADR-085 D31 still syncs pre-upgrade QUEUED rows with indistinguishable causes; possible false facts remain, M02. New corruption never defaults to entry. Refusal is a separate entry-only variant. An old reader never sees a new-protocol queue. Answers F1, A-2, TKT-399 plan findings 5-7/12, and N4/5. Delivery: ticket 2 for Entry/storage barrier, 4 for Exit. **Partial delivery:** TKT-558 implements the untimed Entry and storage subset. Time and Exit branches remain pending.
 - **I6. The result matches the local outcome and session.** No terminal outcome is described as queued or admitted. No failed write turns a known refusal into offline permission. Every Exit failure and duplicate says the holder may leave, without a denial-style alert. Where a request may have been sent and its result is unknown, say "Exit result unknown; the holder may leave". Say "Exit not recorded" only before send or after an Access refusal. A known accepted result still says it was recorded. A known local revocation always refuses Entry; a listed revoked Exit records nothing. Stop camera generations before resetting mode/pairing; clear prior results; a stale response cannot publish into a new session. Answers F2/3, P5-2/5, N2/3/6, and the Entry-reason limitation. Delivery: ticket 2 for Entry outcomes, 3 for time/session; Exit in 4. **Partial delivery:** TKT-558 implements the untimed Entry and storage subset. Time and Exit branches remain pending.
 - **I7. Sync transports eligible rows only.** Sync has no actuation authority. It reads committed QUEUED rows; never repairs PENDING by guessing a live page's decision. Send exact captured identity and type. A malformed, foreign, duplicate, or incomplete response cannot retire any row. Authentication loss preserves already-eligible queue rows, including ADR-085 D31 legacy QUEUED with unknown causes. Reconcile `conflict` means a duplicate_admit was recorded and alarmed, then becomes terminal locally. `rejected` is terminal without a successful recorded fact. Neither result instructs admission. ADR-085 D31 permits pre-upgrade QUEUED rows with unknown causes, not only proved historical admissions. Answers F1, P7-1, A-2, N5/8, and the deferred sync-reporting finding. Delivery: ticket 2 for Entry, 4 for Exit. **Partial delivery:** TKT-558 implements the untimed Entry and storage subset. Time and Exit branches remain pending.
@@ -712,7 +724,7 @@ Owner D14-3 selected the version-3 barrier for one queue and preserved records. 
 
 #### 7.3 Do not turn open completion into permission to resume a scan, D10
 
-Delivery status: ticket 2 for readiness; ticket 3 for the time bounds after readiness. **Partial delivery:** TKT-558 implements the untimed Entry/storage subset. Time and Exit remain pending.
+Delivery status: ticket 2 for readiness; ticket 3 for the time bounds after readiness. **Partial delivery:** TKT-558 implements Entry/storage; TKT-559 implements Entry timing and stalled-body deadlines. Exit remains pending.
 
 Initialize storage independently of scan input. Until a compatible database, owner lock, and recovery are ready, disable both manual submission and camera detection; display "Scanner storage is not ready. No ticket was checked." On an explicit attempt during a readiness transition, finish it as S01; do not buffer the credential for later mint. On readiness completion, enable a fresh presentation only. On version change or storage failure, reset readiness and cancel old startup continuation generations. Retain a minted scan's decision and transaction evidence until it settles. A version-change callback alone must not invalidate an in-time completed mark.
 
@@ -894,7 +906,7 @@ No earlier proposal remains operative where these decisions supersede it.
     - Each local outcome and failure point has one written cell. A write failure cannot turn a known
       refusal, a live 401 or an unconfirmed answer into an offline admission.
     - Ticket 2 closes Entry P7-1 and the other section 1.3 gaps assigned to ticket 2, for new rows.
-      The missing scan time checks stay open until ticket 3.
+      TKT-559 supplies the Entry time checks. Exit stays in ticket 4.
     - Each invariant names its enforcing test tier and the mutation that must turn it red.
     - The delivery split lets the Entry core merge before time safety and Exit, D13-2.
 - **Negative:**

@@ -23,6 +23,10 @@ export function presentResult(result: EntryResult): ResultPresentation {
       : 'Credential is invalid or cannot be redeemed.')
     case 'queued': return { heading: 'Offline decision', tone: 'queued', lines: [
       result.status === undefined ? 'No response was received.' : `Server response ${result.status}.`, OFFLINE_INSTRUCTION] }
+    case 'stopped-before-send': return refused('Scan stopped', 'Scan took too long or its clock could not be checked. No request was sent. Do not admit from this result. Scan again.')
+    case 'sent-unconfirmed': return refused('Operator required', unconfirmed)
+    case 'accepted-too-late': return refused('Operator required', 'Access recorded this scan, but the scanner could not finish in time. The scanner did not open. Get an operator; do not admit from this result.')
+    case 'revocation-audit-not-saved': return refused('Not valid for entry', "This ticket is on the device's revocation list. Do not admit. The refusal audit was not saved. Get an operator.")
     case 'duplicate': return refused('Already processed', 'This scan was already handled on this device. No second entry.')
     case 'mark-failed': return refused('Operator required', 'Access recorded this scan; the scanner did not open; get an operator.')
     case 'auth-refused': return refused('Pair this device', 'This attempt was not authorized. Do not admit from this result.', 'Pair this device and scan the ticket again.')

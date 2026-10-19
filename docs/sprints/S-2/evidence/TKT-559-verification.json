@@ -1,0 +1,645 @@
+{
+  "ticket": "TKT-559",
+  "observedAt": "2026-10-19T03:55:12.853427+00:00",
+  "base": "bbc919719310fb1133218389ede5def431f8bece",
+  "commands": [
+    {
+      "command": [
+        "python3",
+        "/tmp/sdlc-S-2/mutate-t559.py"
+      ],
+      "start": "2026-10-19T03:42:52.233857+00:00",
+      "end": "2026-10-19T03:43:44.022480+00:00",
+      "exit": 0,
+      "log": "TKT-559-mutations.txt"
+    },
+    {
+      "command": [
+        "python3",
+        "/tmp/sdlc-S-2/mutate-t559-extra.py"
+      ],
+      "start": "2026-10-19T03:43:44.022651+00:00",
+      "end": "2026-10-19T03:43:48.740485+00:00",
+      "exit": 0,
+      "log": "TKT-559-extra-mutations.txt"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/scan-clock.test.ts",
+        "src/entry-scan.test.ts",
+        "src/entry-scan.timing.test.ts",
+        "src/occurrence-stopped.test.ts",
+        "src/App.transactions.test.tsx",
+        "src/scan-result.test.ts"
+      ],
+      "start": "2026-10-19T03:43:48.740604+00:00",
+      "end": "2026-10-19T03:43:52.061351+00:00",
+      "exit": 0,
+      "log": "TKT-559-restored-1.txt"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/scan-clock.test.ts",
+        "src/entry-scan.test.ts",
+        "src/entry-scan.timing.test.ts",
+        "src/occurrence-stopped.test.ts",
+        "src/App.transactions.test.tsx",
+        "src/scan-result.test.ts"
+      ],
+      "start": "2026-10-19T03:43:52.061499+00:00",
+      "end": "2026-10-19T03:43:55.694432+00:00",
+      "exit": 0,
+      "log": "TKT-559-restored-2.txt"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/scan-clock.test.ts",
+        "src/entry-scan.test.ts",
+        "src/entry-scan.timing.test.ts",
+        "src/occurrence-stopped.test.ts",
+        "src/App.transactions.test.tsx",
+        "src/scan-result.test.ts"
+      ],
+      "start": "2026-10-19T03:43:55.694549+00:00",
+      "end": "2026-10-19T03:43:59.027672+00:00",
+      "exit": 0,
+      "log": "TKT-559-restored-3.txt"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/scan-clock.test.ts",
+        "src/entry-scan.test.ts",
+        "src/entry-scan.timing.test.ts",
+        "src/occurrence-stopped.test.ts",
+        "src/App.transactions.test.tsx",
+        "src/scan-result.test.ts"
+      ],
+      "start": "2026-10-19T03:43:59.027795+00:00",
+      "end": "2026-10-19T03:44:02.449908+00:00",
+      "exit": 0,
+      "log": "TKT-559-restored-4.txt"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/scan-clock.test.ts",
+        "src/entry-scan.test.ts",
+        "src/entry-scan.timing.test.ts",
+        "src/occurrence-stopped.test.ts",
+        "src/App.transactions.test.tsx",
+        "src/scan-result.test.ts"
+      ],
+      "start": "2026-10-19T03:44:02.450038+00:00",
+      "end": "2026-10-19T03:44:05.837288+00:00",
+      "exit": 0,
+      "log": "TKT-559-restored-5.txt"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/scan-clock.test.ts",
+        "src/entry-scan.test.ts",
+        "src/entry-scan.timing.test.ts",
+        "src/occurrence-stopped.test.ts",
+        "src/App.transactions.test.tsx",
+        "src/scan-result.test.ts"
+      ],
+      "start": "2026-10-19T03:44:05.837410+00:00",
+      "end": "2026-10-19T03:44:08.919508+00:00",
+      "exit": 0,
+      "log": "TKT-559-restored-6.txt"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/scan-clock.test.ts",
+        "src/entry-scan.test.ts",
+        "src/entry-scan.timing.test.ts",
+        "src/occurrence-stopped.test.ts",
+        "src/App.transactions.test.tsx",
+        "src/scan-result.test.ts"
+      ],
+      "start": "2026-10-19T03:44:08.919629+00:00",
+      "end": "2026-10-19T03:44:12.029011+00:00",
+      "exit": 0,
+      "log": "TKT-559-restored-7.txt"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/scan-clock.test.ts",
+        "src/entry-scan.test.ts",
+        "src/entry-scan.timing.test.ts",
+        "src/occurrence-stopped.test.ts",
+        "src/App.transactions.test.tsx",
+        "src/scan-result.test.ts"
+      ],
+      "start": "2026-10-19T03:44:12.029150+00:00",
+      "end": "2026-10-19T03:44:15.511144+00:00",
+      "exit": 0,
+      "log": "TKT-559-restored-8.txt"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "exec",
+        "tsc",
+        "-b"
+      ],
+      "start": "2026-10-19T03:44:15.511287+00:00",
+      "end": "2026-10-19T03:44:16.207919+00:00",
+      "exit": 0,
+      "log": "TKT-559-typecheck.txt"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "lint"
+      ],
+      "start": "2026-10-19T03:44:16.208038+00:00",
+      "end": "2026-10-19T03:44:16.667620+00:00",
+      "exit": 0,
+      "log": "TKT-559-lint.txt"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "build"
+      ],
+      "start": "2026-10-19T03:44:44.269668+00:00",
+      "end": "2026-10-19T03:44:45.309097+00:00",
+      "exit": 0,
+      "log": "TKT-559-browser-mutant-build.txt"
+    },
+    {
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/browser-timing-mutation.sh"
+      ],
+      "start": "2026-10-19T03:44:45.309366+00:00",
+      "end": "2026-10-19T03:45:42.332543+00:00",
+      "exit": 1,
+      "log": "TKT-559-browser-mutant.txt"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "build"
+      ],
+      "start": "2026-10-19T03:45:42.332953+00:00",
+      "end": "2026-10-19T03:45:43.717093+00:00",
+      "exit": 0,
+      "log": "TKT-559-browser-restored-build.txt"
+    },
+    {
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/browser-scanner-repeat.sh"
+      ],
+      "start": "2026-10-19T03:45:43.717349+00:00",
+      "end": "2026-10-19T03:52:29.546411+00:00",
+      "exit": 0,
+      "log": "TKT-559-browser-restored-eight.txt"
+    },
+    {
+      "command": [
+        "make",
+        "browser"
+      ],
+      "start": "2026-10-19T03:52:29.546809+00:00",
+      "end": "2026-10-19T03:55:07.713377+00:00",
+      "exit": 0,
+      "log": "TKT-559-browser-final.txt"
+    }
+  ],
+  "mutations": [
+    {
+      "mutation": "before-mint-check",
+      "file": "web/scanner/src/entry-scan.ts",
+      "fixture": "src/entry-scan.timing.test.ts",
+      "exit": 1,
+      "discriminating": true,
+      "elapsedSeconds": 1.903491735458374
+    },
+    {
+      "mutation": "before-send-check",
+      "file": "web/scanner/src/entry-scan.ts",
+      "fixture": "src/entry-scan.timing.test.ts",
+      "exit": 1,
+      "discriminating": true,
+      "elapsedSeconds": 1.9181246757507324
+    },
+    {
+      "mutation": "synchronous-DOM",
+      "file": "web/scanner/src/App.tsx",
+      "fixture": "src/App.transactions.test.tsx",
+      "exit": 1,
+      "discriminating": true,
+      "elapsedSeconds": 3.0495314598083496
+    },
+    {
+      "mutation": "timing-copy",
+      "file": "web/scanner/src/scan-result.ts",
+      "fixture": "src/scan-result.test.ts",
+      "exit": 1,
+      "discriminating": true,
+      "elapsedSeconds": 1.3806045055389404
+    },
+    {
+      "mutation": "offline-check",
+      "file": "web/scanner/src/entry-scan.ts",
+      "fixture": "src/entry-scan.timing.test.ts",
+      "exit": 1,
+      "discriminating": true,
+      "elapsedSeconds": 1.7775263786315918
+    },
+    {
+      "mutation": "strict-equality",
+      "file": "web/scanner/src/scan-clock.ts",
+      "fixture": "src/scan-clock.test.ts",
+      "exit": 1,
+      "discriminating": true,
+      "elapsedSeconds": 1.4235117435455322
+    },
+    {
+      "mutation": "wide-limits",
+      "file": "web/scanner/src/scan-clock.ts",
+      "fixture": "src/scan-clock.test.ts",
+      "exit": 1,
+      "discriminating": true,
+      "elapsedSeconds": 1.390571117401123
+    },
+    {
+      "mutation": "wall-check",
+      "file": "web/scanner/src/scan-clock.ts",
+      "fixture": "src/scan-clock.test.ts",
+      "exit": 1,
+      "discriminating": true,
+      "elapsedSeconds": 1.3496146202087402
+    },
+    {
+      "mutation": "monotonic-check",
+      "file": "web/scanner/src/scan-clock.ts",
+      "fixture": "src/scan-clock.test.ts",
+      "exit": 1,
+      "discriminating": true,
+      "elapsedSeconds": 1.3439838886260986
+    },
+    {
+      "mutation": "disagreement",
+      "file": "web/scanner/src/scan-clock.ts",
+      "fixture": "src/scan-clock.test.ts",
+      "exit": 1,
+      "discriminating": true,
+      "elapsedSeconds": 1.3324840068817139
+    },
+    {
+      "mutation": "monotonic-regression",
+      "file": "web/scanner/src/scan-clock.ts",
+      "fixture": "src/scan-clock.test.ts",
+      "exit": 1,
+      "discriminating": true,
+      "elapsedSeconds": 1.3790562152862549
+    },
+    {
+      "mutation": "production-wall",
+      "file": "web/scanner/src/scan-clock.ts",
+      "fixture": "src/scan-clock.test.ts",
+      "exit": 1,
+      "discriminating": true,
+      "elapsedSeconds": 1.3428425788879395
+    },
+    {
+      "mutation": "timer-only",
+      "file": "web/scanner/src/scan-clock.ts",
+      "fixture": "src/entry-scan.timing.test.ts",
+      "exit": 1,
+      "discriminating": true,
+      "elapsedSeconds": 23.989245176315308
+    },
+    {
+      "mutation": "deadline-is-cancel",
+      "file": "web/scanner/src/entry-scan.ts",
+      "fixture": "src/entry-scan.timing.test.ts",
+      "exit": 1,
+      "discriminating": true,
+      "elapsedSeconds": 1.6997263431549072
+    },
+    {
+      "mutation": "refusal-validator",
+      "file": "web/scanner/src/occurrence-model.ts",
+      "fixture": "src/occurrence-stopped.test.ts",
+      "exit": 1,
+      "discriminating": true,
+      "elapsedSeconds": 1.4066333770751953
+    },
+    {
+      "mutation": "refusal-writer",
+      "file": "web/scanner/src/occurrence-store.ts",
+      "fixture": "src/occurrence-stopped.test.ts",
+      "exit": 1,
+      "discriminating": true,
+      "elapsedSeconds": 1.4237074851989746
+    },
+    {
+      "mutation": "after-mark-check",
+      "file": "web/scanner/src/entry-scan.ts",
+      "fixture": "src/entry-scan.timing.test.ts",
+      "exit": 1,
+      "discriminating": true,
+      "elapsedSeconds": 1.836333990097046
+    },
+    {
+      "mutation": "after-accepted-body",
+      "file": "web/scanner/src/entry-scan.ts",
+      "fixture": "src/entry-scan.timing.test.ts",
+      "exit": 1,
+      "discriminating": true,
+      "elapsedSeconds": 1.8112964630126953
+    },
+    {
+      "mutation": "offline-after-persistence",
+      "file": "web/scanner/src/entry-scan.ts",
+      "fixture": "src/App.transactions.test.tsx",
+      "exit": 1,
+      "discriminating": true,
+      "elapsedSeconds": 3.3672122955322266
+    },
+    {
+      "mutation": "finite-guards-coordinated",
+      "file": "web/scanner/src/scan-clock.ts",
+      "fixture": "src/scan-clock.test.ts",
+      "exit": 1,
+      "discriminating": true,
+      "elapsedSeconds": 1.323822259902954
+    }
+  ],
+  "restoredFixtureRuns": {
+    "count": 8,
+    "testFiles": 6,
+    "testsPerRun": 154,
+    "result": "passed"
+  },
+  "browser": {
+    "runner": "host Google Chrome through repository scripts/browser.sh",
+    "restoredScannerRuns": 8,
+    "timedCasesPerRun": 8,
+    "fullSuiteCommand": "make browser",
+    "fullSuiteExit": 0,
+    "mutation": "Widen both elapsed limits by 100, rebuild scanner, run submitted mint deadline case. The Scan stopped assertion timed out. Restore and rebuild before eight clean scanner repeats.",
+    "measurements": "TKT-559-strict-commits.json",
+    "venueQualification": "Incomplete; TKT-560 required before venue use."
+  },
+  "compatibilityFixture": {
+    "path": "web/scanner/src/test/fixtures/occurrence-model.tkt558.ts",
+    "source": "bbc919719310fb1133218389ede5def431f8bece:web/scanner/src/occurrence-model.ts",
+    "sha256": "b3139bf9a56e3cf7a44b2f2d8b0d0ffd88fe1c97e1dc8a1875076afdedf9c85a"
+  },
+  "failedAttempts": [
+    "The first browser measurement observer did not return the native transaction. Measurement failed before completion. The observer was fixed before the browser mutation and restored repeats.",
+    "Two early mutation batches overlapped. Those results were excluded. The final mutations and restored runs ran sequentially.",
+    "An early DOM assertion inside the transaction observer could be caught by production repair. Assertions now inspect the first captured DOM observation outside that callback. The offline-after-persistence mutation fails."
+  ],
+  "logHashes": {
+    "TKT-559-browser-final.txt": "38bd9cc8ca38ce051e10da23a2cb093df78cb31778d584baaacee667bf67d4f3",
+    "TKT-559-browser-mutant-build.txt": "66aa09d739650a92790e267ed179745107b0833f4039561d0739585707c6a37a",
+    "TKT-559-browser-mutant.txt": "19a3ef2f6959a07b3e5815588f7196e5d533409732b93f952b95f82b7c6c9adf",
+    "TKT-559-browser-restored-build.txt": "fb057e0298895a2b5c31ad2e25acb50b34c2e556f272d49eb8c9c3f51d2f5261",
+    "TKT-559-browser-restored-eight.txt": "86fc04e5827eb664f1b5a07a9ea6fbdc27880a13c5373fb36b36b7f16c5b9ea6",
+    "TKT-559-extra-mutations.txt": "76145f1e81d0a60fcb4f139c0ec7d5a190ee9d9145c80b89ce08321f136fbffd",
+    "TKT-559-lint.txt": "d4a09b61560776ae8feee6a490738c8d5748a904be5cbbc1d00a2d92a4587484",
+    "TKT-559-mutations.txt": "86b6caad246c24cbfdc4182d866e6be6e4a466c5a4adef7598d0fc1022df3309",
+    "TKT-559-restored-1.txt": "c6fdee21b7fb164596c4b739d6cb542da6ef047b7d6f444945933969ffa06784",
+    "TKT-559-restored-2.txt": "d582f24e6c9ff2d2f4b481d32943f67766f674ebb30c9e26a7df626d49fbd640",
+    "TKT-559-restored-3.txt": "c9e9dbeb0211b2ba3203115db109c23382fbbb3a005d2960b56d64cc2af638d2",
+    "TKT-559-restored-4.txt": "35ec087fec6c32b2b77611dc38e8421577ef4b6ddedd44fc0419da2015feee46",
+    "TKT-559-restored-5.txt": "a018b70c94b9d3e6368bd8f3bdb5cc37fd46a84588a9e0d7017d422de54e8dba",
+    "TKT-559-restored-6.txt": "90055fd88054330af2ae96a113c75c629549f804734f34d07c8ad83790fb94e3",
+    "TKT-559-restored-7.txt": "94b529cdd3a59f6e697232c753f02c63c5a4fc0297c7ae8e751f8a18a95ee709",
+    "TKT-559-restored-8.txt": "ce88ec3ccfb13c1d30f5563d6a8f8091e1c8fc052e0e905ab3878cc474106728",
+    "TKT-559-typecheck.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutations/after-accepted-body.txt": "064e801ed52f2c8701923a92e4e777454a2d2de3f8d064ab2c1fa538eb27e26f",
+    "mutations/after-mark-check.txt": "24fcda23e644e1c8b7f7d6c6923d9c589b6fc65e837a1b8c520d6aec61117b82",
+    "mutations/before-mint-check.txt": "915202d0b2fde6b3a4bf70f584fcc091ea7d8367feb37e824d8ad49eab236493",
+    "mutations/before-send-check.txt": "dd3ca7ce2b1f4992352c999ba0e231c534637792a910273c1da2c9f7d40f0f83",
+    "mutations/deadline-is-cancel.txt": "5126f36465380402860a159d731c55aa5bcf23cce0ffab96ad843d20502810da",
+    "mutations/disagreement.txt": "04e814ca6741ddb7c309caff2498e7a22d3b9db0e54696a604f6a694edc8f3ed",
+    "mutations/finite-guards-coordinated.txt": "881ad5e2ea0489509c6c9ee814c95b6bb871194e6cb7de956eb91e217c88a312",
+    "mutations/monotonic-check.txt": "2d4b2dcc7133f520e24c2f5de02957b9066f219bfe108f33781f40280e831638",
+    "mutations/monotonic-regression.txt": "3b7a30e8ffca7e9b37d3b503568160772509811b5ddd341929a839dec702289f",
+    "mutations/offline-after-persistence.txt": "38473667086a4e371a79a173412d829ce721d77266ebb4dad666369e65a19895",
+    "mutations/offline-check.txt": "63abb149fb7d0e61d476a50099679c2f6e9ea771f6a52727650bc4dbd59a8e1c",
+    "mutations/production-wall.txt": "37378bb829ab9177ce61ff13a8133f4e4473d14d2557297460363c7c4b14c8de",
+    "mutations/refusal-validator.txt": "36554445ec46ca4e334bb62c997523170dd8b823592ca33a97a6582717e72dec",
+    "mutations/refusal-writer.txt": "4deef9292c7e99361dc5c395922f194a362a59e12f5f96d91607be29856d347f",
+    "mutations/strict-equality.txt": "07c5ac0cd2cb07e2e0e1b7780b3a399875fe22e248017acf48089ec6f14f0376",
+    "mutations/synchronous-DOM.txt": "789e70edd8e7a4c3fbc3568cbfaef3d36f796e382f93a1a1c2b5440c7044967e",
+    "mutations/timer-only.txt": "903fb69c244f4c69ce1462d778c54ac40b67a68e86adff26953df0d6bb0a40ec",
+    "mutations/timing-copy.txt": "f68a89f2b69e3c214551e1412ef0df36c51acef25905d73f26ce05c4d143f371",
+    "mutations/wall-check.txt": "13160999072a46376d408c923e311e89b5241a0b51165eb4b95b535cb929cc49",
+    "mutations/wide-limits.txt": "8467b418d4a99dd6526e7ef0ac8114c56c2987cea902044eea790f52ffa7ada4"
+  },
+  "documentationFixtureCorrection": {
+    "initialGateHead": "f9ee623af25d01e8bff3a42cc1214577dd75693d",
+    "initialGateResult": "FAIL: 1 stale no-clock warning assertion; 1156 scanner tests passed",
+    "initialGateVerdict": "FAIL exit=2 head=f9ee623af25d01e8bff3a42cc1214577dd75693d tree=0ad31cdaebf68562c0f4049894db93934dd49c83 log=/home/mathieu/sources/ticketing_system.TKT-559-timed-entry/.gate.log",
+    "change": "Update existing DOC-01 assertions to the delivered Entry time bounds; preserve page-loss warning and reject stale warnings. Product and browser code unchanged.",
+    "mutation": "Change documented late-refusal refusal to permission and observe the intended assertion fail.",
+    "restoredRuns": 8,
+    "testsPerRun": 3,
+    "commands": [
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "test",
+          "test/doc-namespace.test.ts"
+        ],
+        "start": "2026-10-19T03:58:08.830800+00:00",
+        "end": "2026-10-19T03:58:10.227074+00:00",
+        "exit": 1,
+        "log": "TKT-559-doc-mutation.txt"
+      },
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "test",
+          "test/doc-namespace.test.ts"
+        ],
+        "start": "2026-10-19T03:58:10.227575+00:00",
+        "end": "2026-10-19T03:58:11.565694+00:00",
+        "exit": 0,
+        "log": "TKT-559-doc-restored-1.txt"
+      },
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "test",
+          "test/doc-namespace.test.ts"
+        ],
+        "start": "2026-10-19T03:58:11.565879+00:00",
+        "end": "2026-10-19T03:58:12.876926+00:00",
+        "exit": 0,
+        "log": "TKT-559-doc-restored-2.txt"
+      },
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "test",
+          "test/doc-namespace.test.ts"
+        ],
+        "start": "2026-10-19T03:58:12.877038+00:00",
+        "end": "2026-10-19T03:58:14.365423+00:00",
+        "exit": 0,
+        "log": "TKT-559-doc-restored-3.txt"
+      },
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "test",
+          "test/doc-namespace.test.ts"
+        ],
+        "start": "2026-10-19T03:58:14.365658+00:00",
+        "end": "2026-10-19T03:58:15.845896+00:00",
+        "exit": 0,
+        "log": "TKT-559-doc-restored-4.txt"
+      },
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "test",
+          "test/doc-namespace.test.ts"
+        ],
+        "start": "2026-10-19T03:58:15.846027+00:00",
+        "end": "2026-10-19T03:58:17.172301+00:00",
+        "exit": 0,
+        "log": "TKT-559-doc-restored-5.txt"
+      },
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "test",
+          "test/doc-namespace.test.ts"
+        ],
+        "start": "2026-10-19T03:58:17.172423+00:00",
+        "end": "2026-10-19T03:58:18.499018+00:00",
+        "exit": 0,
+        "log": "TKT-559-doc-restored-6.txt"
+      },
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "test",
+          "test/doc-namespace.test.ts"
+        ],
+        "start": "2026-10-19T03:58:18.499129+00:00",
+        "end": "2026-10-19T03:58:19.875320+00:00",
+        "exit": 0,
+        "log": "TKT-559-doc-restored-7.txt"
+      },
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "test",
+          "test/doc-namespace.test.ts"
+        ],
+        "start": "2026-10-19T03:58:19.875432+00:00",
+        "end": "2026-10-19T03:58:21.230341+00:00",
+        "exit": 0,
+        "log": "TKT-559-doc-restored-8.txt"
+      },
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "exec",
+          "tsc",
+          "-b"
+        ],
+        "start": "2026-10-19T03:58:21.230521+00:00",
+        "end": "2026-10-19T03:58:21.930459+00:00",
+        "exit": 0,
+        "log": "TKT-559-doc-typecheck.txt"
+      },
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "lint"
+        ],
+        "start": "2026-10-19T03:58:21.930580+00:00",
+        "end": "2026-10-19T03:58:22.397356+00:00",
+        "exit": 0,
+        "log": "TKT-559-doc-lint.txt"
+      }
+    ],
+    "logHashes": {
+      "TKT-559-doc-mutation.txt": "993d8fdb52f3fc4b961bd1871dc7b9169b0e38bd1ada0a6193ee118503c80df4",
+      "TKT-559-doc-restored-1.txt": "cf9ded5b6f05086547d583ab487df8d8aa62b41e6daeadd3ba0834b361cf78b7",
+      "TKT-559-doc-restored-2.txt": "4e40c000a03a1c322d9967fe6a1fed67b9a243b5834cc1e2f786856c089f79c3",
+      "TKT-559-doc-restored-3.txt": "7bdcab3f22cda0194b8acd705122f172610f66acf14804178e5b3b8fa2f69a9e",
+      "TKT-559-doc-restored-4.txt": "c2d17bceb182f7668df346256ca028b8614efa478fc34d38b08d0f727bce408f",
+      "TKT-559-doc-restored-5.txt": "7c053dd5685607851fcbd6d9e65699196955fb6e9e137e5a939d84dd01e6f5c3",
+      "TKT-559-doc-restored-6.txt": "db69506cbc070de5a9b6df81a62a17d2aeb6880ffe50bdec627eef5b9f45288b",
+      "TKT-559-doc-restored-7.txt": "ebb8c0edbb87f215a1808eae9450054a905994b295f72f12b21f6ec39af70fcb",
+      "TKT-559-doc-restored-8.txt": "f1030d06bad491be44cff3227c5ebc3ab77615eb49cfa8f58d41357f38570686",
+      "TKT-559-doc-typecheck.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "TKT-559-doc-lint.txt": "d4a09b61560776ae8feee6a490738c8d5748a904be5cbbc1d00a2d92a4587484"
+    }
+  }
+}

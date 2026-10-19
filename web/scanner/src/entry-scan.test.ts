@@ -230,8 +230,9 @@ it.each(['commit', 'mint-abort', 'queue-abort'] as const)('keeps a known local r
     }
   }
   await scanner.submit(qr)
-  expect(results).toEqual([{ kind: 'revocation-refused' }])
+  expect(results).toEqual([{ kind: schedule === 'mint-abort' ? 'revocation-audit-not-saved' : 'revocation-refused' }])
   expect(fetch).not.toHaveBeenCalled()
+  await Promise.all(page.coordinator.pendingTargets().map((id) => page.coordinator.persist(id)))
   await page.coordinator.repairAll()
   const queue = (await page.store().queued()).entries
   if (schedule === 'mint-abort') expect(queue).toEqual([])
