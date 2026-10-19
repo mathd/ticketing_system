@@ -474,5 +474,172 @@
     "mutations/timing-copy.txt": "f68a89f2b69e3c214551e1412ef0df36c51acef25905d73f26ce05c4d143f371",
     "mutations/wall-check.txt": "13160999072a46376d408c923e311e89b5241a0b51165eb4b95b535cb929cc49",
     "mutations/wide-limits.txt": "8467b418d4a99dd6526e7ef0ac8114c56c2987cea902044eea790f52ffa7ada4"
+  },
+  "documentationFixtureCorrection": {
+    "initialGateHead": "f9ee623af25d01e8bff3a42cc1214577dd75693d",
+    "initialGateResult": "FAIL: 1 stale no-clock warning assertion; 1156 scanner tests passed",
+    "initialGateVerdict": "FAIL exit=2 head=f9ee623af25d01e8bff3a42cc1214577dd75693d tree=0ad31cdaebf68562c0f4049894db93934dd49c83 log=/home/mathieu/sources/ticketing_system.TKT-559-timed-entry/.gate.log",
+    "change": "Update existing DOC-01 assertions to the delivered Entry time bounds; preserve page-loss warning and reject stale warnings. Product and browser code unchanged.",
+    "mutation": "Change documented late-refusal refusal to permission and observe the intended assertion fail.",
+    "restoredRuns": 8,
+    "testsPerRun": 3,
+    "commands": [
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "test",
+          "test/doc-namespace.test.ts"
+        ],
+        "start": "2026-10-19T03:58:08.830800+00:00",
+        "end": "2026-10-19T03:58:10.227074+00:00",
+        "exit": 1,
+        "log": "TKT-559-doc-mutation.txt"
+      },
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "test",
+          "test/doc-namespace.test.ts"
+        ],
+        "start": "2026-10-19T03:58:10.227575+00:00",
+        "end": "2026-10-19T03:58:11.565694+00:00",
+        "exit": 0,
+        "log": "TKT-559-doc-restored-1.txt"
+      },
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "test",
+          "test/doc-namespace.test.ts"
+        ],
+        "start": "2026-10-19T03:58:11.565879+00:00",
+        "end": "2026-10-19T03:58:12.876926+00:00",
+        "exit": 0,
+        "log": "TKT-559-doc-restored-2.txt"
+      },
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "test",
+          "test/doc-namespace.test.ts"
+        ],
+        "start": "2026-10-19T03:58:12.877038+00:00",
+        "end": "2026-10-19T03:58:14.365423+00:00",
+        "exit": 0,
+        "log": "TKT-559-doc-restored-3.txt"
+      },
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "test",
+          "test/doc-namespace.test.ts"
+        ],
+        "start": "2026-10-19T03:58:14.365658+00:00",
+        "end": "2026-10-19T03:58:15.845896+00:00",
+        "exit": 0,
+        "log": "TKT-559-doc-restored-4.txt"
+      },
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "test",
+          "test/doc-namespace.test.ts"
+        ],
+        "start": "2026-10-19T03:58:15.846027+00:00",
+        "end": "2026-10-19T03:58:17.172301+00:00",
+        "exit": 0,
+        "log": "TKT-559-doc-restored-5.txt"
+      },
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "test",
+          "test/doc-namespace.test.ts"
+        ],
+        "start": "2026-10-19T03:58:17.172423+00:00",
+        "end": "2026-10-19T03:58:18.499018+00:00",
+        "exit": 0,
+        "log": "TKT-559-doc-restored-6.txt"
+      },
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "test",
+          "test/doc-namespace.test.ts"
+        ],
+        "start": "2026-10-19T03:58:18.499129+00:00",
+        "end": "2026-10-19T03:58:19.875320+00:00",
+        "exit": 0,
+        "log": "TKT-559-doc-restored-7.txt"
+      },
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "test",
+          "test/doc-namespace.test.ts"
+        ],
+        "start": "2026-10-19T03:58:19.875432+00:00",
+        "end": "2026-10-19T03:58:21.230341+00:00",
+        "exit": 0,
+        "log": "TKT-559-doc-restored-8.txt"
+      },
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "exec",
+          "tsc",
+          "-b"
+        ],
+        "start": "2026-10-19T03:58:21.230521+00:00",
+        "end": "2026-10-19T03:58:21.930459+00:00",
+        "exit": 0,
+        "log": "TKT-559-doc-typecheck.txt"
+      },
+      {
+        "command": [
+          "pnpm",
+          "--filter",
+          "scanner",
+          "lint"
+        ],
+        "start": "2026-10-19T03:58:21.930580+00:00",
+        "end": "2026-10-19T03:58:22.397356+00:00",
+        "exit": 0,
+        "log": "TKT-559-doc-lint.txt"
+      }
+    ],
+    "logHashes": {
+      "TKT-559-doc-mutation.txt": "993d8fdb52f3fc4b961bd1871dc7b9169b0e38bd1ada0a6193ee118503c80df4",
+      "TKT-559-doc-restored-1.txt": "cf9ded5b6f05086547d583ab487df8d8aa62b41e6daeadd3ba0834b361cf78b7",
+      "TKT-559-doc-restored-2.txt": "4e40c000a03a1c322d9967fe6a1fed67b9a243b5834cc1e2f786856c089f79c3",
+      "TKT-559-doc-restored-3.txt": "7bdcab3f22cda0194b8acd705122f172610f66acf14804178e5b3b8fa2f69a9e",
+      "TKT-559-doc-restored-4.txt": "c2d17bceb182f7668df346256ca028b8614efa478fc34d38b08d0f727bce408f",
+      "TKT-559-doc-restored-5.txt": "7c053dd5685607851fcbd6d9e65699196955fb6e9e137e5a939d84dd01e6f5c3",
+      "TKT-559-doc-restored-6.txt": "db69506cbc070de5a9b6df81a62a17d2aeb6880ffe50bdec627eef5b9f45288b",
+      "TKT-559-doc-restored-7.txt": "ebb8c0edbb87f215a1808eae9450054a905994b295f72f12b21f6ec39af70fcb",
+      "TKT-559-doc-restored-8.txt": "f1030d06bad491be44cff3227c5ebc3ab77615eb49cfa8f58d41357f38570686",
+      "TKT-559-doc-typecheck.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "TKT-559-doc-lint.txt": "d4a09b61560776ae8feee6a490738c8d5748a904be5cbbc1d00a2d92a4587484"
+    }
   }
 }

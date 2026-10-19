@@ -30,9 +30,12 @@ it('DOC-01 qualifies every decision identifier added to an ADR', () => {
   expect(unqualified).toEqual([])
 })
 
-it('DOC-01 retains the interim no-clock and slow-refusal warnings', () => {
+it('DOC-01 states the Entry time bounds and retains the page-loss warning', () => {
   const guide = scannerOperatorGuide()
-  expect(guide).toContain('There is no scan clock or stalled-body deadline until TKT-559.')
-  expect(guide).toContain('timeout can still select the network fallback until the deadline work ships.')
+  expect(guide).toContain('TKT-559 checks both wall and monotonic elapsed time from submission.')
+  expect(guide).toContain('before 3 s; an admission decision must finish before 30 s. Equality is late.')
+  expect(guide).toContain('A gateway-hidden refusal cannot select the offline fallback at or after 30 s.')
+  expect(guide).not.toContain('There is no scan clock or stalled-body deadline until TKT-559.')
+  expect(guide).not.toContain('timeout can still select the network fallback until the deadline work ships.')
   expect(guide).toContain('A failed terminal write followed by actual page loss can still recover as a false admission.')
 })
