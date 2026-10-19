@@ -237,9 +237,10 @@ conflicts. Together every physical admission that Access learns about is represe
    The fixed client cannot tell an intermediary's 502/503/504 from the gateway's. Any intermediary
    before the gateway therefore needs a new ADR and qualification before deployment. ADR-085 §2.4a.
 
-   **Not implemented on main.** None of these amended rules is implemented on main until its
-   delivery ticket ships (ADR-085 §8: tickets 0, 2, 3 and 4). ADR-085 §1.3 lists main's current
-   gaps, including Entry P7-1 and a queued live 401.
+   **Partial delivery.** TKT-557 implements the Access response contract. TKT-558 implements
+   Entry terminal classification, page ownership, version 3 isolation, held-row disposal and
+   recovery notices. Time checks remain in ticket 3 and Exit in ticket 4. The accepted text above
+   is historical where ADR-085 supersedes it.
 
 4. **Idempotency stays outside the append path.** Event-id replay is resolved *before*
    `appendLifecycle`, under the ticket lock — the append module is never invoked for an

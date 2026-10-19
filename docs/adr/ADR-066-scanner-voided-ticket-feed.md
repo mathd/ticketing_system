@@ -217,9 +217,9 @@ of this section stays. The amended rules:
   exit was not recorded, that the ticket is no longer valid for entry, and that the holder may leave.
   An absent exit can cause `exit_required` at the next Entry (owner decision TKT-556 D14-2).
 
-**Not implemented on main.** Main still mints the refusal directly QUEUED with no post-mint time
-check (`web/scanner/src/occurrences.ts:270-281`). The PENDING-first mint ships in ticket 2, the time
-check in ticket 3 and the Exit rule in ticket 4 (ADR-085 §8).
+**Partial delivery.** TKT-558 mints Entry refusals as owned PENDING records, keeps the refusal tag
+through queueing and recovery, and protects the live page across connection replacement. Time
+checks remain in ticket 3 and the Exit rule remains in ticket 4, ADR-085 §8.
 
 ## Consequences
 

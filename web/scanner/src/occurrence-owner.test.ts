@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createOccurrenceOwner, replaceOccurrenceOwner } from './occurrence-owner'
+import { createOccurrenceOwner } from './occurrence-owner'
 
 afterEach(() => {
   sessionStorage.clear()
@@ -23,11 +23,4 @@ describe('page occurrence ownership', () => {
     expect(sessionStorage.getItem('scanner.occurrence-owner')).toBe(owner.ownerId)
   })
 
-  it('replaces a released owner and names it for same-page recovery', () => {
-    const replacement = replaceOccurrenceOwner({ ownerId: 'failed-page-owner' })
-
-    expect(replacement.ownerId).not.toBe('failed-page-owner')
-    expect(replacement.recoverOwnerId).toBe('failed-page-owner')
-    expect(sessionStorage.getItem('scanner.occurrence-owner')).toBe(replacement.ownerId)
-  })
 })

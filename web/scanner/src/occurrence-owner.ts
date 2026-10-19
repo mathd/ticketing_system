@@ -18,13 +18,3 @@ export function createOccurrenceOwner(): OccurrenceOwner {
   }
 }
 
-/** Replaces a released page owner so its unfinished rows become recoverable. */
-export function replaceOccurrenceOwner(previous: OccurrenceOwner): OccurrenceOwner {
-  const ownerId = crypto.randomUUID()
-  try {
-    sessionStorage.setItem(occurrenceOwnerKey, ownerId)
-  } catch {
-    // The explicit predecessor still recovers this page's pending rows.
-  }
-  return { ownerId, recoverOwnerId: previous.ownerId }
-}

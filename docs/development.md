@@ -1559,42 +1559,99 @@ caller who does not hold an enrolled device's token from admitting, redeeming or
 rewriting scan history. It constrains nobody with write access to the access database,
 who can enrol their own device.
 
-### Scanner outcomes: what main does today, and what is planned (TKT-556)
+### Scanner Entry outcomes and local records
 
-[ADR-085](./adr/ADR-085-scanner-local-outcome-model.md) records the scanner local outcome model: the
-scanner decides each scan once, before it writes the outcome, and a failed write never changes that
-decision. **Ticket 0, the Access response contract, is shipped (TKT-557).** The scanner client model,
-tickets 2 to 4, is **not** shipped: the scanner on main still behaves as this guide describes, with
-the limits below. ADR-085 §1.3 lists the same gaps with code references.
+The Entry outcome core in TKT-558 implements the local outcome model in
+[ADR-085](./adr/ADR-085-scanner-local-outcome-model.md). Each scan keeps its first local decision.
+A failed outcome write does not give the scanner permission to choose another decision.
 
-**Current limitations on main.** Know these before you rely on the scanner:
+| Live result | Operator action and stored result |
+|---|---|
+| Accepted, after the local reservation commits | `Entry accepted. Admit.` The reservation does not prove physical passage. A replay can use this instruction only when this call commits a new local reservation. |
+| Already processed on this device | `This scan was already handled on this device. No second entry.` This requires a replay and an existing reservation owned by this page. |
+| Access accepted, but the local reservation cannot be confirmed | `Access recorded this scan; the scanner did not open; get an operator.` A missing or foreign record cannot prove that this device already handled the scan. |
+| `401` | `This attempt was not authorized. Do not admit from this result.` Pair the device and scan the ticket again. Older queued facts remain available for authenticated sync. |
+| `409` or `422` with a readable rejection | Rejected. The result remains terminal even if storage fails. Ordinary reason-specific copy remains in TKT-552. |
+| `409` or `422` with an unreadable body | `Access refused this scan; reason unavailable. Do not admit`. It never becomes an offline admission. |
+| Invalid accepted `200`, an unexpected status, or an opaque redirect | `Scan response unconfirmed. Scanner did not open. Access may have recorded this scan. Get an operator; do not admit from this result.` |
+| `500`, `501`, or `505` through `599` | `Outcome unknown. Do not admit. Contact an operator.` Access can have committed before the error. |
+| Exactly `502`, `503`, or `504` | Offline decision, with `Admit per venue offline policy.` This applies on every engine. The supported topology is Docker Compose with the gateway as the only hop before Access. |
+| The selected native network rejection | Offline decision, with `No response was received.` and `Admit per venue offline policy.` A lost response does not prove that Access decided nothing. |
+| A local setup error or an unrecognized network error | `Local scanner failure. Scanner did not open. Do not admit from this result; get an operator.` |
+| A ticket on this device's revocation list | `This ticket is on the device's revocation list. Do not admit.` A typed refusal can sync as a refusal only. It carries no admission event type. |
 
-- **A rejected Entry scan can sync as an admission.** If the device cannot write the rejection (a
-  storage error), a later storage open can recover the scan and send it to Access as an admission,
-  although the screen said Rejected. Access then records an admission that did not happen.
-- **A `401` on a live scan is queued as an offline scan,** and it syncs after re-pairing. Since
-  TKT-557, Access answers `401` only for a refused device (blank, unknown or revoked token, or a
-  server that cannot check enrolment). A device lookup that cannot answer is `503`, and any other
-  lookup failure is `500`. The main scanner still queues all three as offline scans (see Access
-  response contract below), so during a database outage live scans can still be queued and later
-  recorded as admissions until ticket 2 ships.
-- **The scanner reads the body before it checks the status, and a failure goes to the offline
-  queue.** A refusal (`409`/`422`) or an accepted `200` whose body the scanner cannot decode, a `500`,
-  an unreadable body at any status, or any status other than `200`, `409` and `422` can show
-  **Queued offline … Admit per venue offline policy**, and the scan later syncs as an admission.
-- **A revocation-list refusal is queued at once,** with no time check after it is written.
-- **There is no scan time limit.** The scanner has no 3 s send limit and no 30 s decision limit. A
-  slow store or network can show an admission result long after the scan.
-- **A response can still be lost after Access decided.** Access now recovers a panic before the
-  response headers with an exact `500`, and refuses a write timeout below 30 s (TKT-557). A panic after
-  the headers, a killed process, a shutdown deadline, a network loss or an expired write still lose
-  the response, and the decision or commit can exist without an answer.
-- **`invalid_credential` does not prove a bad signature.** Access also uses it for a request, schema,
-  body-size or route failure, a body-read timeout and a validator internal error. It does not prove
-  that ticket verification ran.
-- **Only the Docker Compose topology is supported.** The gateway is the only HTTP hop in front of
-  Access. Do not put a proxy or load balancer in front of the gateway: any intermediary needs a new
-  ADR and qualification before deployment (ADR-085, owner decision TKT-556 D40).
+Host desktop Chrome 155.0.8059.79 produced a native `TypeError`, whose constructor is `TypeError`
+and whose message is exactly `Failed to fetch`, on offline, route-abort and complete-POST socket-loss
+checks. Only that exact native promise-rejection shape selects the network fallback. There is no
+browser-family, user-agent or version gate. Android Chrome, other engines and later versions have
+not been tested. They select the fallback only on that same shape; other shapes need an operator.
+Expected, not verified on iOS or Firefox: a network-loss scan needs an operator. Re-run the native
+browser checks after a Chrome update. The owner selects venue devices.
+
+#### Storage readiness and repair
+
+`Scanner storage is not ready. No ticket was checked.` disables pairing, scan and camera controls.
+Input presented while storage is blocked is not replayed when it becomes ready. Close old scanner
+tabs, then wait or use **Retry storage**. Submit the ticket again after readiness returns.
+
+`The outcome write needs repair. Keep this page open and retry storage.` means the page still holds
+the decision in memory. **Retry storage** writes that same decision. Replacing a connection does
+not replace the page owner. The live page's owner lock protects pending rows even after its advisory
+lease expires. A failure to repair needs an operator. Keep the page open.
+
+An old scanner bundle cannot open the upgraded version 3 database. It fails with its storage warning
+and does not send new scans or reconciliation. Existing version 3 records wait for the compatible
+client. Do not roll back by clearing browser data. If an upgrade cannot read a record, expected but
+not verified on a physical damaged device, the upgrade aborts and storage remains unavailable.
+Get a technician. **Do not clear site data.** Deleting the local database loses all local scans,
+unsynced work, held originals, recovery notices, export receipts, acknowledgement metadata and
+revocation data. This describes the cost of deletion, not an operator procedure.
+
+#### Held records, export and acknowledgement
+
+Pre-upgrade pending records and unclassifiable records are held. The count and warning appear on
+paired and unpaired pages. Held records never sync. **Export local records** requests a local JSON
+download with the original fields, ticket credentials and precise claimed times. It distinguishes
+an absent field from an own undefined field. The export can contain credentials. Keep the file private.
+The browser cannot confirm that the file was saved.
+
+Select the held records reviewed by the operator. **Acknowledge selected held records** becomes
+available only after an export request and its local receipt commit. Acknowledgement lowers the
+unresolved count, retains the original rows and never makes them eligible for sync. A failed export,
+receipt or acknowledgement leaves them unresolved. Export again after an export failure.
+
+Pre-upgrade queued records remain eligible for sync. Some can record false admissions, and their
+original cause cannot be reconstructed. Their exact IDs, claimed times and current states remain in
+the export after sync retirement. They do not have an acknowledgement or disposal control. An odd
+record that the server always refuses stays queued and retries indefinitely. Its export remains
+available even when the held count is zero. Other valid queued records can still sync.
+
+Every compatible page shows all unacknowledged recovery notices, including after another page syncs
+the record. Each notice gives the occurrence ID, claimed time, type, uncertain recovery cause and
+current sync state. The prior result and physical passage are unknown. Do not admit from a recovery
+notice. Acknowledge the notice after operator review. This retains the scan and does not change its
+sync result.
+
+#### Remaining limits
+
+There is no scan clock or stalled-body deadline until TKT-559. A slow store or answer can still give
+a late instruction. Denial headers start a terminal unknown-reason write while the body is read.
+Once committed, that terminal record stays protected through reload. There is no prompt result
+deadline. A pre-headers stall remains pending. A slow decided refusal hidden by the gateway write
+timeout can still select the network fallback until the deadline work ships.
+
+A failed terminal write followed by actual page loss can still recover as a false admission.
+Recovery can record an unsent attempt. A local actuation reservation can exist without opening.
+A `500` can hide an Access commit. No client result proves physical passage. The Compose-only
+fallback retains uncertainty about earlier transparent attempts and has no proxy-provenance switch.
+Any intermediary before the gateway needs a new ADR and qualification before deployment.
+
+New scans use strict durability for mint and final outcome transactions, at most two strict commits
+before a result. A denial can use one or two strict decision commits, including optional reason
+hardening. Renewal uses default durability. These settings do not prove power-loss behavior, which
+has not been verified on Chrome. Latency has not been measured on a venue-class device. Time and
+latency qualification remain pending. Venue use requires TKT-560 Done and the owner's selection of
+the pre-decision bound and acceptable offline-spill rate. Exit mode remains pending.
 
 #### Access response contract (ticket 0, TKT-557)
 
@@ -1658,17 +1715,15 @@ Commerce answers an exchange with `502` "access admission unavailable" on any no
 `500` and a transport failure alike as ambiguous (`web/backoffice/src/lib/access.ts:192`, `:213-215`).
 These reads do not prove that the later retry succeeds.
 
-**Until ticket 2 ships, the main scanner is unchanged.** It still queues a new lookup `500` and a
-recovery `500` as offline admissions, as it does for `401` and `502`. It also queues the new lookup
-`503` and policy or acquisition `503`, and keeps its pairing on those errors. A live `401` still
-queues and clears the current pairing. Sync keeps eligible scans, and a failed feed pull keeps its
-list and its completed-pull time. A terminal `500` and a terminal live `401` are future client
-behavior (ticket 2, TKT-558), not shipped by TKT-557.
+**Entry client behavior after TKT-558.** A live lookup or recovered `500` is terminal and needs
+an operator. A live `401` clears only its captured current pairing and never queues this attempt.
+Exactly `502`/`503`/`504` can select the offline instruction. Sync keeps eligible scans on failure.
+A failed feed pull keeps its list and completed-pull time.
 
 **Supported topology.** Docker Compose, with the gateway as the only hop in front of Access. A DNS
 failure counts as availability only there, where the name `postgres` is the database service. Any
 intermediary in front of the gateway needs a new ADR and qualification before deployment; the scanner
-has no switch for it (owner decision TKT-556 D40). Staff can force offline mode by cutting the
+has no switch for it (ADR-085). Staff can force offline mode by cutting the
 network. That is a known workaround, not an availability guarantee.
 
 **Delivery map.** The delivery tickets merge in the order 1 → 0 → 2 → 3 → 4. Ticket 0 can merge
@@ -1678,8 +1733,8 @@ only the limitations that it fixes.
 | Ticket | Scope | What changes for operators |
 |---|---|---|
 | 1, TKT-556 (documentation only) | ADR-085, the ADR-025 §3 and ADR-066 §8 amendment notes, this section | Nothing in the scanner. |
-| 0, Access and gateway, **shipped (TKT-557)** | Device lookup answers `401` (not enrolled), `503` (lookup unavailable) or `500` (lookup failed) on scans, reconciliation and the voided feed; bounded pre-decision `503` (PROVISIONAL 500 ms, TKT-560 qualifies it); panic recovery with an exact `500`; write-timeout and `sslmode=disable` startup checks | Until ticket 2 ships, the main scanner still queues the new lookup `500` and recovery `500` as offline admissions, as it does today for `401` and `502`. It also queues the new lookup `503` and policy or acquisition `503`, and keeps pairing. Sync keeps eligible scans and the feed keeps its list and completed-pull time on these errors. Venue use after TKT-558 waits for TKT-560 Done and the owner's bound and offline-spill selection. |
-| 2, Entry outcome core | Terminal `401`, `409`/`422`, `500` and unreadable answers; repair of failed writes; storage version 3 barrier; held legacy scans with a count, a warning, an export and an acknowledgement; recovery notices on every page | Re-pair and rescan after a `401`. The export file contains ticket credentials: keep it safe and do not share it. Scans queued by main before the upgrade still sync, and some of them can be false admissions; their ids are in the export. There is still no scan clock: a slow refusal that the gateway write timeout hides can still show the offline result until ticket 3. |
+| 0, Access and gateway, **shipped (TKT-557)** | Device lookup answers `401` (not enrolled), `503` (lookup unavailable) or `500` (lookup failed) on scans, reconciliation and the voided feed; bounded pre-decision `503` (PROVISIONAL 500 ms, TKT-560 qualifies it); panic recovery with an exact `500`; write-timeout and `sslmode=disable` startup checks | The Entry client now keeps `401` and `500` terminal. Exactly `502`/`503`/`504` can select the offline instruction. Sync keeps eligible scans and the feed keeps its list and completed-pull time on these errors. Venue use after TKT-558 waits for TKT-560 Done and the owner's bound and offline-spill selection. |
+| 2, Entry outcome core, shipped in TKT-558 | Terminal `401`, `409`/`422`, `500` and unreadable answers; repair of failed writes; storage version 3 barrier; held legacy scans with a count, a warning, an export and an acknowledgement; recovery notices on every page | Re-pair and rescan after a `401`. The export file contains ticket credentials: keep it safe and do not share it. Scans queued by main before the upgrade still sync, and some of them can be false admissions; their ids are in the export. There is still no scan clock: a slow refusal that the gateway write timeout hides can still show the offline result until ticket 3. |
 | 3, Scan time | 3 s send limit and 30 s decision limit, two clocks, stopped-scan and slow-answer results | A scan stopped by the limit is never synced. A crash after a failed write can still recover the scan; the next page shows a recovery notice. |
 | 4, Pass Exit mode | Entry/Exit mode, Exit results with "the holder may leave", revoked-ticket Exit with no record | A revoked ticket's Exit is not recorded, so the next Entry on a requires-exit pass can answer `exit_required`. |
 

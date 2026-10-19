@@ -1,87 +1,61 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import type { OccurrenceRecord, OccurrenceStore } from './occurrences'
-
-const openStore = vi.hoisted(() => vi.fn())
-vi.mock('./occurrences', () => ({ openOccurrenceStore: openStore }))
-
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import App from './App'
+import type { StorageController } from './occurrence-readiness'
+import { createTestPage, destroyAllPages, type TestPage } from './test/page-fixture'
+import { rawGetAll } from './test/raw-db'
+import { STORE } from './occurrence-store'
+const runtime = vi.hoisted(() => ({ storage: null as StorageController | null }))
+vi.mock('./occurrence-readiness', async (load) => {
+  const actual = await load<typeof import('./occurrence-readiness')>()
+  return { ...actual, get pageStorage() { return runtime.storage! } }
+})
+let page: TestPage
+let dbName: string
 
-const record: OccurrenceRecord = {
-  occurrenceId: '6efae2f2-cd2d-4b9d-96cb-ec4ee048dc78',
-  qrPayload: 'signed-ticket',
-  occurredAt: '2026-09-03T20:00:00Z',
-  state: 'QUEUED',
-  actuated: false,
-  createdAt: '2026-09-03T20:00:00Z',
+let bodies: Record<string, unknown>[]
+let scanResponse: () => Promise<Response>
+let reconcileResponse: (rows: Array<{ occurrence_id: string }>) => Response
+beforeEach(async () => {
+  dbName = `app-contract-${crypto.randomUUID()}`
+  page = createTestPage({ dbName }); runtime.storage = page.storage; await page.ready()
+  localStorage.setItem('scanner.device-token', 'token')
+  bodies = []
+  scanResponse = async () => new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-10-18T12:34:56.789Z' }), { status: 200 })
+  reconcileResponse = (rows) => new Response(JSON.stringify({ results: rows.map((row) => ({ occurrence_id: row.occurrence_id, result: 'recorded' })) }), { status: 200 })
+  vi.stubGlobal('fetch', vi.fn(async (input: Request | string, init?: RequestInit) => {
+    if (typeof input === 'string') {
+      if (input.includes('voided-tickets')) return new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 })
+      return reconcileResponse(JSON.parse(init!.body as string).occurrences)
+    }
+    bodies.push(await input.clone().json())
+    return scanResponse()
+  }))
+})
+afterEach(() => { cleanup(); destroyAllPages(); localStorage.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+async function scan(value = 'credential') {
+  fireEvent.change(screen.getByLabelText('Ticket credential'), { target: { value } })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Check ticket' }).hasAttribute('disabled')).toBe(false))
+  fireEvent.submit(screen.getByRole('form', { name: 'Ticket scan' }))
 }
 
-function fakeStore(queued: OccurrenceRecord[] = []) {
-  const store: OccurrenceStore = {
-    mint: vi.fn().mockResolvedValue({ ...record, state: 'PENDING' }),
-    mintRefusal: vi.fn().mockResolvedValue({ ...record, state: 'QUEUED', localDecision: 'revocation_refused' }),
-    isRevoked: vi.fn().mockResolvedValue(false),
-    mergeRevoked: vi.fn().mockResolvedValue(undefined),
-    completeRevocationPull: vi.fn().mockResolvedValue(undefined),
-    revocationPull: vi.fn().mockResolvedValue({}),
-    actuate: vi.fn().mockResolvedValue(true),
-    markQueued: vi.fn().mockResolvedValue(undefined),
-    markSynced: vi.fn().mockResolvedValue(undefined),
-    queued: vi.fn().mockResolvedValue(queued),
-    get: vi.fn().mockResolvedValue(undefined),
-    close: vi.fn(),
-  }
-  return store
-}
-
-beforeEach(() => {
-  sessionStorage.clear()
-  localStorage.setItem('scanner.device-token', 'paired-device-token')
+// ADR-085 U02 is terminal even when the accepted-looking body lacks its time.
+it.each([{ decision: 'accepted' }, { decision: 'accepted', scanned_at: 'bad' }, { decision: 'rejected', reason: 'refunded' }])('resolves an invalid 200 without admission or reconciliation: %s', async (body) => {
+  scanResponse = async () => new Response(JSON.stringify(body), { status: 200 })
+  render(<App />); await scan()
+  expect((await screen.findByRole('alert', { name: 'Scan result' })).textContent).toBe('Operator requiredScan response unconfirmed. Scanner did not open. Access may have recorded this scan. Get an operator; do not admit from this result.')
+  await waitFor(async () => expect(await rawGetAll(dbName, STORE.occurrences)).toMatchObject([{ state: 'RESOLVED', actuated: false, localOutcome: { cause: 'unconfirmed_accepted_body' } }]))
+  expect((await page.store().queued()).entries).toEqual([])
 })
 
-afterEach(() => {
-  localStorage.clear()
-  sessionStorage.clear()
-  cleanup()
-  openStore.mockReset()
-  vi.restoreAllMocks()
-  vi.unstubAllGlobals()
-})
-
-describe('Scanner runtime response contracts', () => {
-  it('does not actuate an accepted response that lacks its required time', async () => {
-    const store = fakeStore()
-    openStore.mockResolvedValue(store)
-    vi.stubGlobal('fetch', (url: string) => Promise.resolve(String(url).includes('voided-tickets')
-      ? new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 })
-      : new Response(JSON.stringify({ decision: 'accepted' }), { status: 200 })))
-
-    render(<App />)
-    fireEvent.change(screen.getByLabelText('Ticket credential'), { target: { value: 'signed-ticket' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Check ticket' }))
-
-    expect(await screen.findByRole('heading', { name: 'Queued offline' })).toBeDefined()
-    expect(await screen.findByText(/server answered but the reply could not be read/i)).toBeDefined()
-    expect(store.actuate).not.toHaveBeenCalled()
-    expect(store.markQueued).toHaveBeenCalledWith(record.occurrenceId)
-  })
-
-  it('does not retire a queued occurrence for an unknown reconciliation result', async () => {
-    const store = fakeStore([record])
-    openStore.mockResolvedValue(store)
-    const fetchMock = vi.fn((url: string) => Promise.resolve(String(url).includes('voided-tickets')
-      ? new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 })
-      : new Response(JSON.stringify({ results: [{ occurrence_id: record.occurrenceId, result: 'done' }] }), { status: 200 })))
-    vi.stubGlobal('fetch', fetchMock)
-
-    render(<App />)
-    fireEvent.click(await screen.findByRole('button', { name: /sync/i }))
-
-    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/reconciliations'))).toHaveLength(1))
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    })
-    expect(store.markSynced).not.toHaveBeenCalled()
-    expect(screen.getByText(/1 queued offline scan/i)).toBeDefined()
-  })
+it('does not retire a queued occurrence for an unknown reconciliation result', async () => {
+  scanResponse = async () => new Response('', { status: 503 })
+  render(<App />); await scan()
+  const button = await screen.findByRole('button', { name: 'Sync queued scans' })
+  const before = await rawGetAll(dbName, STORE.occurrences)
+  reconcileResponse = (rows) => new Response(JSON.stringify({ results: rows.map((row) => ({ occurrence_id: row.occurrence_id, result: 'done' })) }), { status: 200 })
+  fireEvent.click(button)
+  await screen.findByText(/^Sync failed: The server answered/)
+  expect(await rawGetAll(dbName, STORE.occurrences)).toStrictEqual(before)
+  expect(screen.getByText(/1 queued offline scan awaiting sync/)).toBeDefined()
 })

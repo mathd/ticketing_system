@@ -1,457 +1,226 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import type { OccurrenceRecord, OccurrenceStore } from './occurrences'
-
-const openStore = vi.hoisted(() => vi.fn())
-
-vi.mock('./occurrences', () => ({ openOccurrenceStore: openStore }))
-vi.mock('./occurrence-owner', () => ({
-  createOccurrenceOwner: () => ({
-    ownerId: 'current-page-owner',
-    recoverOwnerId: 'previous-page-owner',
-  }),
-  replaceOccurrenceOwner: () => ({
-    ownerId: 'replacement-page-owner',
-    recoverOwnerId: 'current-page-owner',
-  }),
-}))
-
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import App from './App'
+import { instrumentTransactions, type Instrument } from './test/idb-instrument'
+import { rawGet, openRaw } from './test/raw-db'
+import { ownerLockName } from './occurrence-lock'
+import type { StorageController } from './occurrence-readiness'
+import { createTestPage, destroyAllPages, type TestPage } from './test/page-fixture'
+import { rawGetAll } from './test/raw-db'
+import { STORE } from './occurrence-store'
+const runtime = vi.hoisted(() => ({ storage: null as StorageController | null }))
+vi.mock('./occurrence-readiness', async (load) => {
+  const actual = await load<typeof import('./occurrence-readiness')>()
+  return { ...actual, get pageStorage() { return runtime.storage! } }
+})
+let page: TestPage
+let dbName: string
 
-function storedOccurrence(): OccurrenceRecord {
-  return {
-    occurrenceId: '6efae2f2-cd2d-4b9d-96cb-ec4ee048dc78',
-    qrPayload: 'signed-ticket',
-    occurredAt: '2026-09-03T20:00:00Z',
-    state: 'PENDING',
-    actuated: false,
-    createdAt: '2026-09-03T20:00:00Z',
-  }
+let instrument: Instrument | undefined
+let scanReply: () => Promise<Response>
+let feedReply: (url: string, token: string) => Promise<Response>
+let scans: Record<string, unknown>[]
+const TID = 'a8e94ed1-a02b-4cb7-a47b-a607f7b3872d'
+const feed = (ids: string[] = [], next: string | null = null) => new Response(JSON.stringify({ ticket_ids: ids, next_cursor: next }), { status: 200 })
+const accepted = () => new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-10-18T12:34:56.789Z' }), { status: 200 })
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
+}
+async function fingerprint(token: string) {
+  return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))), (b) => b.toString(16).padStart(2, '0')).join('')
+}
+beforeEach(async () => {
+  dbName = `app-storage-${crypto.randomUUID()}`
+  page = createTestPage({ dbName }); runtime.storage = page.storage; await page.ready()
+  localStorage.setItem('scanner.device-token', 'token-a')
+  scans = []; scanReply = async () => accepted(); feedReply = async () => feed()
+  vi.stubGlobal('fetch', vi.fn(async (input: Request | string, init?: RequestInit) => {
+    if (typeof input === 'string') return feedReply(input, new Headers(init?.headers).get('X-Scanner-Token')!)
+    scans.push(await input.clone().json()); return scanReply()
+  }))
+})
+afterEach(() => { cleanup(); instrument?.restore(); instrument = undefined; destroyAllPages(); localStorage.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+async function scan(value = 'credential') {
+  fireEvent.change(screen.getByLabelText('Ticket credential'), { target: { value } })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Check ticket' }).hasAttribute('disabled')).toBe(false))
+  fireEvent.submit(screen.getByRole('form', { name: 'Ticket scan' }))
+}
+async function pair(token: string) {
+  fireEvent.change(screen.getByLabelText('Pairing token'), { target: { value: token } })
+  fireEvent.submit(screen.getByRole('form', { name: 'Device pairing' }))
+  await waitFor(() => expect(localStorage.getItem('scanner.device-token')).toBe(token))
 }
 
-function fakeStore() {
-  const record = storedOccurrence()
-  const completedPulls = new Map<string, string>()
-  const revokedIDs = new Set<string>()
-  const store: OccurrenceStore = {
-    mint: vi.fn().mockResolvedValue(record),
-    mintRefusal: vi.fn().mockResolvedValue({ ...record, state: 'QUEUED', localDecision: 'revocation_refused' }),
-    isRevoked: vi.fn(async (ticketID) => revokedIDs.has(ticketID.toLowerCase())),
-    mergeRevoked: vi.fn(async (ticketIDs) => {
-      for (const ticketID of ticketIDs) revokedIDs.add(ticketID.toLowerCase())
-    }),
-    completeRevocationPull: vi.fn(async (fingerprint, completedAt) => { completedPulls.set(fingerprint, completedAt) }),
-    revocationPull: vi.fn(async (fingerprint) => {
-      const completedAt = completedPulls.get(fingerprint)
-      return completedAt ? { completedAt } : {}
-    }),
-    actuate: vi.fn().mockResolvedValue(true),
-    markQueued: vi.fn().mockResolvedValue(undefined),
-    markSynced: vi.fn().mockResolvedValue(undefined),
-    queued: vi.fn().mockResolvedValue([]),
-    get: vi.fn().mockResolvedValue(undefined),
-    close: vi.fn(),
-  }
-  return { record, store }
-}
-
-function checkTicket() {
-  fireEvent.change(screen.getByLabelText('Ticket credential'), { target: { value: 'signed-ticket' } })
-  fireEvent.click(screen.getByRole('button', { name: 'Check ticket' }))
-}
-
-function routedFetch(scan: () => Promise<Response>) {
-  return vi.fn((url: string) => String(url).includes('voided-tickets')
-    ? Promise.resolve(new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 }))
-    : scan())
-}
-
-beforeEach(() => {
-  sessionStorage.clear()
-  localStorage.setItem('scanner.device-token', 'paired-device-token')
-  vi.stubGlobal('fetch', routedFetch(() => Promise.resolve(
-    new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-09-03T20:00:01Z' }), { status: 200 }),
-  )))
+it('keeps the page owner lock across React cleanup and remount', async () => {
+  const owner = page.coordinator.ownerId
+  const first = render(<App />); first.unmount()
+  expect(await navigator.locks.request(ownerLockName(owner), { ifAvailable: true }, (lock) => !!lock)).toBe(false)
+  render(<App />); await scan(); await screen.findByRole('heading', { name: 'Accepted' })
+  expect(page.coordinator.ownerId).toBe(owner)
 })
 
-afterEach(() => {
-  localStorage.clear()
-  sessionStorage.clear()
-  cleanup()
-  openStore.mockReset()
-  vi.restoreAllMocks()
-  vi.unstubAllGlobals()
+it('disables new scan and camera inputs until an explicit storage retry succeeds', async () => {
+  page.destroy()
+  page = createTestPage({ dbName: `${dbName}-retry` }); runtime.storage = page.storage
+  const open = indexedDB.open.bind(indexedDB)
+  const failure = vi.spyOn(indexedDB, 'open').mockImplementationOnce(() => { throw new DOMException('unavailable', 'InvalidStateError') }).mockImplementation(open)
+  render(<App />)
+  await screen.findByText('Storage is unavailable or incompatible. Keep this page open and retry storage.')
+  fireEvent.change(screen.getByLabelText('Ticket credential'), { target: { value: 'not-buffered' } })
+  fireEvent.submit(screen.getByRole('form', { name: 'Ticket scan' }))
+  expect(scans).toEqual([])
+  expect(screen.getByRole('button', { name: 'Use camera' }).hasAttribute('disabled')).toBe(true)
+  fireEvent.click(screen.getByRole('button', { name: 'Retry storage' }))
+  await page.waitFor('ready')
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Check ticket' }).hasAttribute('disabled')).toBe(false))
+  expect(scans).toEqual([])
+  await scan('fresh'); await screen.findByRole('heading', { name: 'Accepted' })
+  expect(scans).toHaveLength(1); failure.mockRestore()
 })
 
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
-}
+it('sends nothing on an aborted mint and accepts a fresh presentation with the same owner', async () => {
+  const owner = page.coordinator.ownerId
+  render(<App />)
+  instrument = instrumentTransactions(); instrument.inject('abort', { mode: 'readwrite', durability: 'strict' })
+  await scan()
+  await screen.findByText('Scanner could not confirm that this scan was saved. No request was sent. Do not admit from this result. Get an operator.')
+  expect(scans).toEqual([]); expect(await rawGetAll(dbName, STORE.occurrences)).toEqual([])
+  await scan('fresh'); await screen.findByRole('heading', { name: 'Accepted' })
+  expect(page.coordinator.ownerId).toBe(owner)
+})
 
-describe('Scanner storage failures', () => {
-  it('passes the page owner and reload predecessor into the production store', async () => {
-    const { store } = fakeStore()
-    openStore.mockResolvedValue(store)
+it('keeps denial copy during a failed terminal write and repairs with the same owner', async () => {
+  render(<App />)
+  const owner = page.coordinator.ownerId
+  scanReply = async () => {
+    instrument = instrumentTransactions()
+    instrument.inject('abort', { mode: 'readwrite', durability: 'strict' })
+    return new Response(JSON.stringify({ decision: 'rejected', reason: 'refunded' }), { status: 422 })
+  }
+  await scan()
+  await screen.findByRole('heading', { name: 'Rejected' })
+  // The status latch remains authoritative even if background refresh repairs it first.
+  await waitFor(() => expect(page.coordinator.view(scans[0].occurrence_id as string)?.final?.kind).toBe('terminal'))
+  await screen.findByText('The outcome write needs repair. Keep this page open and retry storage.')
+  await waitFor(() => expect(instrument!.pendingRules()).toBe(0))
+  fireEvent.click(screen.getByRole('button', { name: 'Retry storage' }))
+  await waitFor(async () => expect(await rawGet(dbName, STORE.occurrences, scans[0].occurrence_id as string)).toMatchObject({ state: 'RESOLVED', localOutcome: { cause: 'denied', reason: 'refunded' } }))
+  expect(page.coordinator.ownerId).toBe(owner)
+  expect(screen.getByRole('alert', { name: 'Scan result' }).textContent).toBe('RejectedCredential is invalid or cannot be redeemed.')
+})
 
-    const view = render(<App />)
-    await waitFor(() => expect(openStore).toHaveBeenCalledOnce())
-    expect(openStore).toHaveBeenCalledWith('gate-occurrences', {
-      ownerId: 'current-page-owner',
-      recoverOwnerId: 'previous-page-owner',
-    })
-    view.unmount()
-    await waitFor(() => expect(store.close).toHaveBeenCalledOnce())
+it('stores every feed page and advances the fingerprint only after the final page', async () => {
+  const second = deferred<Response>()
+  feedReply = async (url) => url.includes('cursor=') ? second.promise : feed([TID], 'next page')
+  render(<App />)
+  await waitFor(async () => expect(await page.store().isRevoked(TID)).toBe(true))
+  const fp = await fingerprint('token-a')
+  expect(await page.store().revocationPull(fp)).toEqual({})
+  second.resolve(feed())
+  await waitFor(async () => expect((await page.store().revocationPull(fp)).completedAt).toEqual(expect.any(String)))
+  await waitFor(() => expect(screen.queryByText(/holds no revocation list yet/)).toBeNull())
+})
+
+it('keeps the previous completion time absent when a later feed page fails', async () => {
+  feedReply = async (url) => url.includes('cursor=') ? new Response('', { status: 503 }) : feed([TID], 'next')
+  render(<App />)
+  await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([input]) => typeof input === 'string' && input.includes('cursor='))).toHaveLength(1))
+  expect(await page.store().revocationPull(await fingerprint('token-a'))).toEqual({})
+  expect(await page.store().isRevoked(TID)).toBe(true)
+  expect(screen.getByText(/holds no revocation list yet/)).toBeDefined()
+})
+
+it('stops a feed walk after unmount without closing the page store', async () => {
+  const read = deferred<{ completedAt?: string }>()
+  const original = page.store().revocationPull.bind(page.store())
+  const spy = vi.spyOn(page.store(), 'revocationPull').mockImplementationOnce(() => read.promise).mockImplementation(original)
+  const view = render(<App />)
+  await waitFor(() => expect(spy).toHaveBeenCalled())
+  view.unmount(); read.resolve({})
+  await act(async () => { await read.promise })
+  expect(fetch).not.toHaveBeenCalled()
+  expect(page.storage.readyStore()).toBeTruthy()
+})
+
+it('allows token B to finish its feed while token A has a pending page', async () => {
+  const old = deferred<Response>()
+  feedReply = async (_, token) => token === 'token-a' ? old.promise : feed([TID])
+  scanReply = async () => new Response('', { status: 401 })
+  render(<App />)
+  await waitFor(() => expect(fetch).toHaveBeenCalled())
+  await scan(); await screen.findByLabelText('Pairing token'); await pair('token-b')
+  const b = await fingerprint('token-b')
+  await waitFor(async () => expect((await page.store().revocationPull(b)).completedAt).toEqual(expect.any(String)))
+  expect(await page.store().isRevoked(TID)).toBe(true)
+  old.resolve(new Response('', { status: 401 }))
+  await act(async () => { await old.promise })
+  expect(localStorage.getItem('scanner.device-token')).toBe('token-b')
+  expect(screen.getByLabelText('Ticket credential')).toBeDefined()
+})
+
+it('retains the no-list notice for B until B completes its own pull', async () => {
+  const pending = deferred<Response>()
+  feedReply = async (_, token) => token === 'token-b' ? pending.promise : feed()
+  scanReply = async () => new Response('', { status: 401 })
+  render(<App />)
+  await waitFor(() => expect(screen.queryByText(/holds no revocation list yet/)).toBeNull())
+  await scan(); await screen.findByLabelText('Pairing token'); await pair('token-b')
+  expect(screen.getByText(/holds no revocation list yet/)).toBeDefined()
+  pending.resolve(feed())
+  await waitFor(() => expect(screen.queryByText(/holds no revocation list yet/)).toBeNull())
+})
+
+it('cancels an old scan on an external pairing change and ignores its late 401', async () => {
+  const pending = deferred<Response>(); scanReply = () => pending.promise
+  render(<App />); await scan(); await waitFor(() => expect(scans).toHaveLength(1))
+  await act(async () => {
+    localStorage.setItem('scanner.device-token', 'token-b')
+    window.dispatchEvent(new StorageEvent('storage', { key: 'scanner.device-token', newValue: 'token-b' }))
   })
+  pending.resolve(new Response('', { status: 401 }))
+  await waitFor(async () => expect(await rawGet(dbName, STORE.occurrences, scans[0].occurrence_id as string)).toMatchObject({ state: 'RESOLVED', localOutcome: { cause: 'cancelled', requestMayHaveBeenSent: true } }))
+  expect(localStorage.getItem('scanner.device-token')).toBe('token-b')
+  expect(screen.getByLabelText('Ticket credential')).toBeDefined()
+  expect(screen.queryByRole('heading', { name: 'Pair this device' })).toBeNull()
+})
 
-  it('retries opening storage after startup failed', async () => {
-    const { store } = fakeStore()
-    openStore.mockRejectedValueOnce(new Error('IndexedDB unavailable')).mockResolvedValue(store)
+it('does not remove a newer localStorage token when the old scan gets 401', async () => {
+  scanReply = async () => { localStorage.setItem('scanner.device-token', 'token-b'); return new Response('', { status: 401 }) }
+  render(<App />); await scan(); await screen.findByLabelText('Pairing token')
+  expect(localStorage.getItem('scanner.device-token')).toBe('token-b')
+})
 
-    render(<App />)
+it('refuses a listed ticket without a live request and commits a refusal queue row', async () => {
+  await page.store().mergeRevoked([TID])
+  render(<App />)
+  const qr = `header.${btoa(JSON.stringify({ tid: TID })).replace(/=+$/, '')}.signature`
+  await scan(qr)
+  expect((await screen.findByRole('alert', { name: 'Scan result' })).textContent).toBe("Not valid for entryThis ticket is on the device's revocation list. Do not admit.")
+  await waitFor(async () => expect(await rawGetAll(dbName, STORE.occurrences)).toMatchObject([{ state: 'QUEUED', localDecision: 'revocation_refused', localOutcome: { cause: 'local_refusal' }, actuated: false, qrPayload: qr }]))
+  expect(scans).toEqual([])
+  const rows = await rawGetAll(dbName, STORE.occurrences) as Record<string, unknown>[]
+  expect(Object.hasOwn(rows[0], 'direction')).toBe(false)
+})
 
-    expect((await screen.findByRole('alert')).textContent).toMatch(/cannot save scans right now/i)
-    checkTicket()
+it('keeps a listed refusal when its mint aborts and creates no row', async () => {
+  await page.store().mergeRevoked([TID])
+  render(<App />)
+  instrument = instrumentTransactions(); instrument.inject('abort', { mode: 'readwrite', durability: 'strict' })
+  await scan(`header.${btoa(JSON.stringify({ tid: TID })).replace(/=+$/, '')}.signature`)
+  await screen.findByRole('heading', { name: 'Not valid for entry' })
+  expect(scans).toEqual([])
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Check ticket' }).hasAttribute('disabled')).toBe(false))
+  expect(await rawGetAll(dbName, STORE.occurrences)).toEqual([])
+})
 
-    expect(await screen.findByRole('heading', { name: 'Accepted' })).toBeDefined()
-    expect(openStore).toHaveBeenCalledTimes(2)
-    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/scans'))).toHaveLength(1)
-    expect(screen.queryByRole('alert')).toBeNull()
-  })
-
-  it('sends nothing when minting fails and enables a successful retry', async () => {
-    const { record, store } = fakeStore()
-    vi.mocked(store.mint).mockRejectedValueOnce(new Error('transaction failed')).mockResolvedValue(record)
-    openStore.mockResolvedValue(store)
-
-    render(<App />)
-    await waitFor(() => expect(openStore).toHaveBeenCalledOnce())
-    checkTicket()
-
-    expect((await screen.findByRole('alert')).textContent).toMatch(/no ticket was checked/i)
-    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/scans'))).toHaveLength(0)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Check ticket' }).hasAttribute('disabled')).toBe(false))
-
-    fireEvent.click(screen.getByRole('button', { name: 'Check ticket' }))
-    expect(await screen.findByRole('heading', { name: 'Accepted' })).toBeDefined()
-    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/scans'))).toHaveLength(1)
-    expect(screen.queryByRole('alert')).toBeNull()
-  })
-
-  it('keeps a server rejection when saving its terminal state fails', async () => {
-    const { store } = fakeStore()
-    const { store: recoveredStore } = fakeStore()
-    vi.mocked(store.markSynced).mockRejectedValue(new Error('transaction failed'))
-    openStore.mockResolvedValueOnce(store).mockResolvedValueOnce(recoveredStore)
-    vi.stubGlobal('fetch', routedFetch(() => Promise.resolve(
-      new Response(JSON.stringify({
-        decision: 'rejected',
-        reason: 'already_redeemed',
-        original_scan_at: '2026-09-03T19:59:00Z',
-      }), { status: 409 }),
-    )))
-
-    render(<App />)
-    await waitFor(() => expect(openStore).toHaveBeenCalledOnce())
-    checkTicket()
-
-    expect(await screen.findByRole('heading', { name: 'Rejected' })).toBeDefined()
-    expect(await screen.findByText(/already redeemed at/i)).toBeDefined()
-    const storageAlert = await screen.findByText(/could not save the server result/i)
-    expect(storageAlert.getAttribute('role')).toBe('alert')
-    expect(screen.queryByRole('heading', { name: 'Queued offline' })).toBeNull()
-    expect(screen.queryByText(/admit per venue offline policy/i)).toBeNull()
-    expect(store.markQueued).not.toHaveBeenCalled()
-
-    window.dispatchEvent(new Event('online'))
-    await waitFor(() => expect(openStore).toHaveBeenCalledTimes(2))
-    expect(store.close).toHaveBeenCalledOnce()
-    expect(openStore).toHaveBeenLastCalledWith('gate-occurrences', {
-      ownerId: 'replacement-page-owner',
-      recoverOwnerId: 'current-page-owner',
-    })
-    expect(vi.mocked(store.close).mock.invocationCallOrder[0]).toBeLessThan(
-      openStore.mock.invocationCallOrder[1],
-    )
-  })
-
-  it('pulls every feed page before saving the completion time', async () => {
-    const { store } = fakeStore()
-    openStore.mockResolvedValue(store)
-    const fetchMock = vi.fn((url: string) => Promise.resolve(String(url).includes('cursor=')
-      ? new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 })
-      : new Response(JSON.stringify({ ticket_ids: ['a8e94ed1-a02b-4cb7-a47b-a607f7b3872d'], next_cursor: 'next page' }), { status: 200 })))
-    vi.stubGlobal('fetch', fetchMock)
-
-    render(<App />)
-
-    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('voided-tickets'))).toHaveLength(2))
-    expect(store.mergeRevoked).toHaveBeenCalledTimes(2)
-    expect(store.completeRevocationPull).toHaveBeenCalledOnce()
-    expect(screen.queryByText(/holds no revocation list yet/i)).toBeNull()
-  })
-
-  it('does not save a completion time when a later page fails', async () => {
-    const { store } = fakeStore()
-    openStore.mockResolvedValue(store)
-    const fetchMock = vi.fn((url: string) => Promise.resolve(String(url).includes('cursor=')
-      ? new Response('unavailable', { status: 503 })
-      : new Response(JSON.stringify({ ticket_ids: [], next_cursor: 'next page' }), { status: 200 })))
-    vi.stubGlobal('fetch', fetchMock)
-
-    render(<App />)
-
-    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('voided-tickets'))).toHaveLength(2))
-    expect(store.mergeRevoked).toHaveBeenCalledOnce()
-    expect(store.completeRevocationPull).not.toHaveBeenCalled()
-    expect(screen.getByText(/holds no revocation list yet/i)).toBeDefined()
-  })
-
-  // A pull must not outlive its screen. Without this, a closed scanner's walk goes
-  // on to call fetch, and in this suite it called the NEXT test's fetch stub.
-  it('stops a revocation pull when the scanner closes', async () => {
-    const { store } = fakeStore()
-    let release!: (pull: { completedAt?: string }) => void
-    vi.mocked(store.revocationPull).mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
-    openStore.mockResolvedValue(store)
-    const fetchMock = routedFetch(() => Promise.resolve(new Response('{}', { status: 200 })))
-    vi.stubGlobal('fetch', fetchMock)
-
-    const { unmount } = render(<App />)
-    await waitFor(() => expect(store.revocationPull).toHaveBeenCalled())
-    unmount()
-    release({})
-    await new Promise((resolve) => setTimeout(resolve, 0))
-
-    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('voided-tickets'))).toHaveLength(0)
-  })
-
-  it('finishes a new token pull while an old token request is pending', async () => {
-    const { store } = fakeStore()
-    openStore.mockResolvedValue(store)
-    const completions = new Map<string, string>()
-    vi.mocked(store.mergeRevoked).mockResolvedValue(undefined)
-    vi.mocked(store.completeRevocationPull).mockImplementation(async (fingerprint, completedAt) => {
-      completions.set(fingerprint, completedAt)
-    })
-    vi.mocked(store.revocationPull).mockImplementation(async (fingerprint) => {
-      const completedAt = completions.get(fingerprint)
-      return completedAt ? { completedAt } : {}
-    })
-    let releaseFirst!: (response: Response) => void
-    const firstPage = new Promise<Response>((resolve) => { releaseFirst = resolve })
-    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
-      if (String(url).endsWith('/scans')) return Promise.resolve(new Response(JSON.stringify({ error: 'not paired' }), { status: 401 }))
-      if (String(url).includes('voided-tickets')) {
-        const token = new Headers(init?.headers).get('X-Scanner-Token')
-        if (token === 'paired-device-token') return firstPage
-        if (token === 'new-device-token' && !String(url).includes('cursor=')) {
-          return Promise.resolve(new Response(JSON.stringify({ ticket_ids: ['3f8fb96c-44f9-4a66-8c12-7d91cfae4d72'], next_cursor: 'next' }), { status: 200 }))
-        }
-        if (token === 'new-device-token') return Promise.resolve(new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 }))
-      }
-      return Promise.resolve(new Response('{}', { status: 200 }))
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
-    render(<App />)
-    await waitFor(() => expect(fetchMock.mock.calls.filter(([url, init]) =>
-      String(url).includes('voided-tickets') && new Headers(init?.headers).get('X-Scanner-Token') === 'paired-device-token',
-    )).toHaveLength(1))
-    checkTicket()
-    await screen.findByLabelText('Pairing token')
-    fireEvent.change(screen.getByLabelText('Pairing token'), { target: { value: 'new-device-token' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Pair device' }))
-    const newFingerprint = await sha256Hex('new-device-token')
-    await waitFor(() => expect(localStorage.getItem('scanner.device-token')).toBe('new-device-token'))
-    await waitFor(() => expect(fetchMock.mock.calls.filter(([url, init]) =>
-      String(url).includes('voided-tickets') && new Headers(init?.headers).get('X-Scanner-Token') === 'new-device-token',
-    )).toHaveLength(2))
-    const newTokenCalls = fetchMock.mock.calls.filter(([url, init]) =>
-      String(url).includes('voided-tickets') && new Headers(init?.headers).get('X-Scanner-Token') === 'new-device-token',
-    )
-    expect(newTokenCalls).toHaveLength(2)
-    expect(fetchMock.mock.calls.filter(([url, init]) =>
-      String(url).includes('voided-tickets') && new Headers(init?.headers).get('X-Scanner-Token') === 'paired-device-token',
-    )).toHaveLength(1)
-    const oldFingerprint = await sha256Hex('paired-device-token')
-    expect(store.mergeRevoked).toHaveBeenCalledWith(['3f8fb96c-44f9-4a66-8c12-7d91cfae4d72'])
-    await waitFor(() => expect(store.completeRevocationPull).toHaveBeenCalledWith(newFingerprint, expect.any(String)))
-    expect(completions.get(newFingerprint)).toEqual(expect.any(String))
-
-    releaseFirst(new Response(JSON.stringify({ ticket_ids: ['a8e94ed1-a02b-4cb7-a47b-a607f7b3872d'], next_cursor: null }), { status: 200 }))
-    await waitFor(() => expect(store.mergeRevoked).toHaveBeenCalledTimes(3))
-    expect(store.mergeRevoked).toHaveBeenCalledWith(['a8e94ed1-a02b-4cb7-a47b-a607f7b3872d'])
-    await waitFor(() => expect(store.completeRevocationPull).toHaveBeenCalledWith(oldFingerprint, expect.any(String)))
-    expect(completions.get(oldFingerprint)).toEqual(expect.any(String))
-  })
-
-  it('returns to pairing when the feed refuses the current token', async () => {
-    const { store } = fakeStore()
-    openStore.mockResolvedValue(store)
-    vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve(String(url).includes('voided-tickets')
-      ? new Response(JSON.stringify({ error: 'not paired' }), { status: 401 })
-      : new Response('{}', { status: 200 }))))
-
-    render(<App />)
-
-    expect(await screen.findByRole('heading', { name: 'Pair this device' })).toBeDefined()
-    expect(localStorage.getItem('scanner.device-token')).toBeNull()
-    expect(store.completeRevocationPull).not.toHaveBeenCalled()
-  })
-
-  it('ignores a late 401 for token A after this tab pairs with token B', async () => {
-    const { store } = fakeStore()
-    vi.mocked(store.queued).mockResolvedValue([storedOccurrence()])
-    openStore.mockResolvedValue(store)
-    let rejectOldScan!: (response: Response) => void
-    const oldScan = new Promise<Response>((resolve) => { rejectOldScan = resolve })
-    const fetchMock = vi.fn((url: string) => {
-      if (String(url).includes('voided-tickets')) {
-        return Promise.resolve(new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 }))
-      }
-      if (String(url).endsWith('/scans')) return oldScan
-      if (String(url).endsWith('/reconciliations')) {
-        return Promise.resolve(new Response(JSON.stringify({ error: 'not paired' }), { status: 401 }))
-      }
-      return Promise.resolve(new Response('{}', { status: 200 }))
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
-    render(<App />)
-    checkTicket()
-    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/scans'))).toBe(true))
-    fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
-    fireEvent.change(await screen.findByLabelText('Pairing token'), { target: { value: 'new-device-token' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Pair device' }))
-    await waitFor(() => expect(localStorage.getItem('scanner.device-token')).toBe('new-device-token'))
-    expect(await screen.findByLabelText('Ticket credential')).toBeDefined()
-
-    rejectOldScan(new Response(JSON.stringify({ error: 'not paired' }), { status: 401 }))
-    // B's scan screen is already up, so waiting for it proves nothing. Wait until the
-    // old 401 handler has run (it queues the occurrence first, then unpairs), and one
-    // more task so its unpair step has run too.
-    await waitFor(() => expect(store.markQueued).toHaveBeenCalled())
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(screen.getByLabelText('Ticket credential')).toBeDefined()
-    expect(localStorage.getItem('scanner.device-token')).toBe('new-device-token')
-    expect(screen.queryByRole('heading', { name: 'Pair this device' })).toBeNull()
-    expect(screen.queryByText(/this device is not paired/i)).toBeNull()
-  })
-
-  it('shows the no-list notice for token B until B completes its own pull', async () => {
-    const { store } = fakeStore()
-    openStore.mockResolvedValue(store)
-    const completed = new Map([[await sha256Hex('paired-device-token'), '2026-09-25T12:00:00Z']])
-    vi.mocked(store.revocationPull).mockImplementation(async (fingerprint) => {
-      const completedAt = completed.get(fingerprint)
-      return completedAt ? { completedAt } : {}
-    })
-    let finishNewPull!: (response: Response) => void
-    const newPullResponse = new Promise<Response>((resolve) => { finishNewPull = resolve })
-    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
-      if (String(url).includes('voided-tickets')) {
-        const token = new Headers(init?.headers).get('X-Scanner-Token')
-        if (token === 'new-device-token') return newPullResponse
-        return Promise.resolve(new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 }))
-      }
-      return Promise.resolve(new Response(JSON.stringify({ error: 'not paired' }), { status: 401 }))
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
-    render(<App />)
-    await waitFor(() => expect(store.completeRevocationPull).toHaveBeenCalled())
-    checkTicket()
-    fireEvent.change(await screen.findByLabelText('Pairing token'), { target: { value: 'new-device-token' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Pair device' }))
-
-    expect(await screen.findByText(/holds no revocation list yet/i)).toBeDefined()
-    const newFingerprint = await sha256Hex('new-device-token')
-    expect(store.revocationPull).toHaveBeenCalledWith(newFingerprint)
-    finishNewPull(new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 }))
-    await waitFor(() => expect(screen.queryByText(/holds no revocation list yet/i)).toBeNull())
-  })
-
-  it('keeps a newer local pairing when an old scan token gets a 401', async () => {
-    const { store } = fakeStore()
-    openStore.mockResolvedValue(store)
-    const fetchMock = vi.fn((url: string) => {
-      if (String(url).includes('voided-tickets')) {
-        return Promise.resolve(new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 }))
-      }
-      localStorage.setItem('scanner.device-token', 'new-device-token')
-      return Promise.resolve(new Response(JSON.stringify({ error: 'not paired' }), { status: 401 }))
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
-    render(<App />)
-    await waitFor(() => expect(store.revocationPull).toHaveBeenCalled())
-    checkTicket()
-
-    await screen.findByLabelText('Pairing token')
-    expect(localStorage.getItem('scanner.device-token')).toBe('new-device-token')
-  })
-
-  it('refuses a listed tid before scan or actuation and queues one refusal row', async () => {
-    const { store } = fakeStore()
-    const rows: OccurrenceRecord[] = []
-    let showSeededQueue = true
-    const tid = 'a8e94ed1-a02b-4cb7-a47b-a607f7b3872d'
-    await store.mergeRevoked([tid])
-    vi.mocked(store.mintRefusal).mockImplementation(async (qrPayload, occurredAt) => {
-      const row = { ...storedOccurrence(), qrPayload, occurredAt, localDecision: 'revocation_refused' as const, state: 'QUEUED' as const }
-      rows.push(row)
-      return row
-    })
-    vi.mocked(store.queued).mockImplementation(async () => showSeededQueue
-      ? [storedOccurrence()]
-      : rows.filter((row) => row.state === 'QUEUED'))
-    openStore.mockResolvedValue(store)
-    const fetchMock = vi.fn((url: string, _init?: RequestInit) => Promise.resolve(String(url).endsWith('/reconciliations')
-      ? new Response(JSON.stringify({ results: [{ occurrence_id: rows[0]?.occurrenceId, result: 'recorded' }] }), { status: 200 })
-      : new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 })))
-    vi.stubGlobal('fetch', fetchMock)
-
-    localStorage.clear()
-    render(<App />)
-    fireEvent.change(await screen.findByLabelText('Pairing token'), { target: { value: 'new-device-token' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Pair device' }))
-    await waitFor(() => expect(localStorage.getItem('scanner.device-token')).toBe('new-device-token'))
-    await screen.findByLabelText('Ticket credential')
-    showSeededQueue = false
-    const claims = btoa(JSON.stringify({ tid })).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')
-    fireEvent.change(screen.getByLabelText('Ticket credential'), { target: { value: `header.${claims}.signature` } })
-    fireEvent.click(screen.getByRole('button', { name: 'Check ticket' }))
-
-    expect(await screen.findByRole('heading', { name: 'Not valid for entry' })).toBeDefined()
-    expect(await screen.findByText(/on the device's revocation list\. Do not admit\./i)).toBeDefined()
-    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/scans'))).toHaveLength(0)
-    expect(store.actuate).not.toHaveBeenCalled()
-    expect(store.mintRefusal).toHaveBeenCalledOnce()
-    expect(store.markQueued).not.toHaveBeenCalled()
-    expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatchObject({ state: 'QUEUED', actuated: false, localDecision: 'revocation_refused' })
-    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/reconciliations'))).toHaveLength(1))
-    const request = JSON.parse((fetchMock.mock.calls.find(([url]) => String(url).endsWith('/reconciliations'))![1] as RequestInit).body as string)
-    expect(request.occurrences[0].local_decision).toBe('revocation_refused')
-  })
-
-  it('shows a listed refusal when the one-step refusal write fails', async () => {
-    const { store } = fakeStore()
-    vi.mocked(store.isRevoked).mockResolvedValue(true)
-    vi.mocked(store.mintRefusal).mockRejectedValue(new Error('transaction failed'))
-    openStore.mockResolvedValue(store)
-    const fetchMock = vi.fn((_url: string) => Promise.resolve(new Response('{}', { status: 200 })))
-    vi.stubGlobal('fetch', fetchMock)
-
-    render(<App />)
-    const tid = 'a8e94ed1-a02b-4cb7-a47b-a607f7b3872d'
-    const claims = btoa(JSON.stringify({ tid })).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')
-    fireEvent.change(screen.getByLabelText('Ticket credential'), { target: { value: `header.${claims}.signature` } })
-    fireEvent.click(screen.getByRole('button', { name: 'Check ticket' }))
-
-    expect(await screen.findByRole('heading', { name: 'Not valid for entry' })).toBeDefined()
-    expect((await screen.findByText(/could not save the refusal/i)).textContent).toMatch(/could not save the refusal/i)
-    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/scans'))).toHaveLength(0)
-    expect(store.actuate).not.toHaveBeenCalled()
-  })
+it('keeps an accepted result after version change and disables new admission controls', async () => {
+  render(<App />); await scan(); await screen.findByRole('heading', { name: 'Accepted' })
+  const upgrade = await openRaw(dbName, 4)
+  upgrade.close()
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Check ticket' }).hasAttribute('disabled')).toBe(true))
+  expect(screen.getByRole('heading', { name: 'Accepted' })).toBeDefined()
+  expect(screen.getByText('Scanner storage is not ready. No ticket was checked.')).toBeDefined()
+  expect(scans).toHaveLength(1)
 })

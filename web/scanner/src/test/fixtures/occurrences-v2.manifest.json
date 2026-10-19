@@ -1,0 +1,9 @@
+{
+  "description": "Frozen copy of the version-2 occurrence store that TKT-558 replaces. Test-only. Do not edit the source file; the barrier tests check these bytes.",
+  "file": "occurrences-v2.frozen.ts",
+  "sourcePath": "web/scanner/src/occurrences.ts",
+  "baselineCommit": "ec336db814d719130cdefd263ca84be73b9f06e2",
+  "lastChangeCommit": "53fcdcb89fca0c42cee4291047a3f298d2eb4d86",
+  "sha256": "0b8ea0c89c4f75ece7ce306d27d1a28ec4824365adef154faac172c624413bfc",
+  "databaseVersion": 2
+}
