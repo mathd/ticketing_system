@@ -214,3 +214,71 @@ it('keeps the captured credential when the rendered field changes during mint', 
     expect(batches).toStrictEqual([[{qr_payload:'credential',occurrence_id:row.occurrenceId,occurred_at:row.occurredAt,event_type:'entry'}]])
   }finally{held.release();instrument.restore()}
 })
+
+import { productionScanClock, productionScanScheduler } from './scan-clock'
+import { OFFLINE_INSTRUCTION } from './scan-result'
+
+function controlledClock() {
+  let elapsed = 0
+  let next = 0
+  const timers = new Map<number, () => void>()
+  vi.spyOn(productionScanClock, 'wall').mockImplementation(() => 100000 + elapsed)
+  vi.spyOn(productionScanClock, 'monotonic').mockImplementation(() => 100 + elapsed)
+  vi.spyOn(productionScanScheduler, 'set').mockImplementation((callback) => { const id = ++next; timers.set(id, callback); return id })
+  vi.spyOn(productionScanScheduler, 'clear').mockImplementation((id) => { timers.delete(id as number) })
+  return {
+    advance: (value: number) => { elapsed = value },
+    wake: () => { const callbacks = [...timers.values()]; timers.clear(); callbacks.forEach((callback) => callback()) },
+  }
+}
+
+it.each([409, 422, 200, 'headers', 502, 503, 504, 'native'] as const)('timed %s reaches actual App sync only through the eligible control', async (status) => {
+  const control = await queueControl()
+  const clock = controlledClock()
+  let finish!: (value: unknown) => void
+  let bodyStarted = false
+  const r = new Response('', { status: typeof status === 'number' ? status : 200 })
+  if (status === 409 || status === 422 || status === 200) {
+    vi.spyOn(r, 'json').mockImplementation(() => { bodyStarted = true; return new Promise((resolve) => { finish = resolve }) })
+    scanReply = async () => r
+  } else scanReply = () => new Promise<Response>((resolve, reject) => {
+    finish = () => { if (status === 'native') reject(new TypeError('Failed to fetch')); else resolve(r) }
+  })
+  render(<App />); await scan()
+  await waitFor(() => expect(scans).toHaveLength(1))
+  if (typeof status === 'number' && status < 500) await waitFor(() => expect(bodyStarted).toBe(true))
+  await act(async () => {
+    clock.advance(30000)
+    if (status === 502 || status === 503 || status === 504 || status === 'native') finish(undefined)
+    else clock.wake()
+  })
+  await waitFor(() => expect(screen.getByRole('alert', { name: 'Scan result' })).toBeDefined())
+  expect(screen.queryByText(OFFLINE_INSTRUCTION)).toBeNull()
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Check ticket' }).hasAttribute('disabled')).toBe(false))
+  await act(async () => { await page.coordinator.persist(scans[0].occurrence_id as string) })
+  fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
+  await screen.findByText('Synced 1 offline scan(s).')
+  expect(batches.flat().map((row) => row.occurrence_id)).toEqual([control.occurrenceId])
+  expect(await rawGet(dbName, STORE.occurrences, scans[0].occurrence_id as string)).toMatchObject({ state: 'RESOLVED' })
+  if (status === 409 || status === 422 || status === 200) await act(async () => { finish({ decision: 'accepted', scanned_at: '2026-10-18T09:00:01Z' }) })
+  expect(screen.queryByText(OFFLINE_INSTRUCTION)).toBeNull()
+})
+
+it('flushes the offline instruction to the DOM before the outcome transaction starts', async () => {
+  controlledClock()
+  render(<App />)
+  let armed = false
+  const observations: Array<{ text: string | null; disabled: boolean }> = []
+  scanReply = async () => { armed = true; return new Response('', { status: 503 }) }
+  const transaction = IDBDatabase.prototype.transaction
+  vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (this: IDBDatabase, ...args: Parameters<typeof transaction>) {
+    if (armed && args[1] === 'readwrite') {
+      observations.push({ text: screen.queryByRole('status', { name: 'Scan result' })?.textContent ?? null,
+        disabled: screen.getByRole('button', { name: 'Check ticket' }).hasAttribute('disabled') })
+    }
+    return Reflect.apply(transaction, this, args)
+  })
+  await scan(); await waitFor(() => expect(observations.length).toBeGreaterThan(0))
+  expect(observations[0].text).toContain(OFFLINE_INSTRUCTION)
+  expect(observations[0].disabled).toBe(false)
+})

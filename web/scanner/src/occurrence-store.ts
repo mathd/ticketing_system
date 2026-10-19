@@ -421,7 +421,7 @@ export function createOccurrenceStore(options: OccurrenceStoreOptions): Occurren
         if (row.ownerId !== coordinator.ownerId) return { status: 'foreign' }
         const type = scanType(row)
         const refusalDecision = decision.kind === 'queue' && decision.outcome.cause === 'local_refusal'
-        const refusalCancellation = decision.kind === 'terminal' && decision.outcome.cause === 'cancelled'
+        const refusalCancellation = decision.kind === 'terminal' && (decision.outcome.cause === 'cancelled' || (decision.outcome.cause === 'stopped' && decision.outcome.checkpoint === 'send'))
           && decision.outcome.requestMayHaveBeenSent === false
         if (type === 'refusal' ? !refusalDecision && !refusalCancellation : refusalDecision) return { status: 'ineligible', why: 'decision does not match the scan type' }
         if (row.state === 'PENDING') {

@@ -1634,11 +1634,23 @@ sync result.
 
 #### Remaining limits
 
-There is no scan clock or stalled-body deadline until TKT-559. A slow store or answer can still give
-a late instruction. Denial headers start a terminal unknown-reason write while the body is read.
-Once committed, that terminal record stays protected through reload. There is no prompt result
-deadline. A pre-headers stall remains pending. A slow decided refusal hidden by the gateway write
-timeout can still select the network fallback until the deadline work ships.
+TKT-559 checks both wall and monotonic elapsed time from submission. Mint and send must finish
+before 3 s; an admission decision must finish before 30 s. Equality is late. Invalid readings,
+monotonic regression or more than 1000 ms disagreement stop the scan. Timers only wake the
+controller; each continuation checks elapsed time even if its timer was delayed. A stalled denial
+keeps the refusal with its reason unavailable. A stalled accepted body or unanswered request gives
+an unconfirmed result. A late mark never opens; a mark that commits still retains ACTUATED.
+An in-time offline instruction is inserted into the DOM synchronously before its outcome write.
+The controls become usable while that same decision continues saving. This does not guarantee a
+browser paint by a physical deadline. Two clock faults that conceal each other remain undetectable,
+and physical-device sleep behavior remains unverified.
+
+A gateway-hidden refusal cannot select the offline fallback at or after 30 s. A classified native
+network rejection or a 502/503/504 before that limit can still select it with occurrence uncertainty U.
+A deadline abort does not undo an Access write. A result that already appeared cannot change because
+its persistence finishes late. Keep the page open and retry storage when a repair warning appears.
+Old TKT-558 tabs warn on the new stopped-row tag and exclude those rows from sync. Refresh those
+tabs to load the current scanner. This is separate from the version-3 barrier for older databases.
 
 A failed terminal write followed by actual page loss can still recover as a false admission.
 Recovery can record an unsent attempt. A local actuation reservation can exist without opening.
@@ -1646,12 +1658,15 @@ A `500` can hide an Access commit. No client result proves physical passage. The
 fallback retains uncertainty about earlier transparent attempts and has no proxy-provenance switch.
 Any intermediary before the gateway needs a new ADR and qualification before deployment.
 
-New scans use strict durability for mint and final outcome transactions, at most two strict commits
-before a result. A denial can use one or two strict decision commits, including optional reason
-hardening. Renewal uses default durability. These settings do not prove power-loss behavior, which
-has not been verified on Chrome. Latency has not been measured on a venue-class device. Time and
-latency qualification remain pending. Venue use requires TKT-560 Done and the owner's selection of
-the pre-decision bound and acceptable offline-spill rate. Exit mode remains pending.
+New scans use strict durability for mint, mark and final outcome transactions. The mint and mark
+must commit before online acceptance; offline publication precedes its final write. A denial can
+use one or two strict decision commits, including optional reason hardening. Renewal uses default
+durability. The host Chrome run records 100 strict mint and 100 strict mark completions after ten
+warm-up scans in [the raw measurements](sprints/S-2/evidence/TKT-559-strict-commits.json).
+Run `make browser` to reproduce. These observations do not qualify a venue device or prove power-loss
+behavior. The 3 s allowance remains an owner rule. Venue use requires TKT-560 Done and the owner's
+selection of the provisional pre-decision bound and acceptable offline-spill rate. Exit mode remains
+pending.
 
 #### Access response contract (ticket 0, TKT-557)
 
@@ -1734,8 +1749,8 @@ only the limitations that it fixes.
 |---|---|---|
 | 1, TKT-556 (documentation only) | ADR-085, the ADR-025 §3 and ADR-066 §8 amendment notes, this section | Nothing in the scanner. |
 | 0, Access and gateway, **shipped (TKT-557)** | Device lookup answers `401` (not enrolled), `503` (lookup unavailable) or `500` (lookup failed) on scans, reconciliation and the voided feed; bounded pre-decision `503` (PROVISIONAL 500 ms, TKT-560 qualifies it); panic recovery with an exact `500`; write-timeout and `sslmode=disable` startup checks | The Entry client now keeps `401` and `500` terminal. Exactly `502`/`503`/`504` can select the offline instruction. Sync keeps eligible scans and the feed keeps its list and completed-pull time on these errors. Venue use after TKT-558 waits for TKT-560 Done and the owner's bound and offline-spill selection. |
-| 2, Entry outcome core, shipped in TKT-558 | Terminal `401`, `409`/`422`, `500` and unreadable answers; repair of failed writes; storage version 3 barrier; held legacy scans with a count, a warning, an export and an acknowledgement; recovery notices on every page | Re-pair and rescan after a `401`. The export file contains ticket credentials: keep it safe and do not share it. Scans queued by main before the upgrade still sync, and some of them can be false admissions; their ids are in the export. There is still no scan clock: a slow refusal that the gateway write timeout hides can still show the offline result until ticket 3. |
-| 3, Scan time | 3 s send limit and 30 s decision limit, two clocks, stopped-scan and slow-answer results | A scan stopped by the limit is never synced. A crash after a failed write can still recover the scan; the next page shows a recovery notice. |
+| 2, Entry outcome core, shipped in TKT-558 | Terminal `401`, `409`/`422`, `500` and unreadable answers; repair of failed writes; storage version 3 barrier; held legacy scans with a count, a warning, an export and an acknowledgement; recovery notices on every page | Re-pair and rescan after a `401`. The export file contains ticket credentials: keep it safe and do not share it. Scans queued by main before the upgrade still sync, and some of them can be false admissions; their ids are in the export. This untimed core was followed by TKT-559. Its Entry clock now prevents offline fallback at or after 30 s; an earlier classified fallback retains occurrence U. |
+| 3, Entry scan time, shipped in TKT-559 | 3 s send limit and 30 s decision limit, two clocks, stopped-scan and slow-answer results | A scan stopped by the limit is never synced. A crash after a failed write can still recover the scan; the next page shows a recovery notice. |
 | 4, Pass Exit mode | Entry/Exit mode, Exit results with "the holder may leave", revoked-ticket Exit with no record | A revoked ticket's Exit is not recorded, so the next Entry on a requires-exit pass can answer `exit_required`. |
 
 ## Finding misconfigured rule currencies (TKT-243)

@@ -35,6 +35,7 @@ export type TerminalOutcome =
   | { family: 'terminal'; cause: 'mark_failure' }
   | { family: 'terminal'; cause: 'cancelled'; requestMayHaveBeenSent: boolean }
   | { family: 'terminal'; cause: 'mint_unconfirmed' }
+  | { family: 'terminal'; cause: 'stopped'; checkpoint: 'send' | 'decision'; reason: 'deadline' | 'clock' | 'failure'; requestMayHaveBeenSent: boolean }
 
 /** The own-row actuation reservation. It does not prove that the gate opened. */
 export type ActuationOutcome = { family: 'actuation'; cause: 'reserved' }
@@ -111,6 +112,11 @@ function terminalOutcomeProblem(outcome: Record<string, unknown>): string | null
         && status !== 200 && status !== 401 && status !== 409 && status !== 422
         ? null
         : 'an unconfirmed status cannot be a classified status'
+    case 'stopped':
+      if (outcome.checkpoint !== 'send' && outcome.checkpoint !== 'decision') return 'unknown stop checkpoint'
+      if (!['deadline', 'clock', 'failure'].includes(outcome.reason as string)) return 'unknown stop reason'
+      if (outcome.checkpoint === 'send' && outcome.requestMayHaveBeenSent !== false) return 'send stop cannot have sent a request'
+      return typeof outcome.requestMayHaveBeenSent === 'boolean' ? null : 'request progress is required'
     case 'local_failure':
     case 'cancelled':
       return typeof outcome.requestMayHaveBeenSent === 'boolean' ? null : 'request progress is required'
@@ -173,8 +179,8 @@ export function readCurrentRecord(raw: unknown): RecordRead {
 
   if (outcome.family === 'terminal') {
     if (state !== 'RESOLVED') return fail('a terminal outcome needs RESOLVED')
-    if (type === 'refusal' && !(outcome.cause === 'cancelled' && outcome.requestMayHaveBeenSent === false)) {
-      return fail('a refusal permits only pre-send terminal cancellation')
+    if (type === 'refusal' && !((outcome.cause === 'cancelled' || (outcome.cause === 'stopped' && outcome.checkpoint === 'send')) && outcome.requestMayHaveBeenSent === false)) {
+      return fail('a refusal permits only a pre-send terminal stop')
     }
     if (hasResult) return fail('a terminal row has no reconcile result')
     const problem = terminalOutcomeProblem(outcome)
