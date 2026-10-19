@@ -57,7 +57,7 @@ window.__predecessorProof = async raw => {
     const context = await browser.newContext({ baseURL: BASE }); await installProbe(context);
     const pending = await context.newPage(), queued = await context.newPage(), recovered = await context.newPage();
     const leaseTime = new Date();
-    for (const page of [pending, queued, recovered]) await page.clock.setFixedTime(leaseTime);
+    for (const page of [pending, queued, recovered]) await page.addInitScript(now => { Date.now = () => now; }, leaseTime.getTime());
     try {
       await pair(pending, token); await pending.getByRole('radio', { name: 'Exit', exact: true }).check();
       await pending.evaluate(() => { const native=fetch;window.fetch=(input,init)=>input instanceof Request&&new URL(input.url).pathname==='/api/access/scans'?new Promise(()=>{}):native(input,init); });
@@ -74,7 +74,9 @@ window.__predecessorProof = async raw => {
       await submit(recovered, fixture().credential);
       await recovered.waitForFunction(() => window.__tkt558IdbProbe.events.some(event => event.state === 'PENDING' && event.event === 'complete'));
       const recoveryId = (await read(recovered)).find(row => row.occurrenceId !== original.occurrenceId && row.state === 'PENDING').occurrenceId;
-      await recovered.reload(); await recovered.getByRole('region', { name: `Recovered scan ${recoveryId}` }).waitFor();
+      await recovered.reload();
+      assert.equal(await recovered.evaluate(() => performance.getEntriesByType('navigation')[0]?.type), 'reload');
+      await recovered.getByRole('region', { name: `Recovered scan ${recoveryId}` }).waitFor();
       const before = await read(recovered); await recovered.close();
       const old = await context.newPage(); await old.clock.install({ time: leaseTime }); await old.clock.fastForward(31000);
       const loaded = [], errors = [], scans = [], syncs = [];
@@ -99,7 +101,7 @@ window.__predecessorProof = async raw => {
       assert.deepEqual(await read(old), before); assert.equal(scans.length, 0); assert.equal(syncs.length, 0);
       assert.deepEqual(errors, []); assert.ok(loaded.some(row => row.path.endsWith('.js')));
       await old.close();
-      const current = await context.newPage(); await current.clock.setFixedTime(leaseTime); await pair(current, token);
+      const current = await context.newPage(); await current.addInitScript(now => { Date.now = () => now; }, leaseTime.getTime()); await pair(current, token);
       assert.ok(original.leaseExpiresAt > await current.evaluate(() => Date.now()));
       assert.deepEqual(await read(current), before);
       const eligible = before.filter(row => row.state === 'QUEUED');
