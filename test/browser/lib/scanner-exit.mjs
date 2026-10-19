@@ -30,6 +30,9 @@ export async function exitJourneys({ browser, BASE, PG, token, fixture, facts, c
     return { request: requests.at(-1), response: body };
   };
   const row = id => read(page).then(rows => rows.find(row => row.occurrenceId === id));
+  const exactFact = (ticket, request, occurredAt) => {
+    assert.equal(Number(sql(PG, 'access', `SELECT count(*) FROM lifecycle_events WHERE ticket_id='${ticket}' AND id='${request.occurrence_id}' AND event_type='${request.direction}' AND occurred_at='${occurredAt}'::timestamptz`)), 1);
+  };
   const waitState = async (id, state) => page.waitForFunction(({ id, state }) => window.__tkt558IdbProbe.events.some(event => event.id === id && event.state === state && event.event === 'complete'), { id, state });
   try {
     await pair(page, token);
@@ -42,6 +45,7 @@ export async function exitJourneys({ browser, BASE, PG, token, fixture, facts, c
     assert.equal(exit.request.direction, 'exit');
     assert.deepEqual(await row(exit.request.occurrence_id), { ...(await row(exit.request.occurrence_id)), direction: 'exit', state: 'ACTUATED', actuated: true });
     const reentry = await send(ticket, 'Entry', 'Accepted');
+    for (const scan of [entry, exit, reentry]) exactFact(ticket.ticket, scan.request, scan.response.scanned_at);
     assert.equal(facts(ticket.ticket).length, 3);
     assert.equal(reentry.request.direction, 'entry');
     check('TKT-399 Chrome Entry, Exit and re-entry create exact Access directions and server times', true);
@@ -61,6 +65,7 @@ export async function exitJourneys({ browser, BASE, PG, token, fixture, facts, c
     assert.deepEqual(batches.at(-1), [{ occurrence_id: offline.occurrence_id, qr_payload: ticket.credential, occurred_at: offline.occurred_at, event_type: 'exit' }]);
     assert.deepEqual(await row(offline.occurrence_id), { ...queued, state: 'SYNCED', result: 'recorded' });
     assert.deepEqual(facts(ticket.ticket).find(fact => fact.occurrence_id === offline.occurrence_id), { occurrence_id: offline.occurrence_id, event_type: 'exit', occurred_at: offline.occurred_at });
+    exactFact(ticket.ticket, offline, offline.occurred_at);
     const count = batches.length;
     await page.evaluate(() => {
       window.__exitQueueReads = 0;
@@ -138,6 +143,7 @@ export async function exitJourneys({ browser, BASE, PG, token, fixture, facts, c
     assert.deepEqual((await sent).postDataJSON().occurrences, [{ occurrence_id: pending.occurrenceId, qr_payload: ticket.credential, occurred_at: pending.occurredAt, event_type: 'exit' }]);
     await reload.getByText('Synced 1 offline scan(s).', { exact: true }).waitFor();
     assert.deepEqual(facts(ticket.ticket), [{ occurrence_id: pending.occurrenceId, event_type: 'exit', occurred_at: pending.occurredAt }]);
+    exactFact(ticket.ticket, { occurrence_id: pending.occurrenceId, direction: 'exit' }, pending.occurredAt);
     check('TKT-399 genuine reload recovers exact Exit as an uncertainty notice and reconciles its claimed time', true);
   } finally { await reloadContext.close(); }
 }
