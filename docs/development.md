@@ -1665,8 +1665,56 @@ durability. The host Chrome run records 100 strict mint and 100 strict mark comp
 warm-up scans in [the raw measurements](sprints/S-2/evidence/TKT-559-strict-commits.json).
 Run `make browser` to reproduce. These observations do not qualify a venue device or prove power-loss
 behavior. The 3 s allowance remains an owner rule. Venue use requires TKT-560 Done and the owner's
-selection of the provisional pre-decision bound and acceptable offline-spill rate. Exit mode remains
-pending.
+selection of the provisional pre-decision bound and acceptable offline-spill rate.
+
+#### Entry and Exit controls, TKT-399
+
+Select **Entry** or **Exit** in **Scan direction** before scanning. The page starts in Entry.
+Pairing, replacing or clearing a device token returns it to Entry. This includes a scan, feed or
+reconciliation `401`. The selection lasts only for this page. Controls are disabled while a scan
+waits or storage is not ready. A mode or pairing change stops the camera and clears stale camera
+feedback. A scan keeps its captured direction, credential, id and time through writes and sync.
+Changing mode after an offline Exit does not turn the saved Exit into an Entry.
+
+Exit results have a neutral status style. They permit leaving, never entry:
+
+| Exit result | Meaning |
+|---|---|
+| Exit recorded | Access recorded Exit and this page completed its own local mark. The result includes the server time and any replay marker. This does not prove physical passage. |
+| Already processed | This page already owns the mark for this replay. No second Exit action. The holder may leave. |
+| Exit not recorded, with a reason | Access refused Exit. The exact reason is shown as text. `invalid_credential` reads `credential not accepted`. Revoked, refunded and exchanged tickets are no longer valid for entry. The holder may leave. |
+| Exit not recorded, reason unavailable | A `409` or `422` body could not be read, including at its deadline. This stays terminal. The holder may leave. |
+| Offline Exit | A supported no-response failure or exactly `502`/`503`/`504` selected an in-time queue decision. `Exit result unknown; the holder may leave`. A failed write needs repair and does not prove that the queue committed. |
+| No request sent | Storage, mint, pre-send time, cancellation or local failure stopped the scan. `Exit not recorded; the holder may leave`. |
+| Sent, answer unknown | A sent deadline, cancellation, local failure, invalid accepted body or unconfirmed status can leave an Access fact. `Exit result unknown; the holder may leave`. |
+| Access recorded, scanner could not finish | A late accepted answer or failed local mark needs an operator. The holder may leave. A committed late mark stays stored; it never produces a second action. |
+| Pair this device | The attempt was not authorized. Pair and scan again. The holder may leave. A retained result keeps its captured Exit direction although the selection resets to Entry. |
+
+A locally listed revoked Exit makes no occurrence, refusal row, live request or reconciliation
+request. Its result says Exit was not recorded, the ticket is no longer valid for entry, and the
+holder may leave. An absent Exit can make the next Entry return `exit_required` on a requires-exit
+pass. A remote refusal follows its normal terminal reason instead.
+
+An offline Exit is initially unknown. A single-policy ticket can later receive `rejected` at sync.
+That exact row retires as RESOLVED/rejected, and the page shows a separate per-row warning. It
+created no Exit fact. The aggregate sync-count change remains TKT-551. Entry reason-copy work
+remains TKT-552.
+
+Actual page loss before a final write commits can erase a terminal decision. Its committed PENDING
+row may recover as an uncertain Entry or Exit fact. The recovery notice shows the captured id,
+direction, time and current sync state on compatible pages, including after retirement. It is not
+a new scan result or permission to pass. Closing only a database connection does not end the page
+owner and cannot authorize recovery.
+
+The current client shows each strict-reader warning with the unreadable record key and problem.
+The record stays local and will not sync. Current-format missing or corrupt direction never defaults
+to Entry or falls back to legacy. Existing version-3 TKT-558 and TKT-559 Entry-only tabs silently
+exclude Exit from sync and recovery. Their store warnings are not visible in those old Apps. Refresh
+them to recover or sync Exit. The version-2 database barrier remains in force. Do not delete the
+database to make an old client work.
+
+Entry and Exit share the 3 s send and 30 s decision limits and the page-loss, device-clock, paint
+and mark-before-opening limits above. TKT-560 remains required before venue use.
 
 #### Access response contract (ticket 0, TKT-557)
 
@@ -1751,7 +1799,7 @@ only the limitations that it fixes.
 | 0, Access and gateway, **shipped (TKT-557)** | Device lookup answers `401` (not enrolled), `503` (lookup unavailable) or `500` (lookup failed) on scans, reconciliation and the voided feed; bounded pre-decision `503` (PROVISIONAL 500 ms, TKT-560 qualifies it); panic recovery with an exact `500`; write-timeout and `sslmode=disable` startup checks | The Entry client now keeps `401` and `500` terminal. Exactly `502`/`503`/`504` can select the offline instruction. Sync keeps eligible scans and the feed keeps its list and completed-pull time on these errors. Venue use after TKT-558 waits for TKT-560 Done and the owner's bound and offline-spill selection. |
 | 2, Entry outcome core, shipped in TKT-558 | Terminal `401`, `409`/`422`, `500` and unreadable answers; repair of failed writes; storage version 3 barrier; held legacy scans with a count, a warning, an export and an acknowledgement; recovery notices on every page | Re-pair and rescan after a `401`. The export file contains ticket credentials: keep it safe and do not share it. Scans queued by main before the upgrade still sync, and some of them can be false admissions; their ids are in the export. This untimed core was followed by TKT-559. Its Entry clock now prevents offline fallback at or after 30 s; an earlier classified fallback retains occurrence U. |
 | 3, Entry scan time, shipped in TKT-559 | 3 s send limit and 30 s decision limit, two clocks, stopped-scan and slow-answer results | A scan stopped by the limit is never synced. A crash after a failed write can still recover the scan; the next page shows a recovery notice. |
-| 4, Pass Exit mode | Entry/Exit mode, Exit results with "the holder may leave", revoked-ticket Exit with no record | A revoked ticket's Exit is not recorded, so the next Entry on a requires-exit pass can answer `exit_required`. |
+| 4, Pass Exit mode, shipped in TKT-399 | Entry/Exit mode, Exit results with "the holder may leave", revoked-ticket Exit with no record | A revoked ticket's Exit is not recorded, so the next Entry on a requires-exit pass can answer `exit_required`. |
 
 ## Finding misconfigured rule currencies (TKT-243)
 

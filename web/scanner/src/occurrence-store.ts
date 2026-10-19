@@ -22,6 +22,7 @@ import {
   type CurrentRecord,
   type ReconcileResult,
   type ScanType,
+  type ScanDirection,
 } from './occurrence-model'
 
 export const OCCURRENCE_DB = 'gate-occurrences'
@@ -59,6 +60,7 @@ export type NoticeView = {
   occurrenceId: string
   occurredAt: string | undefined
   type: ScanType | undefined
+  direction?: ScanDirection
   cause: 'uncertain_recovery'
   syncState: string
 }
@@ -334,8 +336,8 @@ export function createOccurrenceStore(options: OccurrenceStoreOptions): Occurren
       leaseExpiresAt: now() + leaseMs,
       recordFormat: RECORD_FORMAT,
     }
-    const record: CurrentRecord = type === 'normal'
-      ? { ...base, direction: 'entry' }
+    const record: CurrentRecord = captured.type === 'normal'
+      ? { ...base, direction: captured.direction }
       : { ...base, localDecision: 'revocation_refused' }
     return runTransaction(db, operation, STORE.occurrences, 'readwrite', STRICT, (tx) => {
       // add, not put: a duplicate id aborts instead of overwriting another row.
@@ -620,6 +622,7 @@ export function createOccurrenceStore(options: OccurrenceStoreOptions): Occurren
             occurrenceId: notice.occurrenceId,
             occurredAt: read.ok ? read.record.occurredAt : undefined,
             type: read.ok ? scanType(read.record) : undefined,
+            ...(read.ok && read.record.direction !== undefined ? { direction: read.record.direction } : {}),
             cause: notice.cause,
             syncState: read.ok ? read.record.state : 'unreadable',
           })

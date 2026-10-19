@@ -221,7 +221,7 @@ of this section stays. The amended rules:
 through queueing and recovery, and protects the live page across connection replacement. TKT-559
 adds both Entry mint-time checks. A known listed ticket stays refused when time or clock checks fail,
 with an audit-not-saved instruction and no live-page sync. A stopped lookup that has not yet returned
-a list hit cannot later change its published result. The Exit rule remains in ticket 4, ADR-085 §8.
+a list hit cannot later change its published result. TKT-399 implements the Exit no-row/no-request rule of ticket 4, ADR-085 §8.
 
 ## Consequences
 

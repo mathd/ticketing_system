@@ -59,7 +59,7 @@ it.each([401, 500, 501, 505, 599, 201, 204, 301, 400, 403, 404, 429])('keeps sta
   const r = status === 204 ? new Response(null, { status }) : response(status)
   const json = vi.spyOn(r, 'json').mockRejectedValue(new Error('unreadable'))
   answer(r)
-  await scanner.submit(' credential ')
+  await scanner.submit(' credential ', 'entry')
   expect(json).not.toHaveBeenCalled()
   expect(results).toHaveLength(1)
   expect(results[0].kind).toBe(status === 401 ? 'auth-refused' : status >= 500 ? 'server-error' : 'status-unconfirmed')
@@ -94,7 +94,7 @@ it.each([502, 503, 504])('publishes status %s offline permission before storage 
     })
   }
   onPublish = () => { events.push('publish') }
-  await scanner.submit('credential')
+  await scanner.submit('credential', 'entry')
   expect(events.slice(0, 2)).toEqual(['latch', 'publish'])
   expect(results).toEqual([{ kind: 'queued', status }])
   expect(json).not.toHaveBeenCalled()
@@ -103,7 +103,7 @@ it.each([502, 503, 504])('publishes status %s offline permission before storage 
 
 it.each([new TypeError('Failed to fetch'), new TypeError('network down'), new Error('Failed to fetch'), new DOMException('Failed to fetch', 'NetworkError')])('limits no-response queue authority to the native shape: %s', async (error) => {
   answer(() => Promise.reject(error))
-  await scanner.submit('credential')
+  await scanner.submit('credential', 'entry')
   const offline = error instanceof TypeError && error.message === 'Failed to fetch'
   expect(results).toEqual([offline ? { kind: 'queued' } : { kind: 'local-failure' }])
   expect((await row()).state).toBe(offline ? 'QUEUED' : 'RESOLVED')
@@ -111,7 +111,7 @@ it.each([new TypeError('Failed to fetch'), new TypeError('network down'), new Er
 
 it('treats a synchronous fetch setup throw as a local failure', async () => {
   vi.stubGlobal('fetch', vi.fn(() => { throw new TypeError('Failed to fetch') }))
-  await scanner.submit('credential')
+  await scanner.submit('credential', 'entry')
   expect(results).toEqual([{ kind: 'local-failure' }])
   expect((await page.store().queued()).entries).toEqual([])
 })
@@ -121,7 +121,7 @@ it.each([409, 422])('commits status %s as an unknown denial while its body is st
   let finish!: (value: unknown) => void
   vi.spyOn(r, 'json').mockImplementation(() => new Promise((resolve) => { finish = resolve }))
   answer(r)
-  const scanning = scanner.submit('credential')
+  const scanning = scanner.submit('credential', 'entry')
   await eventually(() => !!sent.length && !!page.coordinator.latched(sent[0].occurrence_id as string), 'denial latched')
   await eventually(() => page.coordinator.view(sent[0].occurrence_id as string)?.durable === 'committed', 'production denial write completes')
   expect(await row()).toMatchObject({ state: 'RESOLVED', localOutcome: { family: 'terminal', cause: 'denied', status, reason: null } })
@@ -135,7 +135,7 @@ it.each([409, 422])('commits status %s as an unknown denial while its body is st
 
 it.each([409, 422])('keeps unreadable status %s as denial rather than queue', async (status) => {
   answer(new Response('{broken', { status }))
-  await scanner.submit('credential')
+  await scanner.submit('credential', 'entry')
   expect(results).toEqual([{ kind: 'denial-unreadable' }])
   await decisionWriteSettled()
   expect((await row()).state).toBe('RESOLVED')
@@ -143,7 +143,7 @@ it.each([409, 422])('keeps unreadable status %s as denial rather than queue', as
 
 it.each([true, false, undefined])('requires a completed own mark for acceptance with replay %s', async (replay) => {
   answer(response(200, { decision: 'accepted', scanned_at: ACCEPTED, ...(replay === undefined ? {} : { replay }) }))
-  await scanner.submit('credential')
+  await scanner.submit('credential', 'entry')
   expect(results).toEqual([{ kind: 'accepted', scannedAt: ACCEPTED, replay: replay === true }])
   expect(await row()).toMatchObject({ state: 'ACTUATED', actuated: true, direction: 'entry' })
   expect((await page.store().queued()).entries).toEqual([])
@@ -151,7 +151,7 @@ it.each([true, false, undefined])('requires a completed own mark for acceptance 
 
 it.each([{}, { decision: 'accepted', scanned_at: 'not-a-time' }, { decision: 'rejected', reason: 'refunded' }])('refuses malformed 200 acceptance %s', async (body) => {
   answer(response(200, body))
-  await scanner.submit('credential')
+  await scanner.submit('credential', 'entry')
   expect(results).toEqual([{ kind: 'body-unconfirmed' }])
   await decisionWriteSettled()
   expect((await row()).state).toBe('RESOLVED')
@@ -162,7 +162,7 @@ it('never sends when mint aborts', async () => {
   vi.stubGlobal('fetch', fetch)
   instrument = instrumentTransactions()
   instrument.inject('abort', { stores: [STORE.occurrences], mode: 'readwrite' })
-  await scanner.submit('credential')
+  await scanner.submit('credential', 'entry')
   expect(fetch).not.toHaveBeenCalled()
   expect(results).toEqual([{ kind: 'mint-unconfirmed' }])
   expect((await page.store().queued()).entries).toEqual([])
@@ -172,7 +172,7 @@ it('stops unready input without retaining it for retry', async () => {
   page.storage.stop()
   const fetch = vi.fn()
   vi.stubGlobal('fetch', fetch)
-  await scanner.submit('credential')
+  await scanner.submit('credential', 'entry')
   expect(results).toEqual([{ kind: 'storage-unready' }])
   page.storage.retry()
   await page.waitFor('ready')
@@ -183,7 +183,7 @@ it('stops unready input without retaining it for retry', async () => {
 it('keeps the captured pairing and claimed time while a request waits', async () => {
   let finish!: (r: Response) => void
   answer(() => new Promise((resolve) => { finish = resolve }))
-  const scanning = scanner.submit('credential')
+  const scanning = scanner.submit('credential', 'entry')
   await eventually(() => !!finish, 'request sent')
   scanner.cancel()
   pairing = { token: 'token-b', generation: 2 }
@@ -202,7 +202,7 @@ it.each([true, false, undefined])('handles completed own existing ACT with repla
       localOutcome: { family: 'actuation', cause: 'reserved' }, decidedAt })
     return response(200, { decision: 'accepted', scanned_at: ACCEPTED, ...(replay === undefined ? {} : { replay }) })
   })
-  await scanner.submit('credential')
+  await scanner.submit('credential', 'entry')
   expect(results).toEqual([{ kind: replay === true ? 'duplicate' : 'mark-failed' }])
   expect(page.coordinator.latched(sent[0].occurrence_id as string)).toEqual({
     kind: 'actuation', occurrenceId: sent[0].occurrence_id, decidedAt,
@@ -229,7 +229,7 @@ it.each(['commit', 'mint-abort', 'queue-abort'] as const)('keeps a known local r
       })
     }
   }
-  await scanner.submit(qr)
+  await scanner.submit(qr, 'entry')
   expect(results).toEqual([{ kind: schedule === 'mint-abort' ? 'revocation-audit-not-saved' : 'revocation-refused' }])
   expect(fetch).not.toHaveBeenCalled()
   await Promise.all(page.coordinator.pendingTargets().map((id) => page.coordinator.persist(id)))
@@ -249,7 +249,7 @@ it('waits for mint complete before invoking fetch', async () => {
   const fetch = vi.mocked(globalThis.fetch)
   instrument = instrumentTransactions()
   const hold = instrument.hold({ stores: [STORE.occurrences], mode: 'readwrite' })
-  const scanning = scanner.submit('credential')
+  const scanning = scanner.submit('credential', 'entry')
   const call = await hold.started
   try {
     expect(call.events).not.toContain('complete')
@@ -267,7 +267,7 @@ it.each(['commit', 'abort'] as const)('publishes acceptance only after the mark 
   answer(response(200, { decision: 'accepted', scanned_at: ACCEPTED }), () => {
     hold = instrument!.hold({ stores: [STORE.occurrences], mode: 'readwrite' })
   })
-  const scanning = scanner.submit('credential')
+  const scanning = scanner.submit('credential', 'entry')
   await eventually(() => !!hold, 'mark barrier installed')
   const call = await hold!.started
   try {
@@ -287,7 +287,7 @@ it.each(['commit', 'abort'] as const)('settles cancellation against an in-flight
   answer(response(200, { decision: 'accepted', scanned_at: ACCEPTED }), () => {
     hold = instrument!.hold({ stores: [STORE.occurrences], mode: 'readwrite' })
   })
-  const scanning = scanner.submit('credential')
+  const scanning = scanner.submit('credential', 'entry')
   await eventually(() => !!hold, 'mark barrier installed')
   const call = await hold!.started
   try {
@@ -306,7 +306,7 @@ it('rejects an invalid header before fetch without offline permission', async ()
   pairing = { token: 'bad\nheader', generation: 1 }
   const fetch = vi.fn()
   vi.stubGlobal('fetch', fetch)
-  await scanner.submit('credential')
+  await scanner.submit('credential', 'entry')
   expect(fetch).not.toHaveBeenCalled()
   expect(results).toEqual([{ kind: 'local-failure' }])
   expect((await page.store().queued()).entries).toEqual([])

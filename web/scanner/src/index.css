@@ -16,3 +16,8 @@ video { display: block; width: 100%; margin-top: 1rem; border-radius: .5rem; bac
 .local-records label { font-weight: 400; overflow-wrap: anywhere; }
 .local-records input[type="checkbox"] { width: auto; margin-right: .5rem; }
 .local-records p { overflow-wrap: anywhere; }
+
+.scan-direction { display: flex; gap: 1.5rem; margin: 1rem 0; }
+.scan-direction label { width: auto; display: inline-flex; align-items: center; gap: 0.5rem; }
+.scan-direction input { width: auto; }
+.result.neutral { background: #fff4d6; border-color: #8a6100; color: #493400; }

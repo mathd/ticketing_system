@@ -51,7 +51,7 @@ describe('current-format record validation', () => {
     ['an absent format', (({ recordFormat: _ignored, ...rest }) => rest)(normalPending)],
     ['format 2', { ...normalPending, recordFormat: 2 }],
     ['a normal row without direction', (({ direction: _ignored, ...rest }) => rest)(normalPending)],
-    ['a normal row with direction exit', { ...normalPending, direction: 'exit' }],
+    ['a normal row with uppercase direction', { ...normalPending, direction: 'EXIT' }],
     ['a normal row with own undefined direction', { ...normalPending, direction: undefined }],
     ['a row with both direction and refusal', { ...normalPending, localDecision: 'revocation_refused' }],
     ['a refusal with own undefined direction', { ...refusalPending, direction: undefined }],

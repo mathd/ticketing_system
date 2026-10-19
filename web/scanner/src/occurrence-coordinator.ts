@@ -11,7 +11,7 @@
 // can only retry the same target.
 
 import { createBrowserOwnerLock, type OwnerLock } from './occurrence-lock'
-import type { QueueOutcome, ScanType, TerminalOutcome } from './occurrence-model'
+import type { QueueOutcome, ScanDirection, TerminalOutcome } from './occurrence-model'
 import { createOccurrenceOwner, type OccurrenceOwner } from './occurrence-owner'
 
 export type CapturedOccurrence = Readonly<{
@@ -19,8 +19,7 @@ export type CapturedOccurrence = Readonly<{
   qrPayload: string
   occurredAt: string
   createdAt: string
-  type: ScanType
-}>
+} & ({ type: 'normal'; direction: ScanDirection } | { type: 'refusal'; direction?: never })>
 
 export type QueueDecision = Readonly<{ kind: 'queue'; occurrenceId: string; outcome: Readonly<QueueOutcome>; decidedAt: string }>
 export type TerminalDecision = Readonly<{ kind: 'terminal'; occurrenceId: string; outcome: Readonly<TerminalOutcome>; decidedAt: string }>

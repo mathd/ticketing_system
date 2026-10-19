@@ -10,6 +10,7 @@ export const RECORD_FORMAT = 1 as const
 export type OccurrenceState = 'PENDING' | 'ACTUATED' | 'QUEUED' | 'SYNCED' | 'RESOLVED'
 export const OCCURRENCE_STATES: readonly OccurrenceState[] = ['PENDING', 'ACTUATED', 'QUEUED', 'SYNCED', 'RESOLVED']
 
+export type ScanDirection = 'entry' | 'exit'
 export type ScanType = 'normal' | 'refusal'
 export type ReconcileResult = 'recorded' | 'synced' | 'conflict' | 'rejected'
 export const RECONCILE_RESULTS: readonly ReconcileResult[] = ['recorded', 'synced', 'conflict', 'rejected']
@@ -58,7 +59,7 @@ type RecordBase = {
   /** The device-claimed decision time. Absent on PENDING and on uncertain recovery. */
   decidedAt?: string
 }
-export type NormalRecord = RecordBase & { direction: 'entry'; localDecision?: never }
+export type NormalRecord = RecordBase & { direction: ScanDirection; localDecision?: never }
 export type RefusalRecord = RecordBase & { localDecision: 'revocation_refused'; direction?: never }
 export type CurrentRecord = NormalRecord | RefusalRecord
 
@@ -139,9 +140,9 @@ export function readCurrentRecord(raw: unknown): RecordRead {
   if (typeof raw.leaseExpiresAt !== 'number' || !Number.isFinite(raw.leaseExpiresAt)) return fail('lease is missing')
 
   let type: ScanType
-  if (own(raw, 'direction') && !own(raw, 'localDecision') && raw.direction === 'entry') type = 'normal'
+  if (own(raw, 'direction') && !own(raw, 'localDecision') && (raw.direction === 'entry' || raw.direction === 'exit')) type = 'normal'
   else if (own(raw, 'localDecision') && !own(raw, 'direction') && raw.localDecision === 'revocation_refused') type = 'refusal'
-  else return fail('record type is not exactly one of entry or refusal')
+  else return fail('record type is not exactly one of entry, exit or refusal')
 
   const state = raw.state as OccurrenceState
   if (state === 'PENDING') {

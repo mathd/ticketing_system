@@ -1,6 +1,6 @@
 import { decodeScanResponse, type ScanRequest } from './access-contract'
 import type { CapturedOccurrence } from './occurrence-coordinator'
-import type { OfflineStatus, TerminalOutcome } from './occurrence-model'
+import type { OfflineStatus, ScanDirection, TerminalOutcome } from './occurrence-model'
 import type { StorageController } from './occurrence-readiness'
 import { decodeTicketID } from './revocation'
 import { captureScanClock, checkScanClock, productionScanClock, productionScanScheduler,
@@ -8,6 +8,7 @@ import { captureScanClock, checkScanClock, productionScanClock, productionScanSc
 import { sendScan } from './scan-transport'
 
 export type Pairing = Readonly<{ token: string; generation: number }>
+export type ResultContext = Readonly<{ direction: ScanDirection; requestMayHaveBeenSent: boolean }>
 export type EntryResult =
   | { kind: 'accepted'; scannedAt: string; replay: boolean }
   | { kind: 'rejected'; reason: string; originalScanAt?: string }
@@ -16,12 +17,12 @@ export type EntryResult =
   | { kind: 'duplicate' | 'mark-failed' | 'auth-refused' | 'denial-unreadable' | 'server-error'
       | 'status-unconfirmed' | 'body-unconfirmed' | 'local-failure' | 'storage-unready'
       | 'mint-unconfirmed' | 'revocation-refused' | 'stopped-before-send' | 'sent-unconfirmed'
-      | 'accepted-too-late' | 'revocation-audit-not-saved' }
+      | 'accepted-too-late' | 'revocation-audit-not-saved' | 'revocation-exit' }
 
 export type EntryScannerOptions = {
   storage: StorageController
   pairing(): Pairing
-  publish(result: EntryResult): void
+  publish(result: EntryResult, context: ResultContext): void
   busy(value: boolean): void
   diagnostic(): void
   authRefused(pairing: Pairing): void
@@ -33,6 +34,7 @@ export type EntryScannerOptions = {
 type Stop = 'cancelled' | 'deadline' | 'clock' | 'failure'
 type Execution = {
   pairing: Pairing
+  direction: ScanDirection
   captured: CapturedOccurrence
   start: ScanReading
   registered: boolean
@@ -66,7 +68,7 @@ export function createEntryScanner(options: EntryScannerOptions) {
     execution.published = true
     // Release only this submission. A prior scan's persistence cannot release a newer one.
     release(execution)
-    if (current(execution)) options.publish(result)
+    if (current(execution)) options.publish(result, Object.freeze({ direction: execution.direction, requestMayHaveBeenSent: execution.sent }))
   }
   const persist = (execution: Execution) => {
     void coordinator.persist(execution.captured.occurrenceId).then(options.diagnostic, options.diagnostic)
@@ -146,27 +148,42 @@ export function createEntryScanner(options: EntryScannerOptions) {
   }
   return {
     cancel() { if (active) stop(active, 'cancelled') },
-    async submit(value: string) {
+    async submit(value: string, direction: ScanDirection) {
       if (active || !value.trim()) return
       const pairing = Object.freeze({ ...options.pairing() })
       if (!pairing.token) return
+      const earlyContext = Object.freeze({ direction, requestMayHaveBeenSent: false })
       const store = storage.readyStore()
-      if (!store) { options.publish({ kind: 'storage-unready' }); return }
+      if (!store) { options.publish({ kind: 'storage-unready' }, earlyContext); return }
       let start: ScanReading
-      try { start = captureScanClock(clock) } catch { options.publish({ kind: 'local-failure' }); return }
+      try { start = captureScanClock(clock) } catch { options.publish({ kind: 'local-failure' }, earlyContext); return }
       const occurredAt = new Date().toISOString()
-      const execution: Execution = { pairing, start, registered: false, sent: false, stopped: false, published: false,
+      const execution: Execution = { pairing, direction, start, registered: false, sent: false, stopped: false, published: false,
         listed: false, accepted: false, captured: { occurrenceId: crypto.randomUUID(), qrPayload: value.trim(),
-          occurredAt, createdAt: occurredAt, type: 'normal' }, abort: new AbortController() }
+          occurredAt, createdAt: occurredAt, type: 'normal', direction }, abort: new AbortController() }
       active = execution; options.busy(true)
       const id = execution.captured.occurrenceId
       try {
         if (checkpoint(execution, 3000) === undefined) return
         const ticketId = decodeTicketID(execution.captured.qrPayload)
-        execution.listed = !!ticketId && await wait(execution, store.isRevoked(ticketId), 3000)
+        try { execution.listed = !!ticketId && await wait(execution, store.isRevoked(ticketId), 3000) } catch (error) {
+          if (execution.stopped) return
+          if (direction === 'exit' && storage.readyStore() !== store) {
+            publish(execution, { kind: 'storage-unready' }); return
+          }
+          throw error
+        }
         if (execution.stopped) return
+        if (execution.listed && direction === 'exit') {
+          if (current(execution)) publish(execution, { kind: 'revocation-exit' })
+          else stop(execution, 'cancelled')
+          return
+        }
         if (checkpoint(execution, 3000) === undefined) return
-        execution.captured = Object.freeze({ ...execution.captured, type: execution.listed ? 'refusal' : 'normal' })
+        if (execution.listed) {
+          const { occurrenceId, qrPayload, occurredAt, createdAt } = execution.captured
+          execution.captured = Object.freeze({ occurrenceId, qrPayload, occurredAt, createdAt, type: 'refusal' })
+        }
         coordinator.register(execution.captured); execution.registered = true
         try {
           await wait(execution, execution.listed ? store.mintRefusal(id) : store.mintNormal(id), 3000)
@@ -179,8 +196,9 @@ export function createEntryScanner(options: EntryScannerOptions) {
         }
         if (execution.stopped) return
         if (execution.listed) { queue(execution); return }
+        if (execution.captured.type !== 'normal') throw new Error('normal capture required')
         const body: ScanRequest = { qr_payload: execution.captured.qrPayload, occurrence_id: id,
-          occurred_at: execution.captured.occurredAt, direction: 'entry' }
+          occurred_at: execution.captured.occurredAt, direction: execution.captured.direction }
         const request = new Request(new URL('/api/access/scans', window.location.href), {
           method: 'POST', redirect: 'manual', signal: execution.abort.signal,
           headers: { 'Content-Type': 'application/json', 'X-Scanner-Token': pairing.token }, body: JSON.stringify(body),
