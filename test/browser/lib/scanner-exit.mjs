@@ -62,8 +62,21 @@ export async function exitJourneys({ browser, BASE, PG, token, fixture, facts, c
     assert.deepEqual(await row(offline.occurrence_id), { ...queued, state: 'SYNCED', result: 'recorded' });
     assert.deepEqual(facts(ticket.ticket).find(fact => fact.occurrence_id === offline.occurrence_id), { occurrence_id: offline.occurrence_id, event_type: 'exit', occurred_at: offline.occurred_at });
     const count = batches.length;
-    await page.evaluate(() => window.dispatchEvent(new Event('online')));
-    await page.getByText('This device holds no revocation list yet.').waitFor({ state: 'hidden' });
+    await page.evaluate(() => {
+      window.__exitQueueReads = 0;
+      const native = IDBDatabase.prototype.transaction;
+      IDBDatabase.prototype.transaction = function (...args) {
+        const tx = Reflect.apply(native, this, args);
+        if (this.name === 'gate-occurrences' && tx.mode === 'readonly'
+          && tx.objectStoreNames.contains('occurrences') && tx.objectStoreNames.contains('legacy_classes')) {
+          tx.addEventListener('complete', () => { window.__exitQueueReads++; });
+        }
+        return tx;
+      };
+      window.dispatchEvent(new Event('online'));
+    });
+    await page.waitForFunction(() => window.__exitQueueReads >= 2);
+    await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 0)));
     assert.equal(batches.length, count);
     check('TKT-399 offline Exit keeps its id and claimed time across mode change and retires without resend', true);
 
@@ -90,9 +103,11 @@ export async function exitJourneys({ browser, BASE, PG, token, fixture, facts, c
     const revoked = pass();
     const refund = await fetch(`http://localhost:${ACCESS_PORT}/internal/orders/${revoked.order}/refunds`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Internal-Token': INTERNAL_TOKEN }, body: JSON.stringify({ organizer_id: ORGANIZER, refund_id: randomUUID(), quantity: 1 }) });
     assert.equal(refund.status, 200);
+    const priorMeta = await page.evaluate(() => window.__tkt558IdbProbe.events.filter(event => event.store === 'revocation_meta' && event.event === 'complete').length);
     const feed = page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/voided-tickets'));
     await page.getByRole('button', { name: 'Refresh revocation list' }).click(); await feed;
-    await page.waitForFunction(() => window.__tkt558IdbProbe.events.some(event => event.store === 'revocation_meta' && event.event === 'complete'));
+    await page.waitForFunction(prior => window.__tkt558IdbProbe.events.filter(event => event.store === 'revocation_meta' && event.event === 'complete').length > prior, priorMeta);
+    assert.ok((await read(page, 'revocations')).some(row => row.ticketID === revoked.ticket));
     const beforeRows = await read(page), beforeFacts = facts(revoked.ticket), beforeRequests = requests.length, beforeBatches = batches.length;
     await submit(page, revoked.credential);
     await page.getByText('Exit not recorded. This ticket is no longer valid for entry. The holder may leave.', { exact: true }).waitFor();
