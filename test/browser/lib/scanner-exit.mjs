@@ -5,7 +5,8 @@ import { assert, pair, submit, read, scanPath, reconcilePath, installProbe } fro
 export async function exitJourneys({ browser, BASE, PG, token, fixture, facts, check, ACCESS_PORT, INTERNAL_TOKEN }) {
   const pass = () => {
     const ticket = fixture();
-    sql(PG, 'access', `UPDATE slot_re_entry_policies SET requires_exit=true WHERE slot_id=(SELECT slot_id FROM tickets WHERE id='${ticket.ticket}')`);
+    const updated = sql(PG, 'access', `UPDATE slot_re_entry_policies SET requires_exit=true WHERE slot_id=(SELECT slot_id FROM tickets WHERE id='${ticket.ticket}') RETURNING slot_id`);
+    assert.equal(updated.trim().split('\n').filter(Boolean).length, 1);
     return ticket;
   };
   const single = () => {
@@ -39,6 +40,9 @@ export async function exitJourneys({ browser, BASE, PG, token, fixture, facts, c
     assert.equal(await page.getByRole('radio', { name: 'Entry', exact: true }).isChecked(), true);
     const ticket = pass();
     const entry = await send(ticket, 'Entry', 'Accepted');
+    const denied = await send(ticket, 'Entry', 'Rejected');
+    assert.equal(denied.response.reason, 'exit_required');
+    assert.deepEqual(facts(ticket.ticket), [{ occurrence_id: entry.request.occurrence_id, event_type: 'entry', occurred_at: new Date(entry.response.scanned_at).toISOString() }]);
     const exit = await send(ticket, 'Exit', 'Exit recorded');
     assert.equal(await page.getByRole('status', { name: 'Scan result' }).textContent(), `Exit recordedExit recorded. The holder may leave.Exit recorded at ${new Date(exit.response.scanned_at).toLocaleString('en-US')}.`);
     assert.deepEqual(facts(ticket.ticket), [entry, exit].map(({ request, response }) => ({ occurrence_id: request.occurrence_id, event_type: request.direction, occurred_at: new Date(response.scanned_at).toISOString() })));

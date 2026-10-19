@@ -56,6 +56,8 @@ window.__predecessorProof = async raw => {
     console.log('TKT-399 exact predecessor manifest', JSON.stringify({ baseline: BASELINE, sourceDigest: hash(JSON.stringify(manifest)), sources: manifest, assets: [...assets].map(([path, bytes]) => ({ path, sha256: hash(bytes) })) }));
     const context = await browser.newContext({ baseURL: BASE }); await installProbe(context);
     const pending = await context.newPage(), queued = await context.newPage(), recovered = await context.newPage();
+    const leaseTime = new Date();
+    for (const page of [pending, queued, recovered]) await page.clock.install({ time: leaseTime });
     try {
       await pair(pending, token); await pending.getByRole('radio', { name: 'Exit', exact: true }).check();
       await pending.evaluate(() => { const native=fetch;window.fetch=(input,init)=>input instanceof Request&&new URL(input.url).pathname==='/api/access/scans'?new Promise(()=>{}):native(input,init); });
@@ -74,7 +76,7 @@ window.__predecessorProof = async raw => {
       const recoveryId = (await read(recovered)).find(row => row.occurrenceId !== original.occurrenceId && row.state === 'PENDING').occurrenceId;
       await recovered.reload(); await recovered.getByRole('region', { name: `Recovered scan ${recoveryId}` }).waitFor();
       const before = await read(recovered); await recovered.close();
-      const old = await context.newPage(); await old.clock.install(); await old.clock.fastForward(31000);
+      const old = await context.newPage(); await old.clock.install({ time: leaseTime }); await old.clock.fastForward(31000);
       const loaded = [], errors = [], scans = [], syncs = [];
       old.on('request', request => { if (request.method() === 'POST' && scanPath(request.url())) scans.push(request); if (request.method() === 'POST' && reconcilePath(request.url())) syncs.push(request); });
       await old.route('**/scanner/**', async route => {
@@ -97,11 +99,22 @@ window.__predecessorProof = async raw => {
       assert.deepEqual(await read(old), before); assert.equal(scans.length, 0); assert.equal(syncs.length, 0);
       assert.deepEqual(errors, []); assert.ok(loaded.some(row => row.path.endsWith('.js')));
       await old.close();
-      const current = await context.newPage(); await pair(current, token);
+      const current = await context.newPage(); await current.clock.install({ time: leaseTime }); await pair(current, token);
+      assert.ok(original.leaseExpiresAt > await current.evaluate(() => Date.now()));
+      assert.deepEqual(await read(current), before);
+      const eligible = before.filter(row => row.state === 'QUEUED');
+      assert.equal(eligible.length, 2);
+      assert.equal(before.find(row => row.occurrenceId === original.occurrenceId).state, 'PENDING');
       const sent = current.waitForRequest(request => request.method() === 'POST' && reconcilePath(request.url()));
       await current.getByRole('button', { name: 'Sync queued scans' }).click();
-      assert.ok((await sent).postDataJSON().occurrences.every(row => row.event_type === 'exit'));
-      await current.getByText(/^Synced [23] offline scan\(s\)\.$/).waitFor();
+      const sorted = rows => [...rows].sort((a, b) => a.occurrence_id.localeCompare(b.occurrence_id));
+      assert.deepEqual(sorted((await sent).postDataJSON().occurrences), sorted(eligible.map(row => ({
+        occurrence_id: row.occurrenceId, qr_payload: row.qrPayload, occurred_at: row.occurredAt, event_type: 'exit',
+      }))));
+      await current.getByText('Synced 2 offline scan(s).', { exact: true }).waitFor();
+      const expected = before.map(row => row.state === 'QUEUED' ? { ...row, state: 'SYNCED', result: 'recorded' } : row);
+      await current.waitForFunction(ids => ids.every(id => window.__tkt558IdbProbe.events.some(event => event.id === id && event.state === 'SYNCED' && event.event === 'complete')), eligible.map(row => row.occurrenceId));
+      assert.deepEqual(await read(current), expected);
       check('TKT-399 exact old v3 decoder/store/App silently exclude Exit, leave rows intact and never call it Entry; current client syncs Exit', true);
     } finally { await context.close(); }
   } finally { rmSync(source, { recursive: true, force: true }); }

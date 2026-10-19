@@ -62,7 +62,7 @@ function presentExit(result: EntryResult, context: ResultContext): ResultPresent
     case 'rejected': return neutral('Exit not recorded',
       `Exit not recorded; reason: ${result.reason === 'invalid_credential' ? 'credential not accepted' : result.reason}. The holder may leave.`,
       ...(['revoked', 'refunded', 'exchanged'].includes(result.reason) ? ['This ticket is no longer valid for entry.'] : []),
-      ...(result.originalScanAt === undefined ? [] : [`Already redeemed at ${readableTime(result.originalScanAt)}.`]))
+      ...(result.reason !== 'already_redeemed' || result.originalScanAt === undefined ? [] : [`Already redeemed at ${readableTime(result.originalScanAt)}.`]))
     case 'denial-unreadable': return neutral('Exit not recorded', 'Exit not recorded; reason unavailable. The holder may leave')
     case 'queued': return neutral('Offline Exit',
       result.status === undefined ? 'No response was received.' : `Server response ${result.status}.`, unknown)

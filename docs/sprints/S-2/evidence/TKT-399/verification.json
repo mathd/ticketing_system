@@ -447,5 +447,16 @@
       "bytes": 3375,
       "testSummary": []
     }
-  ]
+  ],
+  "contributors": {
+    "newDiff": [
+      "gpt-6.1-sol"
+    ],
+    "unchangedTKT558Decoder": [
+      "gpt-6.1-sol",
+      "claude-opus-5-5"
+    ],
+    "normalization": "opus-5.5 and claude-opus-5-5 are one identity",
+    "provenance": "TKT-399 D44/D45; no code or fixes from abandoned 24f1c209, its branch or PR451"
+  }
 }

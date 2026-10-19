@@ -509,7 +509,7 @@ function App() {
       </form>
       {queuedCount > 0 && <p className="queue-note" role="status">{queuedCount} offline scan{queuedCount === 1 ? '' : 's'} are still saved on this device and will sync once it is paired.</p>}
     </section> : <>
-      <p>Scan a ticket QR code or paste its credential to record {direction === 'entry' ? 'Entry' : 'Exit'}.</p>
+      <p>Scan a ticket QR code or paste its credential {direction === 'entry' ? 'to validate entry.' : 'to record Exit.'}</p>
       <section aria-label="Ticket scan input">
         <form aria-label="Ticket scan" onSubmit={(event) => { event.preventDefault(); void submit() }}>
           <label htmlFor="qr-payload">Ticket credential</label>

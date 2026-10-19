@@ -33,3 +33,18 @@ Actual page loss before a terminal commit can recover an uncertain Exit fact. A 
 The initial full gate passed lint, tests and builds, then failed when Compose could not bind port 15440. An unrelated TKT-504 worktree owns that port. It was left running. The final gate uses the same commit in a separate validation worktree with smoke slot 21. This changes no product or gate configuration.
 
 TKT-551 still owns offline Single/Rejected semantics. TKT-552 still owns Entry-copy changes. ADR-085 updates here mark only shipped Exit work. The original frozen TKT-558 decoder fixture is unchanged. No tag or deployment is part of this work.
+
+
+## Round 8 corrections and retained limits
+
+The new diff, plan, review fixes and verification records are authored by gpt-6.1-sol at high effort. The unchanged TKT-558 decoder fixture has gpt-6.1-sol and claude-opus-5-5 contributions. The aliases opus-5.5 and claude-opus-5-5 name one model. The frozen predecessor is built from exact baseline Git objects at runtime. No code or fixes from abandoned 24f1c209, its branch or PR #451 enter this diff. TKT-399 D44/D45 record this provenance.
+
+Entry retains a known lookup-error difference. A closed connection during revocation lookup produces Entry X01, while Exit produces O-S when readiness changed. This ticket changes only Exit. No correction ticket was opened for that known Entry residual, as the approved plan requires.
+
+ADR-085 retains two historical Entry-time markers from the baseline: section 1.3's time-pending note and section 2.4's deadlines/late-branches note. Their current delivery is recorded in section 3.1. The Exit markers in those notes now name TKT-399. The invariant markers and section 6 refer to section 3.1 instead of restating the stale time-pending claim. Section 3.7 records the shipped Exit branches and points to the existing Entry time delivery. No Entry outcome or copy requirement changes.
+
+Round 8 found missing rare-result assertions. `App.exit-results.test.tsx` submits Exit through production storage and checks the complete result for lookup/mint at 3000 ms, accepted body/mark at 30000 ms, clock capture failure and invalid Request headers before send. `scan-result.exit.test.ts` asserts exact sent/unsent cancellation presentation. Pairing reset clears the transient cancellation result in the same handler, so no persistent App cancellation region is claimed. Controller tests retain the captured-context assertions. The cell map names these tiers explicitly.
+
+D50 corrects the approved plan's broad originalScanAt clause. Only already_redeemed shows Already redeemed at the supplied time. A quarantined Exit does not claim that result. The Entry introduction is restored. The browser re-entry journey checks that the requires_exit seed changes exactly one row, then requires an Entry/Entry refusal with no added lifecycle fact before Exit permits re-entry. The predecessor control checks the exact two eligible Exit payloads, both complete retired rows, and the unchanged PENDING row inside its lease.
+
+The new copy tests first failed on the quarantine label and Entry introduction, with nine other new cases passing. The round 8 verification receipt records subsequent mutation, repetition and gate results separately from the pre-review evidence above.
