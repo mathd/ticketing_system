@@ -1,0 +1,229 @@
+[
+  {
+    "mutation": "mint-entry",
+    "path": "occurrence-store.ts",
+    "command": [
+      "vitest",
+      "run",
+      "src/occurrence-exit.test.ts",
+      "src/App.exit.test.tsx"
+    ],
+    "exit": 1,
+    "discriminatingFailure": true,
+    "started": "2026-10-19T13:50:46.452018+00:00",
+    "seconds": 23.195,
+    "log": "/tmp/sdlc-S-2/TKT-399-mutant-mint-entry.log",
+    "priorObservation": {
+      "started": "2026-10-19T13:33:19.099861+00:00",
+      "seconds": 21.335,
+      "exit": 1,
+      "discriminatingFailure": true
+    },
+    "note": "Re-executed because the storage-cell script reused this log filename. The later storage-cell logs now have a separate prefix."
+  },
+  {
+    "mutation": "reject-exit",
+    "path": "occurrence-model.ts",
+    "command": [
+      "vitest",
+      "run",
+      "src/occurrence-exit.test.ts"
+    ],
+    "exit": 1,
+    "discriminatingFailure": true,
+    "started": "2026-10-19T13:33:40.464865+00:00",
+    "seconds": 1.77,
+    "log": "/tmp/sdlc-S-2/TKT-399-mutant-reject-exit.log"
+  },
+  {
+    "mutation": "corrupt-direction-default",
+    "path": "occurrence-model.ts",
+    "command": [
+      "vitest",
+      "run",
+      "src/occurrence-exit.test.ts",
+      "src/App.exit.test.tsx"
+    ],
+    "exit": 1,
+    "discriminatingFailure": true,
+    "started": "2026-10-19T13:33:42.235304+00:00",
+    "seconds": 4.427,
+    "log": "/tmp/sdlc-S-2/TKT-399-mutant-corrupt-direction-default.log"
+  },
+  {
+    "mutation": "recover-entry",
+    "path": "occurrence-store.ts",
+    "command": [
+      "vitest",
+      "run",
+      "src/occurrence-exit.test.ts",
+      "src/App.exit.test.tsx"
+    ],
+    "exit": 1,
+    "discriminatingFailure": true,
+    "started": "2026-10-19T13:51:09.669221+00:00",
+    "seconds": 4.679,
+    "log": "/tmp/sdlc-S-2/TKT-399-mutant-recover-entry.log",
+    "priorObservation": {
+      "started": "2026-10-19T13:33:46.662787+00:00",
+      "seconds": 4.427,
+      "exit": 1,
+      "discriminatingFailure": true
+    },
+    "note": "Re-executed because the storage-cell script reused this log filename. The later storage-cell logs now have a separate prefix."
+  },
+  {
+    "mutation": "notice-entry",
+    "path": "OccurrenceRecords.tsx",
+    "command": [
+      "vitest",
+      "run",
+      "src/App.exit.test.tsx"
+    ],
+    "exit": 1,
+    "discriminatingFailure": true,
+    "started": "2026-10-19T13:33:51.090794+00:00",
+    "seconds": 4.278,
+    "log": "/tmp/sdlc-S-2/TKT-399-mutant-notice-entry.log"
+  },
+  {
+    "mutation": "wire-entry",
+    "path": "reconcile-batch.ts",
+    "command": [
+      "vitest",
+      "run",
+      "src/App.exit-reconcile.test.tsx",
+      "src/occurrence-exit.test.ts"
+    ],
+    "exit": 1,
+    "discriminatingFailure": true,
+    "started": "2026-10-19T13:51:14.348418+00:00",
+    "seconds": 2.271,
+    "log": "/tmp/sdlc-S-2/TKT-399-mutant-wire-entry.log",
+    "priorObservation": {
+      "started": "2026-10-19T13:33:55.406117+00:00",
+      "seconds": 2.171,
+      "exit": 1,
+      "discriminatingFailure": true
+    },
+    "note": "Re-executed because the storage-cell script reused this log filename. The later storage-cell logs now have a separate prefix."
+  },
+  {
+    "mutation": "hide-corrupt-warning",
+    "path": "App.tsx",
+    "command": [
+      "vitest",
+      "run",
+      "src/App.exit.test.tsx"
+    ],
+    "exit": 1,
+    "discriminatingFailure": true,
+    "started": "2026-10-19T13:33:57.577216+00:00",
+    "seconds": 4.277,
+    "log": "/tmp/sdlc-S-2/TKT-399-mutant-hide-corrupt-warning.log"
+  },
+  {
+    "mutation": "revoked-exit-mints",
+    "path": "entry-scan.ts",
+    "command": [
+      "vitest",
+      "run",
+      "src/App.exit.test.tsx"
+    ],
+    "exit": 1,
+    "discriminatingFailure": true,
+    "started": "2026-10-19T13:34:01.854884+00:00",
+    "seconds": 3.023,
+    "log": "/tmp/sdlc-S-2/TKT-399-mutant-revoked-exit-mints.log"
+  },
+  {
+    "mutation": "clear-pairing-retains-mode",
+    "path": "App.tsx",
+    "command": [
+      "vitest",
+      "run",
+      "src/App.exit.test.tsx"
+    ],
+    "exit": 1,
+    "discriminatingFailure": true,
+    "started": "2026-10-19T13:34:04.878122+00:00",
+    "seconds": 6.183,
+    "log": "/tmp/sdlc-S-2/TKT-399-mutant-clear-pairing-retains-mode.log"
+  },
+  {
+    "mutation": "stale-camera",
+    "path": "App.tsx",
+    "command": [
+      "vitest",
+      "run",
+      "src/App.exit.test.tsx"
+    ],
+    "exit": 1,
+    "discriminatingFailure": true,
+    "started": "2026-10-19T13:34:11.061815+00:00",
+    "seconds": 3.174,
+    "log": "/tmp/sdlc-S-2/TKT-399-mutant-stale-camera.log"
+  },
+  {
+    "mutation": "typeerror-is-network",
+    "path": "scan-transport.ts",
+    "command": [
+      "vitest",
+      "run",
+      "src/App.exit-matrix.test.tsx",
+      "--testNamePattern",
+      "type-error"
+    ],
+    "exit": 1,
+    "discriminatingFailure": true,
+    "started": "2026-10-19T13:34:14.236003+00:00",
+    "seconds": 10.048,
+    "log": "/tmp/sdlc-S-2/TKT-399-mutant-typeerror-is-network.log"
+  },
+  {
+    "mutation": "server500-offline",
+    "path": "entry-scan.ts",
+    "command": [
+      "vitest",
+      "run",
+      "src/App.exit-matrix.test.tsx",
+      "--testNamePattern",
+      "Exit '500'"
+    ],
+    "exit": 1,
+    "discriminatingFailure": true,
+    "started": "2026-10-19T13:34:24.317838+00:00",
+    "seconds": 10.05,
+    "log": "/tmp/sdlc-S-2/TKT-399-mutant-server500-offline.log"
+  },
+  {
+    "mutation": "sent-context-lost",
+    "path": "entry-scan.ts",
+    "command": [
+      "vitest",
+      "run",
+      "src/App.exit-matrix.test.tsx",
+      "--testNamePattern",
+      "type-error"
+    ],
+    "exit": 1,
+    "discriminatingFailure": true,
+    "started": "2026-10-19T13:34:34.367727+00:00",
+    "seconds": 10.048,
+    "log": "/tmp/sdlc-S-2/TKT-399-mutant-sent-context-lost.log"
+  },
+  {
+    "mutation": "clock-inclusive-boundary",
+    "path": "scan-clock.ts",
+    "command": [
+      "vitest",
+      "run",
+      "src/entry-scan.timing.test.ts"
+    ],
+    "exit": 1,
+    "discriminatingFailure": true,
+    "started": "2026-10-19T13:34:44.415909+00:00",
+    "seconds": 40.69,
+    "log": "/tmp/sdlc-S-2/TKT-399-mutant-clock-inclusive-boundary.log"
+  }
+]

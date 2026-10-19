@@ -1,0 +1,72 @@
+[
+  {
+    "mutation": "mint-entry",
+    "path": "occurrence-store.ts",
+    "command": [
+      "vitest",
+      "run",
+      "src/occurrence-exit-cells.test.ts"
+    ],
+    "exit": 1,
+    "discriminatingFailure": true,
+    "started": "2026-10-19T13:49:48.089722+00:00",
+    "seconds": 1.97,
+    "log": "/tmp/sdlc-S-2/TKT-399-mutant-storage-mint-entry.log"
+  },
+  {
+    "mutation": "recover-entry",
+    "path": "occurrence-store.ts",
+    "command": [
+      "vitest",
+      "run",
+      "src/occurrence-exit-cells.test.ts"
+    ],
+    "exit": 1,
+    "discriminatingFailure": true,
+    "started": "2026-10-19T13:49:50.060183+00:00",
+    "seconds": 1.872,
+    "log": "/tmp/sdlc-S-2/TKT-399-mutant-storage-recover-entry.log"
+  },
+  {
+    "mutation": "wire-entry",
+    "path": "reconcile-batch.ts",
+    "command": [
+      "vitest",
+      "run",
+      "src/occurrence-exit-cells.test.ts"
+    ],
+    "exit": 1,
+    "discriminatingFailure": true,
+    "started": "2026-10-19T13:49:51.932503+00:00",
+    "seconds": 1.719,
+    "log": "/tmp/sdlc-S-2/TKT-399-mutant-storage-wire-entry.log"
+  },
+  {
+    "mutation": "terminal-became-queue",
+    "path": "occurrence-store.ts",
+    "command": [
+      "vitest",
+      "run",
+      "src/occurrence-exit-cells.test.ts"
+    ],
+    "exit": 1,
+    "discriminatingFailure": true,
+    "started": "2026-10-19T13:49:53.676488+00:00",
+    "seconds": 1.82,
+    "log": "/tmp/sdlc-S-2/TKT-399-mutant-storage-terminal-became-queue.log"
+  },
+  {
+    "mutation": "late-mark-clobbered",
+    "path": "occurrence-store.ts",
+    "command": [
+      "vitest",
+      "run",
+      "src/occurrence-exit-cells.test.ts"
+    ],
+    "exit": 1,
+    "discriminatingFailure": true,
+    "started": "2026-10-19T13:49:55.496352+00:00",
+    "seconds": 1.719,
+    "log": "/tmp/sdlc-S-2/TKT-399-mutant-storage-late-mark-clobbered.log"
+  }
+]

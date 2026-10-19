@@ -1,0 +1,46 @@
+[
+  {
+    "mutation": "css-control",
+    "unit": {
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "exec",
+        "vitest",
+        "run",
+        "src/App"
+      ],
+      "exit": 0,
+      "seconds": 20.463,
+      "log": "css-control-app.log"
+    },
+    "browser": {
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-browser-targeted.sh",
+        "run"
+      ],
+      "exit": 1,
+      "seconds": 16.369,
+      "log": "css-control-browser.log"
+    },
+    "discriminatingFailure": true,
+    "note": "Execution failed at the actual Exit control. Receipt detector originally required the literal TimeoutError, but Playwright prints locator.check: Timeout 10000ms exceeded. Validated the actual locator and pointer-event interception."
+  },
+  {
+    "mutation": "chrome-notice-entry",
+    "unit": null,
+    "browser": {
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-browser-targeted.sh",
+        "run"
+      ],
+      "exit": 1,
+      "seconds": 9.69,
+      "log": "chrome-notice-entry-browser.log"
+    },
+    "discriminatingFailure": true
+  }
+]
