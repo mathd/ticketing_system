@@ -57,7 +57,7 @@ window.__predecessorProof = async raw => {
     const context = await browser.newContext({ baseURL: BASE }); await installProbe(context);
     const pending = await context.newPage(), queued = await context.newPage(), recovered = await context.newPage();
     const leaseTime = new Date();
-    for (const page of [pending, queued, recovered]) await page.clock.install({ time: leaseTime });
+    for (const page of [pending, queued, recovered]) await page.clock.setFixedTime(leaseTime);
     try {
       await pair(pending, token); await pending.getByRole('radio', { name: 'Exit', exact: true }).check();
       await pending.evaluate(() => { const native=fetch;window.fetch=(input,init)=>input instanceof Request&&new URL(input.url).pathname==='/api/access/scans'?new Promise(()=>{}):native(input,init); });
@@ -99,7 +99,7 @@ window.__predecessorProof = async raw => {
       assert.deepEqual(await read(old), before); assert.equal(scans.length, 0); assert.equal(syncs.length, 0);
       assert.deepEqual(errors, []); assert.ok(loaded.some(row => row.path.endsWith('.js')));
       await old.close();
-      const current = await context.newPage(); await current.clock.install({ time: leaseTime }); await pair(current, token);
+      const current = await context.newPage(); await current.clock.setFixedTime(leaseTime); await pair(current, token);
       assert.ok(original.leaseExpiresAt > await current.evaluate(() => Date.now()));
       assert.deepEqual(await read(current), before);
       const eligible = before.filter(row => row.state === 'QUEUED');
