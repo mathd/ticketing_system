@@ -1,0 +1,9 @@
+{
+  "originalDriverStopped": true,
+  "expectedMarker": "DNS properties:",
+  "observedMarker": "unexpected DNS question",
+  "cause": "Host search suffix was added to the relative name; wire assertion ran before DNSError properties.",
+  "failingCases": 20,
+  "sourceChanged": false,
+  "extraProof": "05b changes only the direct helper LookupHost request input, leaving its absolute expected name unchanged. DNSError properties are asserted before wire checks there."
+}

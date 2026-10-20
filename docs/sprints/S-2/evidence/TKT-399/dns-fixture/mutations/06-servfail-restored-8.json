@@ -1,0 +1,10 @@
+{
+  "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=8 -timeout=3m ./services/access/internal/testdb -run '^TestDNSProducerRealResolver$'",
+  "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+  "start": "2026-10-20T04:11:15.974233+00:00",
+  "end": "2026-10-20T04:11:16.439419+00:00",
+  "seconds": 0.46518665400799364,
+  "exit": 0,
+  "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/06-servfail-restored-8.jsonl",
+  "sha256": "80211cc26839807c89566c1c129d50895decbca25e17d3732f9acf081d0e3621"
+}

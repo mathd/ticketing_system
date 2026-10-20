@@ -1,0 +1,318 @@
+{
+  "baseHead": "2c8b35bbad7f24a863e7ef7ef8b9c89613931174",
+  "failedGateTree": "3bec9e9116273f948bbf7e5fe9abcd02bcb2122c",
+  "planSha256": "b879ddcb39ca850fc0f968a56c3309b147c7f0e3c6a0b77fd254627a42fe9fc0",
+  "originalArtifacts": [
+    {
+      "source": "/tmp/sdlc-S-2/TKT-399-final-postmerge-first.gate.verdict",
+      "retained": "original-gate.verdict",
+      "sha256": "6cc270f2861e5e268e48103e56b3a181f39828e6ae603350e181ee6d689af340",
+      "bytes": 185
+    },
+    {
+      "source": "/tmp/sdlc-S-2/TKT-399-final-postmerge-first-failure.json",
+      "retained": "original-failure.json",
+      "sha256": "5a5a71f71022c3c66726d91ae1fc3005d2067b9ceb5d89dacd083a9206b36887",
+      "bytes": 631
+    },
+    {
+      "source": "/tmp/sdlc-S-2/TKT-399-host-dns-probe.jsonl",
+      "retained": "original-host-dns-probe.jsonl",
+      "sha256": "1ddc3fcba24eabd841162c430918047723d17da4f1502898205a50d5d07babcc",
+      "bytes": 1405
+    },
+    {
+      "source": "/tmp/sdlc-S-2/TKT-399-dns-diagnosis.json",
+      "retained": "original-diagnosis.json",
+      "sha256": "efbf7e74d6bcbf7ecfa3613c4d9de25a8f0b6dcddcbde15c848bb57c83aae3fb",
+      "bytes": 2472
+    },
+    {
+      "source": "/tmp/sdlc-S-2/TKT-399-final-postmerge-first.gate.log",
+      "sha256": "6d4dcd9a86b2eea59dd182d4cbf1ded9da002aa7293e52624b8d67ba0492bf56",
+      "bytes": 89545,
+      "retainedExcerpt": "original-failing-subtests.log",
+      "excerptLines": [
+        1281,
+        1303
+      ],
+      "excerptSha256": "0c641aad908534a88b9c6dbdfeb3e6c96fb40e0383cff88f942a76e10a88c5bf",
+      "retained": "original-gate.log"
+    }
+  ],
+  "note": "Original artifacts are preserved verbatim. The full failed gate log is now retained as original-gate.log. Its two failing trees also remain as a separate excerpt. The historical diagnosis next-step field was superseded by D52. Earlier scanner receipts remain unchanged.",
+  "checks": "checks.json",
+  "mutationStatus": {
+    "head": "806378e3f75d0e6d60a6a90130dd94ecf8cbc16e",
+    "mutantFamilies": 10,
+    "additionalDirectNameMutant": 1,
+    "restoredRunsPerMutant": 8,
+    "originalDriverStopRetained": true,
+    "explanation": "05 main-store mutation failed earlier at exact wire-name assertion. 05b separately killed the absolute DNSError.Name input mutation."
+  },
+  "candidateBeforeMutations": "806378e3f75d0e6d60a6a90130dd94ecf8cbc16e",
+  "mutations": "mutations/results.json",
+  "browserApplicability": "browser-applicability.json",
+  "retainedMutationFiles": [
+    {
+      "path": "mutations/01-lookup-default-red.json",
+      "sha256": "9c68000f43286cdb26f94baa101f966c5d3dbf264b9af43d2978c9ea2d901b4c",
+      "bytes": 608
+    },
+    {
+      "path": "mutations/01-lookup-default-red.jsonl",
+      "sha256": "330adee1703b72f02047a154937512d5a8e1e662bd2842d18acb7003164f9a1c",
+      "bytes": 6340
+    },
+    {
+      "path": "mutations/01-lookup-default-restored-8.json",
+      "sha256": "76dd74cf4a4cfac78324813170bd52bdde6ed65ebd6dcb1c706acb011ed550e5",
+      "bytes": 614
+    },
+    {
+      "path": "mutations/01-lookup-default-restored-8.jsonl",
+      "sha256": "4949b6e5b21e952a7318af60b6b74d971a44b08ed83061b981e879a147b83387",
+      "bytes": 45674
+    },
+    {
+      "path": "mutations/02-attempt-default-red.json",
+      "sha256": "95489b2f48de56c938f1d7fe568967b4bc8ab0dad4547a4a3d653ea2e4b24303",
+      "bytes": 610
+    },
+    {
+      "path": "mutations/02-attempt-default-red.jsonl",
+      "sha256": "94127f900438bac8adfce8ee4c88cd74acf07b0e95834b3524250e950283514e",
+      "bytes": 6373
+    },
+    {
+      "path": "mutations/02-attempt-default-restored-8.json",
+      "sha256": "dff52340c12a5859a3ff98ad1b4dddf1937b4b907e20973016e676315b0efeb3",
+      "bytes": 616
+    },
+    {
+      "path": "mutations/02-attempt-default-restored-8.jsonl",
+      "sha256": "80a82d0885f2faab6c8df788648c7e93f163fe4d35ebb7a9c3ceb79f6156a920",
+      "bytes": 45976
+    },
+    {
+      "path": "mutations/03-mixed-default-red.json",
+      "sha256": "6f0238641a7822be7fb8fba8a25c2e6f80b541168d673588fb32628bbf78bf03",
+      "bytes": 617
+    },
+    {
+      "path": "mutations/03-mixed-default-red.jsonl",
+      "sha256": "04dee133a8d31406baf85171a7e467df5a0c79af7dc22c18d33a4de18964f81d",
+      "bytes": 22642
+    },
+    {
+      "path": "mutations/03-mixed-default-restored-8.json",
+      "sha256": "f3da0a80fd982515cd5010fc7ba6a78ff62437f8d3fe706033dd2e4fb7c6ea5d",
+      "bytes": 625
+    },
+    {
+      "path": "mutations/03-mixed-default-restored-8.jsonl",
+      "sha256": "14658e48640f848d2f9f8916bb161ebcb339943869769d10ed6cba6e2763e175",
+      "bytes": 143055
+    },
+    {
+      "path": "mutations/04-wrong-request-name-red.json",
+      "sha256": "fbcbf8f4043cb487ebeef1a7c4b0bc685ac922a6bd7d82b7ac4c1128610f9315",
+      "bytes": 697
+    },
+    {
+      "path": "mutations/04-wrong-request-name-red.jsonl",
+      "sha256": "922475b440ad4f061f61ce90c05f8719f625491e68e322418664cc2d9c36851f",
+      "bytes": 109260
+    },
+    {
+      "path": "mutations/04-wrong-request-name-restored-8.json",
+      "sha256": "16f1c012cf3dbe9cd88b39ae603b74c21efa93145c4a910d3a6908cec9e63da4",
+      "bytes": 705
+    },
+    {
+      "path": "mutations/04-wrong-request-name-restored-8.jsonl",
+      "sha256": "d49d6162c944260f583abecc1f70814f1aa970dc0424f36580d0f5b835c61eaf",
+      "bytes": 233526
+    },
+    {
+      "path": "mutations/05-observed-assertion.json",
+      "sha256": "c7b257b5c9652215b5f617d5228cbe4c2985090dbc54e01d6270dd90858ed128",
+      "bytes": 467
+    },
+    {
+      "path": "mutations/05-relative-request-name-red.json",
+      "sha256": "31d1728e7cf82c906086870187b04522b59b2f96b9aa364ac3265764e3352c27",
+      "bytes": 700
+    },
+    {
+      "path": "mutations/05-relative-request-name-red.jsonl",
+      "sha256": "b3dc942444ec5f2edff6a1941c32dd27f05b46add71d096ce3dcdcb073a0969b",
+      "bytes": 110193
+    },
+    {
+      "path": "mutations/05-relative-request-name-restored-8.json",
+      "sha256": "b3548c5b1a3dea737b918b27caec45a907c2cd3dcf4cb298acd26e64a4263400",
+      "bytes": 707
+    },
+    {
+      "path": "mutations/05-relative-request-name-restored-8.jsonl",
+      "sha256": "cce1c88c56ebe3d20bd4718a756b760f8ae228c58bc8ce40c396b4bb7edc9bae",
+      "bytes": 233515
+    },
+    {
+      "path": "mutations/05b-relative-helper-input-red.json",
+      "sha256": "a1f6f00d3a47585cdf9fb255094b2f1e2b0532a51cffd776d868412b121240f5",
+      "bytes": 622
+    },
+    {
+      "path": "mutations/05b-relative-helper-input-red.jsonl",
+      "sha256": "c3096a43d4812089e0c3aac69c0fe2a1145578ddda1fcac332020a9138a3e6ea",
+      "bytes": 2630
+    },
+    {
+      "path": "mutations/05b-relative-helper-input-restored-8.json",
+      "sha256": "e7d6d3122e57a1b2fd63499c814b7bd0378f5ae3cb5115b00d32550390bd5315",
+      "bytes": 629
+    },
+    {
+      "path": "mutations/05b-relative-helper-input-restored-8.jsonl",
+      "sha256": "3a857a30830c8658b6b94a9a229327077c9f49ae3c9408c23b3fe60f48aba9f0",
+      "bytes": 13642
+    },
+    {
+      "path": "mutations/06-servfail-red.json",
+      "sha256": "6e70c85b660f3596f2a378ce680102244c98a8b87af400ea88bbc717f8bdc632",
+      "bytes": 595
+    },
+    {
+      "path": "mutations/06-servfail-red.jsonl",
+      "sha256": "b24d678cb11c5d92564c8fe4c2fa3fbe4e0648c3e73a3044552eadf4b9208f4f",
+      "bytes": 3862
+    },
+    {
+      "path": "mutations/06-servfail-restored-8.json",
+      "sha256": "95701e4f0109612d646421ea4634c2e7200ffb67fcd333fd5b4c3cdf9e64967b",
+      "bytes": 603
+    },
+    {
+      "path": "mutations/06-servfail-restored-8.jsonl",
+      "sha256": "80211cc26839807c89566c1c129d50895decbca25e17d3732f9acf081d0e3621",
+      "bytes": 20478
+    },
+    {
+      "path": "mutations/07-remove-unsupported-hop-red.json",
+      "sha256": "1a75bee00201b89500bec7e4ab26a5fc292d3aaf794b4c60866f3145f84e5203",
+      "bytes": 726
+    },
+    {
+      "path": "mutations/07-remove-unsupported-hop-red.jsonl",
+      "sha256": "aafd18360f2aeea26377b7541d319e9c55de3328eb6bbdf26bab5b1b3c78894b",
+      "bytes": 33886
+    },
+    {
+      "path": "mutations/07-remove-unsupported-hop-restored-8.json",
+      "sha256": "180bbd65c3400e91f5a3d1cb7f080603afd01b93d98e069afeebaeb1349ad68c",
+      "bytes": 734
+    },
+    {
+      "path": "mutations/07-remove-unsupported-hop-restored-8.jsonl",
+      "sha256": "0c001825c18413364cfc4b1c8bb8f2b6cd47894dcac8f07480befe2756ee2bed",
+      "bytes": 108972
+    },
+    {
+      "path": "mutations/08-remove-recovery-hop-red.json",
+      "sha256": "b157ee33045528552783c04e281e272a4765b321241131903ee0cef669b8601b",
+      "bytes": 624
+    },
+    {
+      "path": "mutations/08-remove-recovery-hop-red.jsonl",
+      "sha256": "05ba3c654ec32f7b3d3b756f8e4736a8c0aa3421b0c1d55f0103f4cdf4bd3b14",
+      "bytes": 54396
+    },
+    {
+      "path": "mutations/08-remove-recovery-hop-restored-8.json",
+      "sha256": "77e5b8a6ad1881edeb2f980da1e710594e282cc4fcd5a60724b2c3bff04391f7",
+      "bytes": 631
+    },
+    {
+      "path": "mutations/08-remove-recovery-hop-restored-8.jsonl",
+      "sha256": "f5559ea03ed458e3413d5551ba59bfbe8a34f08c0bbb9c5711984b0e992ca49b",
+      "bytes": 143040
+    },
+    {
+      "path": "mutations/09-same-socket-order-red.json",
+      "sha256": "e36006b4d08f048a478678a7eb8d22f3039cd14eaf1cb2f4249c6350f0fce649",
+      "bytes": 701
+    },
+    {
+      "path": "mutations/09-same-socket-order-red.jsonl",
+      "sha256": "bb1a3dc58ae3827182eedd97e7405cb758f63230e4022ffbb15bb0c2ced06bc7",
+      "bytes": 26671
+    },
+    {
+      "path": "mutations/09-same-socket-order-restored-8.json",
+      "sha256": "c054d840e6ad06b339d1713e4dec64ff5585b864eae9102f0a16a19081ed9613",
+      "bytes": 709
+    },
+    {
+      "path": "mutations/09-same-socket-order-restored-8.jsonl",
+      "sha256": "88ef2361988c5ff3673cf7433e51ef91f8cdcac712d5e91490978bc943042610",
+      "bytes": 74467
+    },
+    {
+      "path": "mutations/10-omit-active-close-red.json",
+      "sha256": "0a29f7746f757ca91fa4d8b095df793294c4a145944359de66c67af93f3ae58a",
+      "bytes": 609
+    },
+    {
+      "path": "mutations/10-omit-active-close-red.jsonl",
+      "sha256": "c1657825d3eebd391fc58b679b5685a6c55601799b1d3e541853c1664ff8b088",
+      "bytes": 1711
+    },
+    {
+      "path": "mutations/10-omit-active-close-restored-8.json",
+      "sha256": "5854fcb73438113b3178a58c51f748c071e7e34eaca501974135598190819daa",
+      "bytes": 617
+    },
+    {
+      "path": "mutations/10-omit-active-close-restored-8.jsonl",
+      "sha256": "7ffa095db74d3b71ee48108faa92d72d91998d3a15eacbcc56d3aea093c5287d",
+      "bytes": 7096
+    },
+    {
+      "path": "mutations/candidate-code-sha256.json",
+      "sha256": "5b209b4d855533abd1948fc992eb55a659397c0286e43de9cbdebda374f17fdf",
+      "bytes": 601
+    },
+    {
+      "path": "mutations/candidate.json",
+      "sha256": "a506811c85487ff1fccb4dd54bea196cf7424163fe0ff95ba796f0153286cfe4",
+      "bytes": 737
+    },
+    {
+      "path": "mutations/complete.json",
+      "sha256": "5d623a0001e8a20758212f0746d85218e21ebb1db9e053427431433a613d64d1",
+      "bytes": 337
+    },
+    {
+      "path": "mutations/continue-mutations.py",
+      "sha256": "328242c196f24952a591e9c5f9e996ee5c1cce2b3339ea6247e0f5afc5a82b64",
+      "bytes": 3760
+    },
+    {
+      "path": "mutations/mutate.py",
+      "sha256": "a1f47db4e83d5cae7b4f90d2c0cf164fe5d201b06a3116f536b04a51af09588f",
+      "bytes": 11002
+    },
+    {
+      "path": "mutations/mutation-selectors.json",
+      "sha256": "77502bdbfaa03a79e789dbfa804b70eaf1e1c6f7d0597214fe2fa449d70ab83d",
+      "bytes": 10177
+    },
+    {
+      "path": "mutations/results.json",
+      "sha256": "f2866dffd4d17bf7870fdb98d511f5110139cf07c9ba14ee5b178a88b893c575",
+      "bytes": 16765
+    }
+  ]
+}

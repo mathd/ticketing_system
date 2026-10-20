@@ -17,14 +17,16 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
+	"golang.org/x/net/dns/dnsmessage"
 
 	"ticketing/services/access/internal/testdb"
 )
 
 // The TKT-557 real-driver ledger (ADR-085 §8 ticket 0, D22/D27). Every case
 // uses real pgx through the shared testdb fixture, and a real producer: the
-// real resolver, real sockets, a real role limit, real backend termination
-// and the recovery-held PostgreSQL that scripts/smoke.sh starts. These tests
+// real Go resolver against an owned authoritative TCP NXDOMAIN responder,
+// real sockets, a real role limit, real backend termination and the
+// recovery-held PostgreSQL that scripts/smoke.sh starts. These tests
 // prove the store's application type, site, class and original cause. The
 // HTTP status and body are proved separately at the Router tier.
 
@@ -177,8 +179,9 @@ var everySite = []AvailabilitySite{SiteDeviceLookup, SitePolicyRead, SiteSingleB
 // name the exact real producer tree, not to classify.
 func typeName(err error) string { return fmt.Sprintf("%T", err) }
 
-// The real resolver on a unique .invalid name, from LookupFunc: the lookup
-// tree has a DNS join directly below the ConnectError and no per-attempt
+// The real Go resolver against an owned authoritative TCP NXDOMAIN responder,
+// from LookupFunc. The lookup tree has a DNS join directly below the
+// ConnectError and no per-attempt
 // wrapper. A classifier that accepts only per-attempt DNS fails here.
 func TestRealConnectLookupDNSAtEverySite(t *testing.T) {
 	for _, site := range everySite {
@@ -186,7 +189,10 @@ func TestRealConnectLookupDNSAtEverySite(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			h := newScannerHarness(t, ctx, testdb.Options{})
+			beforeDNS := len(h.f.DNSQueries())
 			elapsed, err := h.faultAt(t, site, testdb.FaultDNSLookup)
+			requireDNSWire(t, h.f, beforeDNS)
+			requireDNSAbsence(t, err, h.f.DNSName())
 			requireClass(t, err, site, ClassConnectDNS)
 			avail := err
 			ce := connectCauseOf(t, avail)
@@ -220,7 +226,10 @@ func TestRealConnectAttemptDNSAtEverySite(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			h := newScannerHarness(t, ctx, testdb.Options{})
+			beforeDNS := len(h.f.DNSQueries())
 			elapsed, err := h.faultAt(t, site, testdb.FaultDNSAttempt)
+			requireDNSWire(t, h.f, beforeDNS)
+			requireDNSAbsence(t, err, h.f.DNSName())
 			requireClass(t, err, site, ClassConnectDNS)
 			avail := err
 			tree := testdb.ErrorTree(connectCauseOf(t, avail))
@@ -231,6 +240,123 @@ func TestRealConnectAttemptDNSAtEverySite(t *testing.T) {
 			}
 			h.requireNoDecision(t, ctx, site)
 			logLatency(t, site, string(ClassConnectDNS)+"/attempt", elapsed)
+		})
+	}
+}
+
+// Only decoded wire questions prove which resolver transport was used.
+func requireDNSWire(t *testing.T, f *testdb.Fixture, before int) {
+	t.Helper()
+	queries := f.DNSQueries()[before:]
+	if len(queries) == 0 {
+		t.Fatal("no-owned-wire-questions: operation did not reach the DNS producer")
+	}
+	f.RequireNoDNSErrors(t)
+	seenA, seenAAAA := false, false
+	for _, q := range queries {
+		if q.Name != f.DNSName() || q.Class != dnsmessage.ClassINET {
+			t.Fatalf("unexpected DNS question: %+v, want %s IN", q, f.DNSName())
+		}
+		switch q.Type {
+		case dnsmessage.TypeA:
+			seenA = true
+		case dnsmessage.TypeAAAA:
+			seenAAAA = true
+		default:
+			t.Fatalf("unexpected DNS question type: %+v", q)
+		}
+	}
+	if !seenA || !seenAAAA {
+		t.Fatalf("DNS questions lack A or AAAA: %+v", queries)
+	}
+}
+
+func requireDNSAbsence(t *testing.T, err error, name string) {
+	t.Helper()
+	var dns *net.DNSError
+	if !strings.HasSuffix(name, ".invalid.") {
+		t.Fatalf("fault name is not absolute: %q", name)
+	}
+	if !errors.As(err, &dns) {
+		t.Fatalf("no real DNS error:\n%s", testdb.ErrorTree(err))
+	}
+	if dns.Name != name || !dns.IsNotFound || dns.IsTemporary || dns.IsTimeout {
+		t.Fatalf("DNS properties: name=%q notfound=%v temporary=%v timeout=%v, want %q NXDOMAIN", dns.Name, dns.IsNotFound, dns.IsTemporary, dns.IsTimeout, name)
+	}
+}
+
+func requireMixedLeaves(t *testing.T, err error, name string, fault testdb.Fault, blockedAddress string) {
+	t.Helper()
+	ce := connectCauseOf(t, err)
+	join, ok := ce.Unwrap().(interface{ Unwrap() []error })
+	if !ok {
+		t.Fatalf("outer ConnectError has no direct join:\n%s", testdb.ErrorTree(ce))
+	}
+	children := join.Unwrap()
+	hasRecovery, hasSocket := false, false
+	for _, child := range children {
+		var pgErr *pgconn.PgError
+		if errors.As(child, &pgErr) && pgErr.Code == "57P03" {
+			hasRecovery = true
+		}
+		var op *net.OpError
+		if errors.As(child, &op) && op.Op == "dial" {
+			if fault == testdb.FaultMixedSupported {
+				hasSocket = hasSocket || errors.Is(op, syscall.ECONNREFUSED)
+			} else {
+				hasSocket = hasSocket || (op.Timeout() && op.Addr != nil && op.Addr.String() == blockedAddress)
+			}
+		}
+	}
+	if !hasRecovery {
+		t.Fatalf("mixed 57P03 leaf missing:\n%s", testdb.ErrorTree(ce))
+	}
+	if !hasSocket {
+		t.Fatalf("mixed socket leaf missing:\n%s", testdb.ErrorTree(ce))
+	}
+	if len(children) != 3 {
+		t.Fatalf("mixed leaf-presence: got %d branches, want DNS, 57P03 and socket:\n%s", len(children), testdb.ErrorTree(ce))
+	}
+	if typeName(children[0]) != "*net.DNSError" {
+		t.Fatalf("first branch is not lookup DNS:\n%s", testdb.ErrorTree(ce))
+	}
+	requireDNSAbsence(t, children[0], name)
+	recoveryIndex, socketIndex := 1, 2
+	if fault == testdb.FaultMixedUnsupportedFirst {
+		recoveryIndex, socketIndex = 2, 1
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(children[recoveryIndex], &pgErr) || pgErr.Code != "57P03" {
+		t.Fatalf("mixed 57P03/socket order: branch %d lacks real 57P03:\n%s", recoveryIndex, testdb.ErrorTree(ce))
+	}
+	var op *net.OpError
+	if !errors.As(children[socketIndex], &op) || op.Op != "dial" {
+		t.Fatalf("mixed socket branch lacks dial OpError:\n%s", testdb.ErrorTree(ce))
+	}
+	if fault == testdb.FaultMixedSupported {
+		if !errors.Is(op, syscall.ECONNREFUSED) {
+			t.Fatalf("mixed socket lacks ECONNREFUSED:\n%s", testdb.ErrorTree(ce))
+		}
+	} else if !op.Timeout() || op.Addr == nil || op.Addr.String() != blockedAddress {
+		t.Fatalf("mixed socket lacks real loopback dial timeout:\n%s", testdb.ErrorTree(ce))
+	}
+}
+
+func TestDNSDisarmRestoresSuccessfulHealthyLookup(t *testing.T) {
+	for _, fault := range []testdb.Fault{testdb.FaultDNSLookup, testdb.FaultDNSAttempt, testdb.FaultMixedSupported, testdb.FaultMixedUnsupported, testdb.FaultMixedUnsupportedFirst} {
+		t.Run(string(fault), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			h := newScannerHarness(t, ctx, testdb.Options{})
+			_, err := h.faultAt(t, SiteDeviceLookup, fault)
+			requireDNSWire(t, h.f, 0)
+			requireDNSAbsence(t, err, h.f.DNSName())
+			// faultAt disarms before returning. This proves successful lookup only;
+			// the healthy database uses an IP literal, so it cannot prove DNS isolation.
+			device, err := h.st.AuthenticateScannerDevice(ctx, h.token)
+			if err != nil || device.ID != h.device.ID {
+				t.Fatalf("healthy lookup after disarm: device=%v err=%v", device.ID, err)
+			}
 		})
 	}
 }
@@ -316,7 +442,8 @@ func TestRealRecoveryThroughLocalhostIsOneSupportedSet(t *testing.T) {
 // Real producers in ONE connect attempt set, under the actual outer
 // ConnectError: a supported set is one mixed class; a supported lookup-form
 // branch and a real 57P03 beside an unsupported independent dial timeout stay
-// unsupported, in either order. A supported child cannot bless a sibling.
+// unsupported, in either socket order. pgx collects lookup errors first.
+// A supported child cannot bless a sibling.
 func TestRealMixedConnectLeavesUnderOneConnectError(t *testing.T) {
 	for _, site := range everySite {
 		t.Run(string(site), func(t *testing.T) {
@@ -325,25 +452,24 @@ func TestRealMixedConnectLeavesUnderOneConnectError(t *testing.T) {
 			h := newScannerHarness(t, ctx, testdb.Options{})
 			testdb.RequireRecoveryRejects(t, ctx)
 
-			_, err := h.faultAt(t, site, testdb.FaultMixedSupported)
-			requireClass(t, err, site, ClassConnectMixed)
-			avail := err
-			var pgErr *pgconn.PgError
-			var dns *net.DNSError
-			if !errors.As(avail, &pgErr) || pgErr.Code != "57P03" || !errors.As(avail, &dns) || !errors.Is(avail, syscall.ECONNREFUSED) {
-				t.Fatalf("supported set lacks a real leaf:\n%s", testdb.ErrorTree(avail))
-			}
-
-			for _, fault := range []testdb.Fault{testdb.FaultMixedUnsupported, testdb.FaultMixedUnsupportedFirst} {
-				elapsed, err := h.faultAt(t, site, fault)
-				requireNoClass(t, err, site)
-				requireConnectCause(t, err)
-				if !errors.As(err, &pgErr) || pgErr.Code != "57P03" || !errors.As(err, &dns) {
-					t.Fatalf("%s: the supported leaves are missing, so the rejection proves nothing:\n%s", fault, testdb.ErrorTree(err))
-				}
-				if elapsed >= preDecisionStepBound {
-					t.Fatalf("%s: took %s, so the step timer decided, not the leaf rule", fault, elapsed)
-				}
+			for _, fault := range []testdb.Fault{testdb.FaultMixedSupported, testdb.FaultMixedUnsupported, testdb.FaultMixedUnsupportedFirst} {
+				t.Run(string(fault), func(t *testing.T) {
+					beforeDNS, beforeBlocked := len(h.f.DNSQueries()), h.f.BlockedDials()
+					elapsed, err := h.faultAt(t, site, fault)
+					requireDNSWire(t, h.f, beforeDNS)
+					requireMixedLeaves(t, err, h.f.DNSName(), fault, h.f.BlockedDialAddress())
+					if fault == testdb.FaultMixedSupported {
+						requireClass(t, err, site, ClassConnectMixed)
+					} else {
+						if h.f.BlockedDials() <= beforeBlocked {
+							t.Fatal("no new blocked-dial entry")
+						}
+						requireNoClass(t, err, site)
+					}
+					if elapsed >= preDecisionStepBound {
+						t.Fatalf("%s: took %s, so the step timer decided, not the leaf rule", fault, elapsed)
+					}
+				})
 			}
 			h.requireNoDecision(t, ctx, site)
 		})

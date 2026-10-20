@@ -1,0 +1,10 @@
+{
+  "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=8 -timeout=3m ./services/access/internal/store -run '^TestRealConnectLookupDNSAtEverySite$'",
+  "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+  "start": "2026-10-20T04:08:42.599711+00:00",
+  "end": "2026-10-20T04:08:48.630980+00:00",
+  "seconds": 6.031269884028006,
+  "exit": 0,
+  "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/01-lookup-default-restored-8.jsonl",
+  "sha256": "4949b6e5b21e952a7318af60b6b74d971a44b08ed83061b981e879a147b83387"
+}

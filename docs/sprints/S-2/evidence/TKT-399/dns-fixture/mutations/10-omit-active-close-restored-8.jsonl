@@ -1,0 +1,36 @@
+{"Time":"2026-10-20T00:12:15.464823083-04:00","Action":"start","Package":"ticketing/services/access/internal/testdb"}
+{"Time":"2026-10-20T00:12:15.467805536-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame"}
+{"Time":"2026-10-20T00:12:15.467890516-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Output":"=== RUN   TestDNSProducerClosePartialFrame\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.470026175-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Output":"--- PASS: TestDNSProducerClosePartialFrame (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.47005292-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Elapsed":0}
+{"Time":"2026-10-20T00:12:15.470066639-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame"}
+{"Time":"2026-10-20T00:12:15.470068319-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Output":"=== RUN   TestDNSProducerClosePartialFrame\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.470370217-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Output":"--- PASS: TestDNSProducerClosePartialFrame (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.47038104-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Elapsed":0}
+{"Time":"2026-10-20T00:12:15.470383542-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame"}
+{"Time":"2026-10-20T00:12:15.470385108-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Output":"=== RUN   TestDNSProducerClosePartialFrame\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.470776038-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Output":"--- PASS: TestDNSProducerClosePartialFrame (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.470784896-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Elapsed":0}
+{"Time":"2026-10-20T00:12:15.470830238-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame"}
+{"Time":"2026-10-20T00:12:15.470831976-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Output":"=== RUN   TestDNSProducerClosePartialFrame\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.471133211-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Output":"--- PASS: TestDNSProducerClosePartialFrame (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.471140928-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Elapsed":0}
+{"Time":"2026-10-20T00:12:15.471146811-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame"}
+{"Time":"2026-10-20T00:12:15.47114817-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Output":"=== RUN   TestDNSProducerClosePartialFrame\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.471437923-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Output":"--- PASS: TestDNSProducerClosePartialFrame (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.471445509-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Elapsed":0}
+{"Time":"2026-10-20T00:12:15.471456893-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame"}
+{"Time":"2026-10-20T00:12:15.471458364-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Output":"=== RUN   TestDNSProducerClosePartialFrame\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.471749131-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Output":"--- PASS: TestDNSProducerClosePartialFrame (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.471755717-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Elapsed":0}
+{"Time":"2026-10-20T00:12:15.471792133-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame"}
+{"Time":"2026-10-20T00:12:15.471793969-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Output":"=== RUN   TestDNSProducerClosePartialFrame\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.472026116-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Output":"--- PASS: TestDNSProducerClosePartialFrame (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.472051273-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Elapsed":0}
+{"Time":"2026-10-20T00:12:15.472069632-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame"}
+{"Time":"2026-10-20T00:12:15.472071943-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Output":"=== RUN   TestDNSProducerClosePartialFrame\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.472276086-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Output":"--- PASS: TestDNSProducerClosePartialFrame (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.47227823-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Elapsed":0}
+{"Time":"2026-10-20T00:12:15.47228129-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.472530861-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Output":"ok  \tticketing/services/access/internal/testdb\t0.007s\n"}
+{"Time":"2026-10-20T00:12:15.472553567-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Elapsed":0.008}

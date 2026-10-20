@@ -1,0 +1,13 @@
+{"Time":"2026-10-20T00:11:14.680659869-04:00","Action":"start","Package":"ticketing/services/access/internal/testdb"}
+{"Time":"2026-10-20T00:11:14.683761039-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver"}
+{"Time":"2026-10-20T00:11:14.683820411-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Output":"=== RUN   TestDNSProducerRealResolver\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:14.683845034-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost"}
+{"Time":"2026-10-20T00:11:14.683849507-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Output":"=== RUN   TestDNSProducerRealResolver/LookupHost\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:14.687104661-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Output":"    dns_smoke_test.go:89: DNS properties: name=\"tkt557-189f540b473314fa.invalid\" notfound=true temporary=false timeout=false; want \"tkt557-189f540b473314fa.invalid.\" NXDOMAIN\n","OutputType":"error"}
+{"Time":"2026-10-20T00:11:14.687192335-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Output":"--- FAIL: TestDNSProducerRealResolver/LookupHost (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:14.687212798-04:00","Action":"fail","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Elapsed":0}
+{"Time":"2026-10-20T00:11:14.687225698-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Output":"--- FAIL: TestDNSProducerRealResolver (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:14.687230086-04:00","Action":"fail","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Elapsed":0}
+{"Time":"2026-10-20T00:11:14.687237766-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:14.687560828-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Output":"FAIL\tticketing/services/access/internal/testdb\t0.006s\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:14.687582598-04:00","Action":"fail","Package":"ticketing/services/access/internal/testdb","Elapsed":0.007}

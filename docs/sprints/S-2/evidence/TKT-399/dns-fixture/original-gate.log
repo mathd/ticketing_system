@@ -1,0 +1,1351 @@
+make[1]: Entering directory '/home/mathieu/sources/ticketing_system.S-2-TKT-399-final-postmerge'
+pnpm install --frozen-lockfile
+Scope: all 4 workspace projects
+Already up to date
+Done in 348ms using pnpm v11.12.0
+./scripts/generate-api.sh
+✨ openapi-typescript 7.13.0
+🚀 services/catalog/api/openapi.yaml → web/storefront/src/lib/api-types.gen.ts [133.9ms]
+✨ openapi-typescript 7.13.0
+🚀 services/catalog/api/openapi.yaml → web/backoffice/src/lib/api-types.gen.ts [127.7ms]
+✨ openapi-typescript 7.13.0
+🚀 services/commerce/api/openapi.yaml → web/storefront/src/lib/commerce-api-types.gen.ts [97.1ms]
+✨ openapi-typescript 7.13.0
+🚀 services/inventory/api/openapi.yaml → web/backoffice/src/lib/inventory-api-types.gen.ts [103ms]
+✨ openapi-typescript 7.13.0
+🚀 services/access/api/openapi.yaml → web/storefront/src/lib/access-api-types.gen.ts [56.9ms]
+✨ openapi-typescript 7.13.0
+🚀 services/access/api/openapi.yaml → web/backoffice/src/lib/access-api-types.gen.ts [58.6ms]
+✨ openapi-typescript 7.13.0
+🚀 services/access/api/openapi.yaml → web/scanner/src/access-api-types.gen.ts [89.8ms]
+go dependency drift: none across 8 module(s)
+go build-list lag: none across 8 module(s)
+security workflow trigger: services/catalog/internal/api/server.go schedules repository-scan
+security workflow trigger: the scan allowlist is wired into pnpm-audit, repository-scan and make check
+security workflow trigger: make check runs the Astro image premise guard (TKT-504)
+▶ valid allowlists pass
+  ✔ an empty allowlist with an empty mirror passes (7.485606ms)
+  ✔ a valid entry passes, with and without the expiry check (4.440784ms)
+  ✔ a Go CVE with no pnpm alias passes with an empty mirror (1.470156ms)
+  ✔ a GHSA id feeds the mirror by itself (2.454944ms)
+  ✔ a lifetime of exactly 30 days passes (1.192816ms)
+  ✔ approval today passes (2.261888ms)
+✔ valid allowlists pass (20.355062ms)
+▶ expiry (the clock-dependent check)
+  ✔ an expired entry fails with the expiry check, even with no scanner result (1.818089ms)
+  ✔ the same entry passes the deterministic check (1.011756ms)
+  ✔ an entry that expires today has expired (expiry is the start of the date, UTC) (1.242723ms)
+  ✔ an entry is refused from one hour before the start of its expiry date (the margin) (1.693262ms)
+✔ expiry (the clock-dependent check) (6.066766ms)
+▶ the verdict of the plain check does not depend on the clock
+  ✔ a valid repository gives the same result at any clock value (2.453255ms)
+  ✔ an approval date in the future passes without the clock checks (0.85626ms)
+✔ the verdict of the plain check does not depend on the clock (3.46175ms)
+▶ lifetime and approval date
+  ✔ 31 days fails (0.906855ms)
+  ✔ zero days fails (1.016592ms)
+  ✔ a negative lifetime fails (1.878223ms)
+  ✔ an approval date in the future fails with the clock checks (1.460591ms)
+✔ lifetime and approval date (5.475767ms)
+▶ required fields
+  ✔ a missing id fails (1.131402ms)
+  ✔ a missing statement fails (0.957736ms)
+  ✔ a missing owner fails (0.820528ms)
+  ✔ a missing approved_at fails (1.411061ms)
+  ✔ a missing expired_at fails (0.772499ms)
+  ✔ a blank statement fails (0.951618ms)
+  ✔ a blank id fails (0.632857ms)
+  ✔ an owner outside the allowed set fails (0.630714ms)
+  ✔ a non-string statement fails (1.177114ms)
+✔ required fields (8.794691ms)
+▶ dates
+  ✔ a quoted expired_at fails (Trivy stops with a fatal error on it) (0.872684ms)
+  ✔ a quoted approved_at fails (1.433043ms)
+  ✔ an impossible calendar date fails (no roll-over to the next month) (1.353087ms)
+  ✔ a non-canonical date fails (0.946495ms)
+  ✔ a timestamp with an offset fails (0.906897ms)
+✔ dates (5.72256ms)
+▶ identifiers and duplicates
+  ✔ a malformed CVE id fails (0.835887ms)
+  ✔ a malformed GHSA alias fails (1.165287ms)
+  ✔ a CVE in pnpm_ids fails (1.322366ms)
+  ✔ pnpm_ids that is not a list fails (1.493516ms)
+  ✔ a duplicate id fails (2.015444ms)
+  ✔ a GHSA mapped by two entries fails (0.84942ms)
+  ✔ a GHSA id repeated in its own pnpm_ids fails (0.731357ms)
+✔ identifiers and duplicates (8.684117ms)
+▶ shape and YAML features
+  ✔ an unsupported entry field fails (paths) (1.650208ms)
+  ✔ an unsupported entry field fails (purls) (1.024653ms)
+  ✔ a "secrets" section fails (0.896599ms)
+  ✔ a "misconfigurations" section fails (0.745691ms)
+  ✔ a "licenses" section fails (1.102248ms)
+  ✔ a "policy" section fails (0.680227ms)
+  ✔ an anchor fails (0.954889ms)
+  ✔ an alias fails (1.216936ms)
+  ✔ an explicit tag fails (1.15334ms)
+  ✔ a second document fails (0.933848ms)
+  ✔ a YAML directive fails (0.638495ms)
+  ✔ a duplicate key fails (1.717609ms)
+  ✔ a merge key fails (2.237812ms)
+  ✔ malformed YAML fails (2.335399ms)
+  ✔ an empty file fails (0.762396ms)
+  ✔ a missing allowlist fails (0.658077ms)
+  ✔ a top level that is not a map fails (0.601303ms)
+  ✔ a list that is not a sequence fails (0.593502ms)
+  ✔ a null list fails (0.642432ms)
+  ✔ an entry that is not a map fails (0.493576ms)
+✔ shape and YAML features (21.766334ms)
+▶ the pnpm mirror
+  ✔ a missing auditConfig fails (0.688703ms)
+  ✔ a mirror with an extra GHSA fails (0.691654ms)
+  ✔ a mirror without the derived GHSA fails (0.813457ms)
+  ✔ a mirror with a different case fails (sync writes the canonical form) (0.894854ms)
+  ✔ an unsorted mirror fails (1.864546ms)
+  ✔ another auditConfig key fails (1.119133ms)
+  ✔ an ignoreGhsas that is not a list fails (1.208505ms)
+  ✔ an anchor in auditConfig fails (2.067058ms)
+✔ the pnpm mirror (9.598729ms)
+▶ other suppression files
+  ✔ a committed trivy.yaml fails (0.970439ms)
+  ✔ a committed trivy.yml fails (0.942092ms)
+  ✔ a committed trivy-secret.yaml fails (0.636433ms)
+  ✔ a committed .trivyignore fails (0.628269ms)
+  ✔ a committed .pnpmfile.cjs fails (1.026979ms)
+  ✔ a committed .pnpmfile.mjs fails (0.651013ms)
+  ✔ a committed .pnpmfile.js fails (0.889886ms)
+  ✔ a committed .npmrc fails (0.752827ms)
+✔ other suppression files (6.75063ms)
+▶ pnpm settings outside the mirror
+  ✔ a top-level "ignore" setting fails (0.737265ms)
+  ✔ a top-level "ignoreUnfixable" setting fails (0.745522ms)
+  ✔ a top-level "ignoreRegistryErrors" setting fails (0.976141ms)
+  ✔ a top-level "registry" setting fails (1.113224ms)
+  ✔ a top-level "auditLevel" setting fails (0.982827ms)
+  ✔ a top-level "pnpmfile" setting fails (0.72318ms)
+  ✔ a top-level "globalPnpmfile" setting fails (0.742049ms)
+  ✔ a top-level "production" setting fails (0.779713ms)
+  ✔ a key that pnpm expands from the environment fails (top level) (1.010981ms)
+  ✔ a key that pnpm expands from the environment fails (nested) (1.487657ms)
+  ✔ an anchor anywhere in pnpm-workspace.yaml fails (1.925612ms)
+  ✔ a pnpm field in the root package.json fails (1.0518ms)
+  ✔ a root package.json without a pnpm field passes (1.072391ms)
+✔ pnpm settings outside the mirror (14.257731ms)
+▶ workflow wiring (structural)
+  ✔ the real workflow passes (7.310353ms)
+  ✔ the wrapper step only as text in a job name fails (4.104419ms)
+  ✔ a quoted "if" key on the wrapper step fails (3.823636ms)
+  ✔ a continue-on-error on the wrapper step fails (3.216696ms)
+  ✔ an env on the wrapper step fails (3.148891ms)
+  ✔ a pnpm-audit job that is always skipped fails (2.537496ms)
+  ✔ a pnpm-audit job with continue-on-error fails (3.609775ms)
+  ✔ the wrapper step missing fails (3.731376ms)
+  ✔ the wrapper replaced by a plain pnpm audit fails (2.067171ms)
+  ✔ a step after the wrapper fails (2.257263ms)
+  ✔ another pnpm audit step before the wrapper fails (1.899605ms)
+  ✔ the wrapper with an extra argument fails (2.172668ms)
+  ✔ a missing timeout-minutes fails (2.094059ms)
+  ✔ a timeout-minutes above the bound fails (2.304972ms)
+  ✔ a timeout-minutes that is an expression fails (2.161739ms)
+  ✔ a pnpm-audit job that needs another job fails (1.600335ms)
+  ✔ a workflow-level env fails (1.959545ms)
+  ✔ a workflow-level defaults fails (1.781619ms)
+  ✔ .trivyignore.yaml missing from the changes filter fails (3.672592ms)
+  ✔ a non-pull-request run that does not set node=true fails (3.5305ms)
+  ✔ a continue-on-error on the Trivy step fails (2.794456ms)
+  ✔ a step-level if on the Trivy step fails (2.677528ms)
+  ✔ exit-code "0" fails (1.959129ms)
+  ✔ a severity change fails (2.960923ms)
+  ✔ a missing trivyignores input fails (2.234884ms)
+  ✔ an extra Trivy input fails (skip-files) (2.287338ms)
+  ✔ a job-level if on repository-scan fails (1.857831ms)
+  ✔ a duplicate key fails (1.943563ms)
+  ✔ a run step in repository-scan fails (2.543265ms)
+  ✔ a second Trivy step fails (3.090762ms)
+  ✔ a Trivy version that is not pinned fails (2.86761ms)
+✔ workflow wiring (structural) (87.305248ms)
+▶ the audit wrapper with a recording pnpm (offline)
+  ✔ runs exactly pnpm audit --audit-level high --ignore-pnpmfile with the registry and the lockfile pinned (6.805598ms)
+  ✔ runs in the repository root (5.475645ms)
+  ✔ passes no npm or pnpm setting and no other caller variable (5.361205ms)
+  ✔ gives pnpm a fresh HOME with no file in it, and XDG directories under it (5.830108ms)
+  ✔ keeps the caller PATH and passes COREPACK_HOME when it exists (4.880152ms)
+  ✔ passes exit status 0 through (4.862086ms)
+  ✔ passes exit status 1 through (6.507834ms)
+  ✔ passes exit status 7 through (4.985718ms)
+  ✔ fails closed when pnpm is killed by a signal (5.600778ms)
+  ✔ fails closed when pnpm runs longer than the timeout (302.310546ms)
+  ✔ fails closed when pnpm cannot start (4.464595ms)
+  ✔ the timeout is shorter than the expiry margin (0.18312ms)
+  ✔ the wrapper refuses an expired entry before pnpm runs (2.810783ms)
+  ✔ the wrapper refuses an approval date in the future before pnpm runs (1.288453ms)
+  ✔ the wrapper refuses a committed-file problem before pnpm runs (1.203025ms)
+  ✔ the wrapper runs pnpm and passes its status through when the allowlist is accepted (5.756867ms)
+✔ the audit wrapper with a recording pnpm (offline) (369.201737ms)
+▶ the audit wrapper with the real pnpm and a local registry
+  ✔ the fixture finding fails both a plain audit and the wrapper (1040.542572ms)
+  ✔ the local registry reports nothing under /empty/ (the control for the registry cases) (425.4465ms)
+  ✔ a local .pnpmfile.cjs updateConfig hook is not run (908.959152ms)
+  ✔ a local .pnpmfile.mjs with a named hooks export is not run (971.75596ms)
+  ✔ a global pnpmfile in the caller configuration is not run (894.460973ms)
+  ✔ a lockfile directory from the caller environment is not used (1032.2917ms)
+  ✔ a registry from the caller environment is not used (1230.508724ms)
+  ✔ a registry from the caller HOME .npmrc is not used (981.895237ms)
+  ✔ a registry from a local .npmrc is not used (987.83255ms)
+✔ the audit wrapper with the real pnpm and a local registry (8534.703346ms)
+▶ sync
+  ✔ writes the derived mirror, keeps the rest of the file, and is idempotent (7.156891ms)
+  ✔ adds auditConfig to a workspace that has none (1.170578ms)
+  ✔ refuses to write a mirror from an invalid allowlist (0.808037ms)
+✔ sync (9.23308ms)
+▶ command line (real clock)
+  ✔ check exits 0 on a valid repository (58.344592ms)
+  ✔ check --now exits 0 on a live entry (67.315292ms)
+  ✔ check exits 0 on a lapsed entry, and check --now exits 1 and names it (109.089341ms)
+  ✔ check exits 1 on a refused repository (59.005246ms)
+  ✔ audit runs the wrapper and passes the pnpm exit status through (147.404065ms)
+  ✔ audit gives pnpm none of its own process environment: no npm or pnpm setting, no NODE_OPTIONS, a fresh HOME (64.184368ms)
+  ✔ audit with a relative --root gives pnpm the absolute root as its directory and lockfile directory (61.811022ms)
+  ✔ audit refuses a lapsed entry and does not run pnpm (70.3918ms)
+  ✔ an unknown command or option exits 2 (108.391102ms)
+  ✔ sync writes the mirror that check then accepts (139.957924ms)
+✔ command line (real clock) (886.426316ms)
+ℹ tests 155
+ℹ suites 16
+ℹ pass 155
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 10095.325744
+scan allowlist: .trivyignore.yaml and its pnpm mirror accepted
+hermetic workflow trigger: compose.yaml schedules hermetic-smoke
+hermetic workflow trigger: compose.direct-ports.yaml schedules hermetic-smoke
+hermetic workflow trigger: compose.onsale-load.yaml schedules hermetic-smoke
+hermetic workflow trigger: compose.smoke-cadence.yaml schedules hermetic-smoke
+hermetic workflow trigger: deploy/nats/nats-server.conf schedules hermetic-smoke
+hermetic workflow trigger: deploy/nats/consumers/access-ticket-issuer.json schedules hermetic-smoke
+hermetic workflow trigger: deploy/nats/consumers/inventory-catalog-offering.json schedules hermetic-smoke
+hermetic workflow trigger: web/backoffice/Dockerfile schedules hermetic-smoke
+hermetic workflow trigger: web/backoffice/package.json schedules hermetic-smoke
+hermetic workflow trigger: web/storefront/Dockerfile schedules hermetic-smoke
+hermetic workflow trigger: web/storefront/package.json schedules hermetic-smoke
+hermetic workflow trigger: web/scanner/Dockerfile schedules hermetic-smoke
+hermetic workflow trigger: web/scanner/package.json schedules hermetic-smoke
+check workflow trigger: every PR runs `check`, the only job that reports required context `check`
+ADR numbers unique: 84 ADRs in docs/adr
+markdown links resolve: 242 tracked files checked
+-- the gate cannot run without its lock (the Makefile boundary)
+ok: check-all is wired to the lock assertion
+ok: the gate forces serial stages
+ok: stages refused with no token
+ok: stages refused on a foreign lock
+ok: stages allowed for this run token
+-- nothing runs while the gate holds the lock, beyond waiting and reading
+ok: cat the log allowed
+ok: tail the verdict allowed
+ok: grep the log allowed
+ok: git status allowed
+ok: documented wait loop allowed
+ok: until-form wait loop allowed
+ok: reading anything else blocked
+ok: find -delete blocked
+ok: find -exec blocked
+ok: sort -o blocked
+ok: uniq second-arg write blocked
+ok: git diff --output blocked
+ok: git stash push blocked
+ok: sed -i blocked
+ok: redirection blocked
+ok: unknown command blocked
+ok: same command allowed with no lock
+-- the merge must contain the work
+ok: merge with uncommitted tracked change blocked
+ok: merge with untracked source blocked
+ok: merge with no gate verdict blocked
+ok: merge on a revision the gate never saw blocked
+ok: the digest distinguishes those trees
+ok: merge on a tree the gate never saw blocked
+ok: a matching commit and tree reaches the forge check
+-- the merge guard sees the ordinary spellings
+ok: env-prefixed merge seen
+ok: command-prefixed merge seen
+ok: subshelled merge seen
+ok: merge on a second line seen
+ok: merge quoted as an argument allowed
+-- no AI attribution
+ok: attributed commit blocked
+ok: clean commit allowed
+-- the Edit/Write guard
+ok: edit allowed, no gate running
+ok: edit blocked while gate runs
+ok: edit outside a repo allowed
+./scripts/install-golangci-lint.sh v2.14.0 /home/mathieu/sources/ticketing_system.S-2-TKT-399-final-postmerge/bin golangci-lint-v2.14.0
+golangci-lint v2.14.0 installed to /home/mathieu/sources/ticketing_system.S-2-TKT-399-final-postmerge/bin/golangci-lint-v2.14.0 (pinned sha256 verified)
+go toolchain: every declared pin, the active Go and the linter's build agree on 1.27
+golangci-lint: shared/go
+0 issues.
+golangci-lint: services/catalog
+0 issues.
+golangci-lint: services/inventory
+0 issues.
+golangci-lint: services/commerce
+0 issues.
+golangci-lint: services/payments
+0 issues.
+golangci-lint: services/access
+0 issues.
+golangci-lint: gateway
+0 issues.
+golangci-lint: smoke
+0 issues.
+pnpm -r lint
+Scope: 3 of 4 workspace projects
+web/backoffice lint$ oxlint --deny-warnings
+web/scanner lint$ oxlint --deny-warnings
+web/storefront lint$ oxlint --deny-warnings
+web/storefront lint: Done
+web/scanner lint: Done
+web/backoffice lint: Done
+▶ clean trees pass
+  ✔ a clean fixture passes (146.922528ms)
+  ✔ the real repository passes (2392.735926ms)
+  ✔ empty image.domains and image.remotePatterns pass (156.068891ms)
+  ✔ a nested integrations array with only allowed names passes (162.965939ms)
+  ✔ a config with no adapter passes (166.736361ms)
+  ✔ a config comment that says image passes (170.529658ms)
+  ✔ a marker in a file that is not source passes (133.518971ms)
+  ✔ a marker under node_modules passes (134.988481ms)
+  ✔ a marker under dist passes (169.513511ms)
+  ✔ a marker under .astro passes (207.695164ms)
+✔ clean trees pass (3843.332716ms)
+▶ configuration rules refuse
+  ✔ a non-empty image.domains refuses (140.761585ms)
+  ✔ a non-empty image.remotePatterns refuses (143.834303ms)
+  ✔ a set image.service refuses (141.407239ms)
+  ✔ an integration outside the allowlist refuses (154.982229ms)
+  ✔ a disallowed integration inside a nested array refuses (153.337745ms)
+  ✔ an adapter outside the allowlist refuses (163.973232ms)
+✔ configuration rules refuse (898.817563ms)
+▶ import marker rules refuse
+  ✔ astro:assets refuses (170.466346ms)
+  ✔ astro/assets refuses, with a subpath (118.434286ms)
+  ✔ virtual:astro:get-image refuses (120.993991ms)
+  ✔ virtual:image-service refuses (135.578246ms)
+  ✔ a direct Image.astro component import refuses (132.086384ms)
+  ✔ a direct ResponsivePicture.astro component import refuses (124.828677ms)
+  ✔ a relative deep import of the remote image loader refuses (123.601815ms)
+  ✔ a bare deep import into astro/dist outside assets refuses (128.82675ms)
+  ✔ a direct http-cache-semantics import refuses (134.46149ms)
+  ✔ a marker in a Markdown file refuses (133.666468ms)
+✔ import marker rules refuse (1323.562571ms)
+▶ the config is evaluated as astro build evaluates it
+  ✔ remote domains set only for production refuse, and the diagnostic names production (129.924843ms)
+  ✔ remote domains set only with NODE_ENV unset refuse, even when the caller sets production (127.508728ms)
+  ✔ a rule that fires in both environments is reported once, naming both (131.538134ms)
+  ✔ the config runs with the app directory as its working directory (127.633797ms)
+  ✔ a non-array image.domains refuses (127.038193ms)
+  ✔ output that the config prints does not change the result (130.481032ms)
+✔ the config is evaluated as astro build evaluates it (774.410211ms)
+▶ the guard fails closed
+  ✔ a missing web/backoffice refuses (89.439821ms)
+  ✔ a missing web/backoffice/astro.config.mjs refuses (151.801623ms)
+  ✔ a missing web/storefront refuses (86.60226ms)
+  ✔ a missing web/storefront/astro.config.mjs refuses (119.394606ms)
+  ✔ a symlink in the source tree refuses, because the scan does not follow it (134.174731ms)
+  ✔ a config that traps SIGTERM and never exits fails closed within the timeout (2084.569697ms)
+  ✔ a malformed result record fails closed (121.735842ms)
+  ✔ a result record with an unexpected shape fails closed (120.515097ms)
+  ✔ two result records fails closed (127.285362ms)
+  ✔ no result record fails closed (118.893393ms)
+  ✔ a config that throws on import refuses (130.284044ms)
+  ✔ a config with no default export object refuses (139.542847ms)
+  ✔ integrations that are not an array refuse (131.195603ms)
+  ✔ an unknown option is a usage error (25.286122ms)
+✔ the guard fails closed (3581.724327ms)
+ℹ tests 46
+ℹ suites 5
+ℹ pass 46
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 10496.942378
+check-astro-image-premise: web/backoffice and web/storefront do not use Astro image optimization (CVE-2026-93748, TKT-504)
+standalone Go module: shared/go
+standalone Go module: services/catalog
+standalone Go module: services/inventory
+standalone Go module: services/commerce
+standalone Go module: services/payments
+standalone Go module: services/access
+standalone Go module: gateway
+standalone Go module: smoke
+go test: shared/go
+ok  	ticketing/shared/cachetier	0.085s
+ok  	ticketing/shared/cmdline	0.005s
+ok  	ticketing/shared/contract	0.089s
+ok  	ticketing/shared/contract/contractlint	0.029s
+ok  	ticketing/shared/domainevent	0.009s
+ok  	ticketing/shared/durableconsumer	0.009s
+?   	ticketing/shared/fakepsp	[no test files]
+ok  	ticketing/shared/httpx	0.005s
+ok  	ticketing/shared/mail	0.005s
+ok  	ticketing/shared/obs	0.139s
+ok  	ticketing/shared/organizerassertion	0.013s
+ok  	ticketing/shared/ratelimit	0.005s
+ok  	ticketing/shared/runtimecfg	0.013s
+go test: services/catalog
+ok  	ticketing/services/catalog/api	0.231s
+ok  	ticketing/services/catalog/cmd/catalog	0.015s
+ok  	ticketing/services/catalog/internal/api	21.283s
+ok  	ticketing/services/catalog/internal/events	0.005s
+ok  	ticketing/services/catalog/internal/store	0.809s
+go test: services/inventory
+ok  	ticketing/services/inventory/api	0.039s
+ok  	ticketing/services/inventory/cmd/inventory	0.017s
+ok  	ticketing/services/inventory/internal/api	1.880s
+ok  	ticketing/services/inventory/internal/availability	0.079s
+ok  	ticketing/services/inventory/internal/consumer	0.118s
+ok  	ticketing/services/inventory/internal/seatoccupancy	0.098s
+ok  	ticketing/services/inventory/internal/store	0.017s
+go test: services/commerce
+ok  	ticketing/services/commerce/api	0.323s
+ok  	ticketing/services/commerce/cmd/commerce	0.019s
+ok  	ticketing/services/commerce/internal/api	3.746s
+ok  	ticketing/services/commerce/internal/bulkrefund	0.016s
+ok  	ticketing/services/commerce/internal/events	0.015s
+?   	ticketing/services/commerce/internal/exchanges	[no test files]
+ok  	ticketing/services/commerce/internal/exchangesweep	0.015s
+ok  	ticketing/services/commerce/internal/exchangeunwind	0.025s
+?   	ticketing/services/commerce/internal/mailer	[no test files]
+ok  	ticketing/services/commerce/internal/outbox	0.016s
+ok  	ticketing/services/commerce/internal/recovery	0.063s
+ok  	ticketing/services/commerce/internal/refunds	0.015s
+ok  	ticketing/services/commerce/internal/reversal	0.014s
+ok  	ticketing/services/commerce/internal/store	0.569s
+ok  	ticketing/services/commerce/internal/worklease	0.019s
+go test: services/payments
+?   	ticketing/services/payments/api	[no test files]
+ok  	ticketing/services/payments/cmd/payments	0.013s
+ok  	ticketing/services/payments/internal/api	0.075s
+ok  	ticketing/services/payments/internal/psp	0.083s
+ok  	ticketing/services/payments/internal/splits	0.015s
+ok  	ticketing/services/payments/internal/store	0.008s
+go test: services/access
+ok  	ticketing/services/access/api	0.044s
+ok  	ticketing/services/access/cmd/access	0.058s
+ok  	ticketing/services/access/internal/api	0.690s
+ok  	ticketing/services/access/internal/catalog	0.715s
+ok  	ticketing/services/access/internal/consumer	0.007s
+?   	ticketing/services/access/internal/delivery	[no test files]
+ok  	ticketing/services/access/internal/lifecycle	0.006s
+ok  	ticketing/services/access/internal/lifecyclejob	0.025s
+ok  	ticketing/services/access/internal/store	0.183s
+ok  	ticketing/services/access/internal/ticket	0.005s
+go test: gateway
+ok  	ticketing/gateway/cmd/gateway	0.019s
+pnpm -r test
+Scope: 3 of 4 workspace projects
+web/backoffice test$ vitest run
+web/scanner test$ vitest run
+web/storefront test$ vitest run
+web/scanner test:  RUN  v4.1.10 /home/mathieu/sources/ticketing_system.S-2-TKT-399-final-postmerge/web/scanner
+web/backoffice test: 23:01:44 [@astrojs/node] Enabling sessions with filesystem storage
+web/storefront test: 23:01:45 [@astrojs/node] Enabling sessions with filesystem storage
+web/backoffice test:  RUN  v4.1.10 /home/mathieu/sources/ticketing_system.S-2-TKT-399-final-postmerge/web/backoffice
+web/storefront test:  RUN  v4.1.10 /home/mathieu/sources/ticketing_system.S-2-TKT-399-final-postmerge/web/storefront
+web/backoffice test:  Test Files  20 passed (20)
+web/backoffice test:       Tests  669 passed (669)
+web/backoffice test:    Start at  23:01:45
+web/backoffice test:    Duration  20.76s (transform 45.95s, setup 0ms, import 26.61s, tests 55.09s, environment 2.48s)
+web/backoffice test: Done
+web/storefront test: (node:3944269) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGHUP listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (Use `node --trace-warnings ...` to show where the warning was created)
+web/storefront test: (node:3944269) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGINT listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3944269) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGTERM listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3944269) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGALRM listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3944269) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGABRT listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3944269) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGVTALRM listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3944269) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGXCPU listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3944269) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGXFSZ listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3944269) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGUSR2 listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3944269) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGTRAP listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3944269) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGSYS listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3944269) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGQUIT listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3944269) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGIOT listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3944269) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGIO listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3944269) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGPOLL listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3944269) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGPWR listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3944269) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGSTKFLT listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test:  Test Files  24 passed (24)
+web/storefront test:       Tests  439 passed (439)
+web/storefront test:    Start at  23:01:45
+web/storefront test:    Duration  27.14s (transform 48.72s, setup 0ms, import 17.23s, tests 78.30s, environment 9.01s)
+web/storefront test: Done
+web/scanner test:  Test Files  43 passed (43)
+web/scanner test:       Tests  1851 passed (1851)
+web/scanner test:    Start at  23:01:42
+web/scanner test:    Duration  42.05s (transform 22.33s, setup 7.70s, import 45.20s, tests 175.60s, environment 112.44s)
+web/scanner test: Done
+go build: shared/go
+go build: services/catalog
+go build: services/inventory
+go build: services/commerce
+go build: services/payments
+go build: services/access
+go build: gateway
+go build: smoke
+pnpm -r build
+Scope: 3 of 4 workspace projects
+web/backoffice build$ astro sync && tsc --noEmit && astro build
+web/scanner build$ tsc -b && vite build
+web/storefront build$ astro sync && tsc --noEmit && astro build
+web/scanner build: vite v8.2.1 building client environment for production...
+web/scanner build: [2K
+web/scanner build: transforming...✓ 31 modules transformed.
+web/scanner build: rendering chunks...
+web/scanner build: computing gzip size...
+web/scanner build: dist/index.html                   0.50 kB │ gzip:  0.31 kB
+web/scanner build: dist/assets/index-7nOgmnhB.css    1.27 kB │ gzip:  0.57 kB
+web/scanner build: dist/assets/index-DnKcObar.js   257.16 kB │ gzip: 79.56 kB
+web/scanner build: ✓ built in 190ms
+web/scanner build: Done
+web/storefront build: 23:02:40 [@astrojs/node] Enabling sessions with filesystem storage
+web/backoffice build: 23:02:40 [@astrojs/node] Enabling sessions with filesystem storage
+web/storefront build: 23:02:40 [types] Generated 349ms
+web/backoffice build: 23:02:40 [types] Generated 341ms
+web/backoffice build: 23:02:42 [@astrojs/node] Enabling sessions with filesystem storage
+web/storefront build: 23:02:42 [@astrojs/node] Enabling sessions with filesystem storage
+web/backoffice build: 23:02:42 [types] Generated 68ms
+web/backoffice build: 23:02:42 [build] output: "server"
+web/backoffice build: 23:02:42 [build] mode: "server"
+web/backoffice build: 23:02:42 [build] directory: /home/mathieu/sources/ticketing_system.S-2-TKT-399-final-postmerge/web/backoffice/dist/
+web/backoffice build: 23:02:42 [build] adapter: @astrojs/node
+web/backoffice build: 23:02:42 [build] Collecting build info...
+web/backoffice build: 23:02:42 [build] ✓ Completed in 151ms.
+web/backoffice build: 23:02:42 [build] Building server entrypoints...
+web/storefront build: 23:02:42 [types] Generated 73ms
+web/storefront build: 23:02:42 [build] output: "server"
+web/storefront build: 23:02:42 [build] mode: "server"
+web/storefront build: 23:02:42 [build] directory: /home/mathieu/sources/ticketing_system.S-2-TKT-399-final-postmerge/web/storefront/dist/
+web/storefront build: 23:02:42 [build] adapter: @astrojs/node
+web/storefront build: 23:02:42 [build] Collecting build info...
+web/storefront build: 23:02:42 [build] ✓ Completed in 163ms.
+web/storefront build: 23:02:42 [build] Building server entrypoints...
+web/backoffice build: 23:02:42 [vite] ✓ built in 330ms
+web/storefront build: 23:02:42 [vite] ✓ built in 347ms
+web/backoffice build: 23:02:43 [vite] ✓ built in 493ms
+web/storefront build: 23:02:43 [vite] ✓ built in 486ms
+web/backoffice build: 23:02:43 [vite] ✓ built in 105ms
+web/backoffice build: 23:02:43 [build] Rearranging server assets...
+web/backoffice build: 23:02:43 [build] ✓ Completed in 1.01s.
+web/backoffice build: 23:02:43 [build] Server built in 1.17s
+web/backoffice build: 23:02:43 [build] Complete!
+web/backoffice build: Done
+web/storefront build: 23:02:43 [vite] ✓ built in 120ms
+web/storefront build: 23:02:43 [build] Rearranging server assets...
+web/storefront build: 23:02:43 [build] ✓ Completed in 1.02s.
+web/storefront build: 23:02:43 [build] Server built in 1.19s
+web/storefront build: 23:02:43 [build] Complete!
+web/storefront build: Done
+go build (linux static): catalog
+go build (linux static): inventory
+go build (linux static): commerce
+go build (linux static): payments
+go build (linux static): access
+go build (linux static): gateway
+./scripts/smoke.sh
+smoke: project=ticketing-smoke-9af72414923d5d79 gateway=18094 postgres=15446 nats=14236 (slot 14 from /home/mathieu/sources/ticketing_system.S-2-TKT-399-final-postmerge)
+ Image ticketing-smoke-9af72414923d5d79-inventory-migrate Building 
+ Image ticketing-smoke-9af72414923d5d79-access-migrate Building 
+ Image ticketing-smoke-9af72414923d5d79-catalog-migrate Building 
+ Image ticketing-smoke-9af72414923d5d79-catalog Building 
+ Image ticketing-smoke-9af72414923d5d79-inventory Building 
+ Image ticketing-smoke-9af72414923d5d79-storefront Building 
+ Image ticketing-smoke-9af72414923d5d79-payments Building 
+ Image ticketing-smoke-9af72414923d5d79-scanner Building 
+ Image ticketing-smoke-9af72414923d5d79-payments-migrate Building 
+ Image ticketing-smoke-9af72414923d5d79-commerce-migrate Building 
+ Image ticketing-smoke-9af72414923d5d79-access-lifecycle-backfill Building 
+ Image ticketing-smoke-9af72414923d5d79-commerce Building 
+ Image ticketing-smoke-9af72414923d5d79-access Building 
+ Image ticketing-smoke-9af72414923d5d79-backoffice Building 
+ Image ticketing-smoke-9af72414923d5d79-gateway Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 10.14kB done
+#1 DONE 0.0s
+
+#2 [access-lifecycle-backfill internal] load build definition from go-bin.Dockerfile
+#2 transferring dockerfile: 574B done
+#2 DONE 0.2s
+
+#3 [backoffice internal] load build definition from Dockerfile.smoke
+#3 transferring dockerfile: 801B done
+#3 DONE 0.1s
+
+#4 [storefront internal] load build definition from Dockerfile.smoke
+#4 transferring dockerfile: 515B done
+#4 DONE 0.2s
+
+#5 [scanner internal] load build definition from Dockerfile.smoke
+#5 transferring dockerfile: 650B done
+#5 DONE 0.2s
+
+#6 [backoffice internal] load metadata for docker.io/library/node:26.5.0-alpine3.23@sha256:0473b6671ff22c8eeb570c0e1e51408595d3171e73f8002c269b763f0a943149
+#6 DONE 0.1s
+
+#7 [payments-migrate internal] load metadata for gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35
+#7 ...
+
+#8 [backoffice internal] load .dockerignore
+#8 transferring context: 173B done
+#8 DONE 0.1s
+
+#9 [backoffice 1/4] FROM docker.io/library/node:26.5.0-alpine3.23@sha256:0473b6671ff22c8eeb570c0e1e51408595d3171e73f8002c269b763f0a943149
+#9 resolve docker.io/library/node:26.5.0-alpine3.23@sha256:0473b6671ff22c8eeb570c0e1e51408595d3171e73f8002c269b763f0a943149 0.1s done
+#9 DONE 0.1s
+
+#10 [backoffice internal] load build context
+#10 transferring context: 3.01MB 0.0s done
+#10 DONE 0.1s
+
+#11 [backoffice 2/4] WORKDIR /app
+#11 CACHED
+
+#12 [backoffice 3/4] COPY web/backoffice/dist ./dist
+#12 DONE 0.1s
+
+#13 [scanner internal] load metadata for docker.io/library/nginx:1.31.2-alpine3.23@sha256:54f2a904c251d5a34adf545a72d32515a15e08418dae0266e23be2e18c66fefa
+#13 ...
+
+#14 [backoffice 4/4] COPY web/backoffice/start.mjs web/backoffice/credentials.mjs ./
+#14 DONE 0.1s
+
+#15 [backoffice] exporting to image
+#15 exporting layers
+#15 exporting layers 0.2s done
+#15 ...
+
+#8 [catalog-migrate internal] load .dockerignore
+#8 transferring context: 173B done
+#8 DONE 0.1s
+
+#7 [catalog-migrate internal] load metadata for gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35
+#7 DONE 0.8s
+
+#15 [backoffice] exporting to image
+#15 exporting manifest sha256:c15d5ba874d47ea8496763b60d3a3360aaf094ddad3e88d2ae6457e239fd7083 0.0s done
+#15 exporting config sha256:8112e3aa6517ea4f9fc3d1ec0c870f1b8168500001d91d1290467e897bf9b0c9 0.1s done
+#15 exporting attestation manifest sha256:84ff472beeb0951279c545831794dc684c1feaa3fed2dfbf86427ffe757a0e7d
+#15 ...
+
+#16 [catalog-migrate 1/2] FROM gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35
+#16 resolve gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35 0.3s done
+#16 DONE 0.4s
+
+#15 [backoffice] exporting to image
+#15 exporting attestation manifest sha256:84ff472beeb0951279c545831794dc684c1feaa3fed2dfbf86427ffe757a0e7d 0.2s done
+#15 exporting manifest list sha256:afcb95a5c08f4d321ff5a67e11969b7f019bfd258dc9abf04ecdfe27b0f4c2cf
+#15 exporting manifest list sha256:afcb95a5c08f4d321ff5a67e11969b7f019bfd258dc9abf04ecdfe27b0f4c2cf 0.1s done
+#15 naming to docker.io/library/ticketing-smoke-9af72414923d5d79-backoffice:latest 0.0s done
+#15 unpacking to docker.io/library/ticketing-smoke-9af72414923d5d79-backoffice:latest
+#15 ...
+
+#8 [storefront internal] load .dockerignore
+#8 transferring context: 173B done
+#8 DONE 0.1s
+
+#13 [scanner internal] load metadata for docker.io/library/nginx:1.31.2-alpine3.23@sha256:54f2a904c251d5a34adf545a72d32515a15e08418dae0266e23be2e18c66fefa
+#13 DONE 1.3s
+
+#17 [storefront internal] load metadata for docker.io/library/node:26.5.1-alpine3.23@sha256:2a633e101381371ba148c7c212bf447c00cd267d814b708a9fe52c4984204729
+#17 DONE 1.3s
+
+#18 [access-migrate internal] load build context
+#18 ...
+
+#19 [scanner internal] load build context
+#19 transferring context: 270.15kB 0.0s done
+#19 DONE 0.2s
+
+#20 [scanner 1/4] FROM docker.io/library/nginx:1.31.2-alpine3.23@sha256:54f2a904c251d5a34adf545a72d32515a15e08418dae0266e23be2e18c66fefa
+#20 resolve docker.io/library/nginx:1.31.2-alpine3.23@sha256:54f2a904c251d5a34adf545a72d32515a15e08418dae0266e23be2e18c66fefa 0.2s done
+#20 DONE 0.2s
+
+#21 [storefront 1/3] FROM docker.io/library/node:26.5.1-alpine3.23@sha256:2a633e101381371ba148c7c212bf447c00cd267d814b708a9fe52c4984204729
+#21 resolve docker.io/library/node:26.5.1-alpine3.23@sha256:2a633e101381371ba148c7c212bf447c00cd267d814b708a9fe52c4984204729 0.2s done
+#21 DONE 0.2s
+
+#22 [scanner 2/4] RUN sed -i -e 's!^pid.*!pid /tmp/nginx.pid;!' -e 's!/var/cache/nginx!/tmp/nginx!g' /etc/nginx/nginx.conf     && mkdir -p /tmp/nginx     && chown nginx:nginx /tmp/nginx
+#22 CACHED
+
+#23 [scanner 3/4] COPY web/scanner/nginx.conf /etc/nginx/conf.d/default.conf
+#23 CACHED
+
+#24 [scanner 4/4] COPY web/scanner/dist /usr/share/nginx/html/scanner
+#24 CACHED
+
+#18 [access-migrate internal] load build context
+#18 ...
+
+#15 [backoffice] exporting to image
+#15 unpacking to docker.io/library/ticketing-smoke-9af72414923d5d79-backoffice:latest 0.3s done
+#15 DONE 1.1s
+
+#18 [access-migrate internal] load build context
+#18 ...
+
+#25 [storefront internal] load build context
+#25 transferring context: 2.99MB 0.2s done
+#25 DONE 0.4s
+
+#26 [storefront 2/3] WORKDIR /app
+#26 CACHED
+
+#18 [access-migrate internal] load build context
+#18 ...
+
+#27 [storefront 3/3] COPY web/storefront/dist ./dist
+#27 DONE 0.3s
+
+#28 [gateway internal] load build context
+#28 transferring context: 26.52MB 0.9s done
+#28 DONE 1.3s
+
+#16 [inventory 1/2] FROM gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35
+#16 CACHED
+
+#18 [access-migrate internal] load build context
+#18 ...
+
+#16 [payments 1/2] FROM gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35
+#16 CACHED
+
+#18 [access-migrate internal] load build context
+#18 transferring context: 40.50MB 1.1s done
+#18 transferring context: 40.50MB 1.1s done
+#18 DONE 1.5s
+
+#29 [access-lifecycle-backfill 2/2] COPY bin/gate/access /app
+#29 ...
+
+#30 [scanner] exporting to image
+#30 exporting layers 0.0s done
+#30 exporting manifest sha256:24d2067228ee3502dd544632b2e31fc65dc61736a7ebfba0542b9d2e2beb4519 0.1s done
+#30 exporting config sha256:db51810bfa48c3045b7b3da4e59048b0d385393ef43cbaa4f5e0cedf9e4d0954 0.1s done
+#30 exporting attestation manifest sha256:24306ada33c02b8ee97dfe0cc24ca9e68fa387f8ffffa31f0324052af4284436 0.1s done
+#30 exporting manifest list sha256:d0ce3bddc58fc581a619ad1bc92e5137e3a56c35ccafefb772bae988de89bf35 0.1s done
+#30 naming to docker.io/library/ticketing-smoke-9af72414923d5d79-scanner:latest 0.0s done
+#30 unpacking to docker.io/library/ticketing-smoke-9af72414923d5d79-scanner:latest 0.1s done
+#30 DONE 0.9s
+
+#31 [backoffice] resolving provenance for metadata file
+#31 DONE 0.1s
+
+#32 [gateway 2/2] COPY bin/gate/gateway /app
+#32 DONE 0.4s
+
+#33 [commerce-migrate internal] load build context
+#33 transferring context: 40.65MB 1.4s done
+#33 DONE 1.8s
+
+#34 [commerce 2/2] COPY bin/gate/commerce /app
+#34 ...
+
+#35 [inventory internal] load build context
+#35 transferring context: 40.22MB 1.4s done
+#35 DONE 1.9s
+
+#36 [payments-migrate internal] load build context
+#36 transferring context: 38.72MB 1.4s done
+#36 DONE 2.0s
+
+#34 [commerce-migrate 2/2] COPY bin/gate/commerce /app
+#34 ...
+
+#29 [access-lifecycle-backfill 2/2] COPY bin/gate/access /app
+#29 DONE 0.5s
+
+#37 [catalog internal] load build context
+#37 transferring context: 41.09MB 1.4s done
+#37 DONE 2.0s
+
+#34 [commerce-migrate 2/2] COPY bin/gate/commerce /app
+#34 DONE 0.3s
+
+#38 [inventory-migrate 2/2] COPY bin/gate/inventory /app
+#38 DONE 0.3s
+
+#39 [inventory-migrate] exporting to image
+#39 ...
+
+#40 [payments-migrate 2/2] COPY bin/gate/payments /app
+#40 DONE 0.5s
+
+#41 [catalog-migrate 2/2] COPY bin/gate/catalog /app
+#41 DONE 0.6s
+
+#42 [scanner] resolving provenance for metadata file
+#42 DONE 0.0s
+
+#43 [storefront] exporting to image
+#43 exporting layers 0.7s done
+#43 exporting manifest sha256:2cc9b1e729671ca3e336d1cdb18dc37b3ebcd193af158bca3d680380651e6165 0.2s done
+#43 exporting config sha256:ad9b1f0ee26b8854548b8beb93523da9485022a3aaf8814aaabcfc3b926e23cd 0.1s done
+#43 exporting attestation manifest sha256:8f9963e072db4e879cec9c88b4e97e4543fd5a06a19ff5553840f6911143b9ef 0.1s done
+#43 exporting manifest list sha256:1389f28c91861dedde6ce1ea08ce6c33ecf43a21d72581350f59eb93debfa548 0.1s done
+#43 naming to docker.io/library/ticketing-smoke-9af72414923d5d79-storefront:latest 0.0s done
+#43 unpacking to docker.io/library/ticketing-smoke-9af72414923d5d79-storefront:latest 0.2s done
+#43 DONE 1.8s
+
+#44 [catalog] exporting to image
+#44 ...
+
+#45 [storefront] resolving provenance for metadata file
+#45 DONE 0.0s
+
+#46 [gateway] exporting to image
+#46 exporting layers 1.6s done
+#46 exporting manifest sha256:2b6290f2c803f700fc2eb648768fcb39148494aab677eb98efc068bd3caa4364 0.0s done
+#46 exporting config sha256:cbc8d8468bd6c1212dc49a879a7416f7d782667e46789dee455fab81f7043d85 0.0s done
+#46 exporting attestation manifest sha256:f6ae5ba900e96ad5ed8fc9f26b24590141dae30de1cbaac663d588a5f25ed6a1
+#46 exporting attestation manifest sha256:f6ae5ba900e96ad5ed8fc9f26b24590141dae30de1cbaac663d588a5f25ed6a1 0.1s done
+#46 exporting manifest list sha256:1894243bbd65e9a62454c59331842bb7d2a0570614809e801e20b0613ca35f2e 0.0s done
+#46 naming to docker.io/library/ticketing-smoke-9af72414923d5d79-gateway:latest
+#46 naming to docker.io/library/ticketing-smoke-9af72414923d5d79-gateway:latest 0.0s done
+#46 unpacking to docker.io/library/ticketing-smoke-9af72414923d5d79-gateway:latest
+#46 unpacking to docker.io/library/ticketing-smoke-9af72414923d5d79-gateway:latest 0.3s done
+#46 DONE 2.2s
+
+#47 [catalog-migrate] exporting to image
+#47 ...
+
+#48 [gateway] resolving provenance for metadata file
+#48 DONE 0.0s
+
+#49 [payments] exporting to image
+#49 exporting layers 3.2s done
+#49 ...
+
+#50 [access-lifecycle-backfill] exporting to image
+#50 exporting layers 2.7s done
+#50 exporting manifest sha256:7627fe297b3db9e5e3463a27c06e7fb66cfa47dc659b98e5e6cda42ec0673608 0.1s done
+#50 exporting config sha256:dfec2bd516e4492ed3ca158802e2ef99600524d0258fc573eee4826855545418 0.2s done
+#50 exporting attestation manifest sha256:a7597332b7d8fa0fe90fb0e874fc847a708e44f24de8ed664bec218a8201197f 0.6s done
+#50 exporting manifest list sha256:19ae6ac1a25dece6241fa602443636b23eb327680b0c28969c64e8ec927f623e 0.2s done
+#50 naming to docker.io/library/ticketing-smoke-9af72414923d5d79-access-lifecycle-backfill:latest 0.1s done
+#50 unpacking to docker.io/library/ticketing-smoke-9af72414923d5d79-access-lifecycle-backfill:latest 0.5s done
+#50 DONE 4.8s
+
+#51 [access] exporting to image
+#51 exporting layers 2.7s done
+#51 exporting manifest sha256:0c4447c967f152a2257c60365f534acbb5f0b22ebb080428b5c62b653b35b809 0.1s done
+#51 exporting config sha256:909002f20e763329929d3d50e07f929162a12af202c5fd175d2be4982c1fea28 0.2s done
+#51 exporting attestation manifest sha256:cfec760cecd2605957d90c3c64386314cd7842d4ccd8a14d9e4ce3b1e1ab7755 0.5s done
+#51 exporting manifest list sha256:be3e6a7481c36bdebf6ca0e01be8c1ebc98e20015d2c16f9f2d51fc361c00715 0.2s done
+#51 naming to docker.io/library/ticketing-smoke-9af72414923d5d79-access:latest 0.1s done
+#51 unpacking to docker.io/library/ticketing-smoke-9af72414923d5d79-access:latest 0.5s done
+#51 DONE 4.9s
+
+#52 [access-migrate] exporting to image
+#52 exporting layers 2.7s done
+#52 exporting manifest sha256:70427dbb87984696ea4cbe1566dec8cd82ff153a04505e134d4ee7e965025df4 0.2s done
+#52 exporting config sha256:ddfc2880ca79d8b3f1ccc729679fb7a2659624d7830fd2e5a076af0f2283dce3 0.2s done
+#52 exporting attestation manifest sha256:ab3a26a5aaf4f7a84a7d672a9437e38bf9f96bcb50c10f41a4e9ee6de3d8dd29 0.5s done
+#52 exporting manifest list sha256:6b70745b2eca893a34b67a3659f40889a7c67cde86dc9a271a168fb4ffe27617 0.2s done
+#52 naming to docker.io/library/ticketing-smoke-9af72414923d5d79-access-migrate:latest 0.1s done
+#52 unpacking to docker.io/library/ticketing-smoke-9af72414923d5d79-access-migrate:latest 0.5s done
+#52 DONE 4.9s
+
+#53 [inventory] exporting to image
+#53 exporting layers 2.7s done
+#53 exporting manifest sha256:7cc469e590c20b48b78122e3c4b501b285ac39c109a7c0004b77151096cd8b42 0.2s done
+#53 exporting config sha256:b32a616e27176304e891aec904b15ab95570e93f9dbaed1045d7c35a0c1bed84 0.2s done
+#53 exporting attestation manifest sha256:71738ae488e6f3cece8582987d589beeeb295aa63bd036db8bb57eaeb80159a4 0.3s done
+#53 exporting manifest list sha256:00fbb73bf153ff38ddee6227b9e13b33d79e760683c5c3487384de14e2b10764 0.2s done
+#53 naming to docker.io/library/ticketing-smoke-9af72414923d5d79-inventory:latest 0.1s done
+#53 unpacking to docker.io/library/ticketing-smoke-9af72414923d5d79-inventory:latest 0.5s done
+#53 DONE 4.7s
+
+#39 [inventory-migrate] exporting to image
+#39 exporting layers 2.7s done
+#39 exporting manifest sha256:6824d270abede1e40ae12c479efd447f15ad42a4035466900e15bf1e9a217cd0 0.2s done
+#39 exporting config sha256:349deee5190f577a056d70fc7a331b198555fa0f97e7caa9a0903ba81b78b6f5 0.2s done
+#39 exporting attestation manifest sha256:729715a6ba3171ad35343fa4f8942cb90ddc6c7425d2c9122b6fef044ac11597 0.3s done
+#39 exporting manifest list sha256:048183efdf77bdaaa3652d6f0a61eee5c58a37460a9684b23e89c7a72e9a3d0f 0.1s done
+#39 naming to docker.io/library/ticketing-smoke-9af72414923d5d79-inventory-migrate:latest 0.1s done
+#39 unpacking to docker.io/library/ticketing-smoke-9af72414923d5d79-inventory-migrate:latest 0.5s done
+#39 DONE 4.7s
+
+#54 [commerce-migrate] exporting to image
+#54 exporting layers 3.0s done
+#54 exporting manifest sha256:62d911a767f831793552b7399bba279d462019f15c36c0dc50920002c6a48b50 0.2s done
+#54 exporting config sha256:43282fa2efc92152e374b43ea26e84d2b58986e071de3184aceb609095c1d60f 0.5s done
+#54 exporting attestation manifest sha256:cd54529da1dca29cb549a5052a19d589c436a80a1085254f5e6cef93801ce744 0.2s done
+#54 exporting manifest list sha256:497761af409ae4c4cb6d06a848e65e94168c2ab48e8b8dce45322ddd2063179e 0.1s done
+#54 naming to docker.io/library/ticketing-smoke-9af72414923d5d79-commerce-migrate:latest 0.1s done
+#54 unpacking to docker.io/library/ticketing-smoke-9af72414923d5d79-commerce-migrate:latest 0.4s done
+#54 DONE 4.8s
+
+#55 [commerce] exporting to image
+#55 exporting layers 3.0s done
+#55 exporting manifest sha256:5a3a77683ace8e626a543f7c5a4d93f695b1f27c036d45118d481c03b67973c9 0.6s done
+#55 exporting config sha256:ea911e56dd4a3aa9731938a4e0d6a6ec2e58f1bf6f64844f1d322f1e71f982eb 0.2s done
+#55 exporting attestation manifest sha256:430642bc6b9df3455d9ed0202b08b81073fd606dab00187990ec95f35a96b5d0 0.1s done
+#55 exporting manifest list sha256:1b188c143989c6ad0d03e9d52946c760a66ed5841bbd67f463ac93f3015cd0cb 0.1s done
+#55 naming to docker.io/library/ticketing-smoke-9af72414923d5d79-commerce:latest 0.0s done
+#55 unpacking to docker.io/library/ticketing-smoke-9af72414923d5d79-commerce:latest 0.4s done
+#55 DONE 4.8s
+
+#44 [catalog] exporting to image
+#44 exporting layers 3.3s done
+#44 exporting manifest sha256:35ebe6aff83ce98bf1c8a929d7fab8811bbb865d77c8b79dc68b2cacd91a365e
+#44 exporting manifest sha256:35ebe6aff83ce98bf1c8a929d7fab8811bbb865d77c8b79dc68b2cacd91a365e 0.2s done
+#44 exporting config sha256:157981689776b9866bfa90b30c79de68ee62903ae427b0ba4f24f1069db9aa19
+#44 exporting config sha256:157981689776b9866bfa90b30c79de68ee62903ae427b0ba4f24f1069db9aa19 0.3s done
+#44 exporting attestation manifest sha256:0cafc3dcb69b789d9cbb42229a2420e8ec5577fcf92986d32b7860a0dccd5392
+#44 exporting attestation manifest sha256:0cafc3dcb69b789d9cbb42229a2420e8ec5577fcf92986d32b7860a0dccd5392 0.2s done
+#44 exporting manifest list sha256:2f4a6d4c0ea056b34e10dc674aa9d5e458cf1edcee1da9c643287606b7e60695
+#44 exporting manifest list sha256:2f4a6d4c0ea056b34e10dc674aa9d5e458cf1edcee1da9c643287606b7e60695 0.1s done
+#44 naming to docker.io/library/ticketing-smoke-9af72414923d5d79-catalog:latest 0.0s done
+#44 unpacking to docker.io/library/ticketing-smoke-9af72414923d5d79-catalog:latest
+#44 unpacking to docker.io/library/ticketing-smoke-9af72414923d5d79-catalog:latest 0.6s done
+#44 ...
+
+#56 [commerce-migrate] resolving provenance for metadata file
+#56 ...
+
+#47 [catalog-migrate] exporting to image
+#47 exporting layers 3.3s done
+#47 exporting manifest sha256:0658367642e75a3162bb7c383266ae7d3d6b94013c36ed97d6211280e8984c33 0.1s done
+#47 exporting config sha256:2564ae99db566363d88a596e36e84b0a8f3b1b9505504f5bb138c67d2077a551 0.3s done
+#47 exporting attestation manifest sha256:19aff56a2afd35d8b08f7470a163f0d8770302e73db26d7ad812d9386c4018f1 0.2s done
+#47 exporting manifest list sha256:ad93f3c91f95d796ea5964f88112112fe90d04f44a288810e21df12e3bda93a3 0.1s done
+#47 naming to docker.io/library/ticketing-smoke-9af72414923d5d79-catalog-migrate:latest 0.0s done
+#47 unpacking to docker.io/library/ticketing-smoke-9af72414923d5d79-catalog-migrate:latest 0.5s done
+#47 DONE 8.6s
+
+#44 [catalog] exporting to image
+#44 DONE 8.6s
+
+#57 [payments-migrate] exporting to image
+#57 exporting layers 3.2s done
+#57 exporting manifest sha256:e28e0e17077a962fd745ee96719ec7f1538263a52f88fe641be337edab3cc9e2 0.2s done
+#57 exporting config sha256:0a17533a736d066db471b2febd96b848f088173dc2161259ccd53e9c9785a865 0.3s done
+#57 exporting attestation manifest sha256:a435e7b79493747fbc723c2cc88c9774917b3f5780c731dd157ded2a74490837 0.1s done
+#57 exporting manifest list sha256:ef917624512ebdd94287d185cdf72427517fdd2676d852bd01f0dd0060b78a2b 0.1s done
+#57 naming to docker.io/library/ticketing-smoke-9af72414923d5d79-payments-migrate:latest 0.0s done
+#57 unpacking to docker.io/library/ticketing-smoke-9af72414923d5d79-payments-migrate:latest 0.6s done
+#57 DONE 8.6s
+
+#49 [payments] exporting to image
+#49 exporting manifest sha256:a06d6a867c2458d89bfdcce69f35a0e4a4bd5a910ce32c3d09645f624e8ceadf 0.1s done
+#49 exporting config sha256:2060eb742f2f057ac507e5369f56d388901266eb0e7ab6b4945ce9fd7e7a3c3d 0.3s done
+#49 exporting attestation manifest sha256:40eca98c1b186011ab92f4ce58a06afaf6803b23ca8ef0311a9dc897f6fb25d1 0.2s done
+#49 exporting manifest list sha256:1778fa954d148ca3bfd5faf8dbd5ab83b293eb8c2680731f07579b2d96bedeb3 0.1s done
+#49 naming to docker.io/library/ticketing-smoke-9af72414923d5d79-payments:latest 0.0s done
+#49 unpacking to docker.io/library/ticketing-smoke-9af72414923d5d79-payments:latest 0.6s done
+#49 DONE 8.6s
+
+#58 [inventory-migrate] resolving provenance for metadata file
+#58 DONE 1.1s
+
+#59 [access-migrate] resolving provenance for metadata file
+#59 DONE 0.8s
+
+#60 [access] resolving provenance for metadata file
+#60 DONE 0.5s
+
+#56 [commerce-migrate] resolving provenance for metadata file
+#56 DONE 1.3s
+
+#61 [catalog] resolving provenance for metadata file
+#61 DONE 0.2s
+
+#62 [payments-migrate] resolving provenance for metadata file
+#62 DONE 0.1s
+
+#63 [catalog-migrate] resolving provenance for metadata file
+#63 DONE 0.3s
+
+#64 [access-lifecycle-backfill] resolving provenance for metadata file
+#64 DONE 1.0s
+
+#65 [commerce] resolving provenance for metadata file
+#65 DONE 0.7s
+
+#66 [inventory] resolving provenance for metadata file
+#66 DONE 0.6s
+
+#67 [payments] resolving provenance for metadata file
+#67 DONE 0.0s
+ Image ticketing-smoke-9af72414923d5d79-commerce Built 
+ Image ticketing-smoke-9af72414923d5d79-scanner Built 
+ Image ticketing-smoke-9af72414923d5d79-gateway Built 
+ Image ticketing-smoke-9af72414923d5d79-storefront Built 
+ Image ticketing-smoke-9af72414923d5d79-payments-migrate Built 
+ Image ticketing-smoke-9af72414923d5d79-inventory Built 
+ Image ticketing-smoke-9af72414923d5d79-access-migrate Built 
+ Image ticketing-smoke-9af72414923d5d79-access Built 
+ Image ticketing-smoke-9af72414923d5d79-payments Built 
+ Image ticketing-smoke-9af72414923d5d79-backoffice Built 
+ Image ticketing-smoke-9af72414923d5d79-catalog-migrate Built 
+ Image ticketing-smoke-9af72414923d5d79-catalog Built 
+ Image ticketing-smoke-9af72414923d5d79-inventory-migrate Built 
+ Image ticketing-smoke-9af72414923d5d79-commerce-migrate Built 
+ Image ticketing-smoke-9af72414923d5d79-access-lifecycle-backfill Built 
+ Volume ticketing-smoke-9af72414923d5d79_pgdata Creating 
+ Volume ticketing-smoke-9af72414923d5d79_pgdata Creating 
+ Network ticketing-smoke-9af72414923d5d79_default Creating 
+ Volume ticketing-smoke-9af72414923d5d79_natsdata Creating 
+ Network ticketing-smoke-9af72414923d5d79_default Creating 
+ Volume ticketing-smoke-9af72414923d5d79_natsdata Creating 
+ Volume ticketing-smoke-9af72414923d5d79_pgdata Created 
+ Volume ticketing-smoke-9af72414923d5d79_pgdata Created 
+ Volume ticketing-smoke-9af72414923d5d79_natsdata Created 
+ Volume ticketing-smoke-9af72414923d5d79_natsdata Created 
+ Network ticketing-smoke-9af72414923d5d79_default Created 
+ Network ticketing-smoke-9af72414923d5d79_default Created 
+ Container ticketing-smoke-9af72414923d5d79-scanner-1 Creating 
+ Container ticketing-smoke-9af72414923d5d79-backoffice-1 Creating 
+ Container ticketing-smoke-9af72414923d5d79-lgtm-1 Creating 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Creating 
+ Container ticketing-smoke-9af72414923d5d79-storefront-1 Creating 
+ Container ticketing-smoke-9af72414923d5d79-nats-1 Creating 
+ Container ticketing-smoke-9af72414923d5d79-storefront-1 Created 
+ Container ticketing-smoke-9af72414923d5d79-backoffice-1 Created 
+ Container ticketing-smoke-9af72414923d5d79-scanner-1 Created 
+ Container ticketing-smoke-9af72414923d5d79-lgtm-1 Created 
+ Container ticketing-smoke-9af72414923d5d79-nats-1 Created 
+ Container ticketing-smoke-9af72414923d5d79-nats-init-1 Creating 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Created 
+ Container ticketing-smoke-9af72414923d5d79-payments-migrate-1 Creating 
+ Container ticketing-smoke-9af72414923d5d79-inventory-migrate-1 Creating 
+ Container ticketing-smoke-9af72414923d5d79-catalog-migrate-1 Creating 
+ Container ticketing-smoke-9af72414923d5d79-access-migrate-1 Creating 
+ Container ticketing-smoke-9af72414923d5d79-commerce-migrate-1 Creating 
+ Container ticketing-smoke-9af72414923d5d79-payments-migrate-1 Created 
+ Container ticketing-smoke-9af72414923d5d79-catalog-migrate-1 Created 
+ Container ticketing-smoke-9af72414923d5d79-nats-init-1 Created 
+ Container ticketing-smoke-9af72414923d5d79-catalog-1 Creating 
+ Container ticketing-smoke-9af72414923d5d79-payments-1 Creating 
+ Container ticketing-smoke-9af72414923d5d79-access-migrate-1 Created 
+ Container ticketing-smoke-9af72414923d5d79-access-lifecycle-backfill-1 Creating 
+ Container ticketing-smoke-9af72414923d5d79-commerce-migrate-1 Created 
+ Container ticketing-smoke-9af72414923d5d79-commerce-1 Creating 
+ Container ticketing-smoke-9af72414923d5d79-inventory-migrate-1 Created 
+ Container ticketing-smoke-9af72414923d5d79-inventory-1 Creating 
+ Container ticketing-smoke-9af72414923d5d79-payments-1 Created 
+ Container ticketing-smoke-9af72414923d5d79-access-lifecycle-backfill-1 Created 
+ Container ticketing-smoke-9af72414923d5d79-access-1 Creating 
+ Container ticketing-smoke-9af72414923d5d79-catalog-1 Created 
+ Container ticketing-smoke-9af72414923d5d79-inventory-1 Created 
+ Container ticketing-smoke-9af72414923d5d79-commerce-1 Created 
+ Container ticketing-smoke-9af72414923d5d79-access-1 Created 
+ Container ticketing-smoke-9af72414923d5d79-gateway-1 Creating 
+ Container ticketing-smoke-9af72414923d5d79-gateway-1 Created 
+ Container ticketing-smoke-9af72414923d5d79-nats-1 Starting 
+ Container ticketing-smoke-9af72414923d5d79-scanner-1 Starting 
+ Container ticketing-smoke-9af72414923d5d79-lgtm-1 Starting 
+ Container ticketing-smoke-9af72414923d5d79-storefront-1 Starting 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Starting 
+ Container ticketing-smoke-9af72414923d5d79-backoffice-1 Starting 
+ Container ticketing-smoke-9af72414923d5d79-nats-1 Started 
+ Container ticketing-smoke-9af72414923d5d79-nats-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-scanner-1 Started 
+ Container ticketing-smoke-9af72414923d5d79-lgtm-1 Started 
+ Container ticketing-smoke-9af72414923d5d79-storefront-1 Started 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Started 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-backoffice-1 Started 
+ Container ticketing-smoke-9af72414923d5d79-nats-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-nats-init-1 Starting 
+ Container ticketing-smoke-9af72414923d5d79-nats-init-1 Started 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-payments-migrate-1 Starting 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-inventory-migrate-1 Starting 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-catalog-migrate-1 Starting 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-commerce-migrate-1 Starting 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-access-migrate-1 Starting 
+ Container ticketing-smoke-9af72414923d5d79-payments-migrate-1 Started 
+ Container ticketing-smoke-9af72414923d5d79-nats-init-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-payments-migrate-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-nats-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-inventory-migrate-1 Started 
+ Container ticketing-smoke-9af72414923d5d79-nats-init-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-inventory-migrate-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-nats-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-payments-migrate-1 Exited 
+ Container ticketing-smoke-9af72414923d5d79-nats-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-nats-init-1 Exited 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-payments-1 Starting 
+ Container ticketing-smoke-9af72414923d5d79-catalog-migrate-1 Started 
+ Container ticketing-smoke-9af72414923d5d79-nats-init-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-catalog-migrate-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-nats-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-nats-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-inventory-migrate-1 Exited 
+ Container ticketing-smoke-9af72414923d5d79-nats-init-1 Exited 
+ Container ticketing-smoke-9af72414923d5d79-inventory-1 Starting 
+ Container ticketing-smoke-9af72414923d5d79-commerce-migrate-1 Started 
+ Container ticketing-smoke-9af72414923d5d79-nats-init-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-commerce-migrate-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-nats-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-nats-init-1 Exited 
+ Container ticketing-smoke-9af72414923d5d79-nats-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-catalog-migrate-1 Exited 
+ Container ticketing-smoke-9af72414923d5d79-catalog-1 Starting 
+ Container ticketing-smoke-9af72414923d5d79-access-migrate-1 Started 
+ Container ticketing-smoke-9af72414923d5d79-access-migrate-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-nats-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-commerce-migrate-1 Exited 
+ Container ticketing-smoke-9af72414923d5d79-nats-init-1 Exited 
+ Container ticketing-smoke-9af72414923d5d79-commerce-1 Starting 
+ Container ticketing-smoke-9af72414923d5d79-payments-1 Started 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-access-migrate-1 Exited 
+ Container ticketing-smoke-9af72414923d5d79-access-lifecycle-backfill-1 Starting 
+ Container ticketing-smoke-9af72414923d5d79-inventory-1 Started 
+ Container ticketing-smoke-9af72414923d5d79-catalog-1 Started 
+ Container ticketing-smoke-9af72414923d5d79-commerce-1 Started 
+ Container ticketing-smoke-9af72414923d5d79-access-lifecycle-backfill-1 Started 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-nats-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-nats-init-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-access-migrate-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-access-lifecycle-backfill-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-nats-init-1 Exited 
+ Container ticketing-smoke-9af72414923d5d79-nats-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-access-lifecycle-backfill-1 Exited 
+ Container ticketing-smoke-9af72414923d5d79-access-migrate-1 Exited 
+ Container ticketing-smoke-9af72414923d5d79-access-1 Starting 
+ Container ticketing-smoke-9af72414923d5d79-access-1 Started 
+ Container ticketing-smoke-9af72414923d5d79-backoffice-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-catalog-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-inventory-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-commerce-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-scanner-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-payments-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-access-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-storefront-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-backoffice-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-scanner-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-storefront-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-inventory-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-payments-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-catalog-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-commerce-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-access-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-gateway-1 Starting 
+ Container ticketing-smoke-9af72414923d5d79-gateway-1 Started 
+ Container ticketing-smoke-9af72414923d5d79-commerce-migrate-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-access-migrate-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-payments-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-lgtm-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-catalog-migrate-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-payments-migrate-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-access-lifecycle-backfill-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-scanner-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-backoffice-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-inventory-migrate-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-storefront-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-access-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-nats-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-nats-init-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-inventory-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-catalog-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-commerce-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-gateway-1 Waiting 
+ Container ticketing-smoke-9af72414923d5d79-access-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-commerce-migrate-1 Exited 
+ Container ticketing-smoke-9af72414923d5d79-inventory-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-nats-init-1 Exited 
+ Container ticketing-smoke-9af72414923d5d79-commerce-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-inventory-migrate-1 Exited 
+ Container ticketing-smoke-9af72414923d5d79-payments-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-scanner-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-catalog-migrate-1 Exited 
+ Container ticketing-smoke-9af72414923d5d79-catalog-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-nats-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-payments-migrate-1 Exited 
+ Container ticketing-smoke-9af72414923d5d79-backoffice-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-postgres-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-access-migrate-1 Exited 
+ Container ticketing-smoke-9af72414923d5d79-storefront-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-access-lifecycle-backfill-1 Exited 
+ Container ticketing-smoke-9af72414923d5d79-gateway-1 Healthy 
+ Container ticketing-smoke-9af72414923d5d79-lgtm-1 Healthy 
+NOTICE:  database "commerce_store_smoke" does not exist, skipping
+NOTICE:  database "commerce_mailer_smoke" does not exist, skipping
+NOTICE:  database "commerce_bulkrefund_smoke" does not exist, skipping
+NOTICE:  database "commerce_api_smoke" does not exist, skipping
+ok  	ticketing/services/commerce/internal/api	9.636s
+ok  	ticketing/services/commerce/internal/bulkrefund	0.475s
+ok  	ticketing/services/commerce/internal/events	0.012s
+?   	ticketing/services/commerce/internal/exchanges	[no test files]
+ok  	ticketing/services/commerce/internal/exchangesweep	0.014s
+ok  	ticketing/services/commerce/internal/exchangeunwind	0.032s
+ok  	ticketing/services/commerce/internal/mailer	0.852s
+ok  	ticketing/services/commerce/internal/outbox	0.019s
+ok  	ticketing/services/commerce/internal/recovery	0.068s
+ok  	ticketing/services/commerce/internal/refunds	0.011s
+ok  	ticketing/services/commerce/internal/reversal	0.015s
+ok  	ticketing/services/commerce/internal/store	33.637s
+ok  	ticketing/services/commerce/internal/worklease	0.007s
+smoke: recovery-held PostgreSQL ready (container a645b1fbcfaf, 127.0.0.1:54079, rejecting startups)
+ok  	ticketing/services/access/internal/api	19.053s
+ok  	ticketing/services/access/internal/catalog	0.718s
+ok  	ticketing/services/access/internal/consumer	1.808s
+?   	ticketing/services/access/internal/delivery	[no test files]
+ok  	ticketing/services/access/internal/lifecycle	0.008s
+ok  	ticketing/services/access/internal/lifecyclejob	0.028s
+2026/10/19 23:04:31 ERROR lifecycle integrity alarm ticket_id=89ed8eab-eac9-4eb0-9634-11d21ef9b7ea disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 89ed8eab-eac9-4eb0-9634-11d21ef9b7ea"
+2026/10/19 23:04:31 ERROR lifecycle integrity alarm ticket_id=9511ff57-fefd-408f-88c3-4cc3700386b9 disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 9511ff57-fefd-408f-88c3-4cc3700386b9"
+2026/10/19 23:04:31 ERROR lifecycle integrity alarm ticket_id=9511ff57-fefd-408f-88c3-4cc3700386b9 disposition=integrity_quarantined reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 9511ff57-fefd-408f-88c3-4cc3700386b9"
+2026/10/19 23:04:31 ERROR lifecycle integrity alarm ticket_id=dff02879-8145-46cb-b89b-ecb003aa069c disposition=integrity_operator_controlled reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket dff02879-8145-46cb-b89b-ecb003aa069c"
+2026/10/19 23:04:31 ERROR lifecycle integrity alarm ticket_id=7cece8cb-e11d-46d1-915f-1c78969ff6e2 disposition=exit_unverified reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 7cece8cb-e11d-46d1-915f-1c78969ff6e2"
+2026/10/19 23:04:31 ERROR lifecycle integrity alarm ticket_id=bdca20bf-9df7-43e6-82ff-b9f6363ac0e7 disposition=integrity_quarantined reason_code=legacy_quarantine error="legacy fixture"
+2026/10/19 23:04:32 ERROR lifecycle integrity alarm ticket_id=89eb0794-04ed-45e2-aca5-3c47f211fb73 disposition=integrity_quarantined reason_code=legacy_quarantine error="legacy fixture"
+2026/10/19 23:04:32 ERROR lifecycle integrity alarm ticket_id=236177c3-4382-4c74-a69c-8cc92a054d8c disposition=admitted_degraded reason_code=unknown_key error="head signature on ticket 236177c3-4382-4c74-a69c-8cc92a054d8c: unknown lifecycle key id \"LEAKMARK-7f3c\""
+2026/10/19 23:04:32 ERROR lifecycle integrity alarm ticket_id=4405700c-a393-4625-a1dd-903f042d6ecb disposition=integrity_quarantined reason_code=legacy_quarantine error=LEAKMARK-7f3c
+2026/10/19 23:04:32 ERROR lifecycle integrity alarm ticket_id=b4507013-1ff5-4ad3-8db7-9851ed689b38 disposition=integrity_quarantined reason_code=legacy_quarantine error="legacy fixture"
+2026/10/19 23:04:36 ERROR lifecycle integrity alarm ticket_id=ecdcdbbd-3dff-4911-959d-2eedf1ee38f8 disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket ecdcdbbd-3dff-4911-959d-2eedf1ee38f8"
+2026/10/19 23:04:36 ERROR lifecycle integrity alarm ticket_id=16a99215-2f82-451d-9469-39cd0adf3d9a disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 16a99215-2f82-451d-9469-39cd0adf3d9a"
+2026/10/19 23:04:37 ERROR lifecycle integrity verification failed during reconciliation ticket_id=5f4c33a0-c7be-40a7-93bd-72c4a3abe11f reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 5f4c33a0-c7be-40a7-93bd-72c4a3abe11f"
+2026/10/19 23:04:38 ERROR lifecycle integrity alarm ticket_id=381db87f-13f6-4090-b51f-15b02d56138e disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 381db87f-13f6-4090-b51f-15b02d56138e"
+2026/10/19 23:04:38 ERROR lifecycle integrity alarm ticket_id=381db87f-13f6-4090-b51f-15b02d56138e disposition=integrity_quarantined reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 381db87f-13f6-4090-b51f-15b02d56138e"
+2026/10/19 23:04:38 ERROR lifecycle integrity alarm ticket_id=6e6b9887-4d58-4e77-b887-a8711f2ec4e3 disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 6e6b9887-4d58-4e77-b887-a8711f2ec4e3"
+2026/10/19 23:04:38 ERROR lifecycle integrity alarm ticket_id=6e6b9887-4d58-4e77-b887-a8711f2ec4e3 disposition=integrity_quarantined reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 6e6b9887-4d58-4e77-b887-a8711f2ec4e3"
+2026/10/19 23:04:38 ERROR lifecycle integrity alarm ticket_id=6e6b9887-4d58-4e77-b887-a8711f2ec4e3 disposition=integrity_quarantined reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 6e6b9887-4d58-4e77-b887-a8711f2ec4e3"
+2026/10/19 23:04:39 ERROR lifecycle integrity alarm ticket_id=94cc9c6e-0bfa-41d9-aba4-b41c867e6338 disposition=integrity_quarantined reason_code=legacy_quarantine error="grandfathered degraded admission"
+2026/10/19 23:04:39 ERROR lifecycle integrity alarm ticket_id=b58b71d0-4f05-43a1-b3bf-e361d54771ab disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket b58b71d0-4f05-43a1-b3bf-e361d54771ab"
+2026/10/19 23:04:39 ERROR lifecycle integrity alarm ticket_id=29956ee9-397c-453f-b29b-f93948977e95 disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 29956ee9-397c-453f-b29b-f93948977e95"
+2026/10/19 23:04:39 ERROR lifecycle integrity alarm ticket_id=012d9d87-d75e-4d4d-afc3-eab019f1b15e disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 012d9d87-d75e-4d4d-afc3-eab019f1b15e"
+2026/10/19 23:04:39 ERROR lifecycle integrity alarm ticket_id=769d8da0-3343-4358-91d0-ca89de494d97 disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 769d8da0-3343-4358-91d0-ca89de494d97"
+2026/10/19 23:04:39 ERROR lifecycle integrity alarm ticket_id=550589df-c15f-4eb8-86c7-0df94902322f disposition=integrity_operator_controlled reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 550589df-c15f-4eb8-86c7-0df94902322f"
+2026/10/19 23:04:39 ERROR lifecycle integrity alarm ticket_id=2d5685f6-5f46-4210-965f-03900722badb disposition=admitted_degraded reason_code=missing_integrity_row error="lifecycle event e9f657f7-299e-55f0-82e3-551cebb7f185 has no integrity row"
+2026/10/19 23:04:40 ERROR lifecycle integrity alarm ticket_id=0b1c6034-40d4-4999-b4cb-60c2aa7a9187 disposition=admitted_degraded reason_code=unsupported_canonical_version error="integrity row for event 8fe48d46-5734-58be-805a-de848828728a declares canonical version 99, this build writes 1"
+2026/10/19 23:04:40 ERROR lifecycle integrity alarm ticket_id=c9bb8dad-8f36-491d-ad8c-301667490f7e disposition=admitted_degraded reason_code=unsupported_canonical_version error="head for ticket c9bb8dad-8f36-491d-ad8c-301667490f7e declares canonical version 99, this build writes 1"
+2026/10/19 23:04:40 ERROR lifecycle integrity alarm ticket_id=99db71a2-00dc-4e41-a3e5-834dae9df74b disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 99db71a2-00dc-4e41-a3e5-834dae9df74b"
+2026/10/19 23:04:40 ERROR lifecycle integrity alarm ticket_id=1a910874-5831-4f6f-a4a6-d8a23ce2d2e4 disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 1a910874-5831-4f6f-a4a6-d8a23ce2d2e4"
+2026/10/19 23:04:40 ERROR lifecycle integrity alarm ticket_id=055e37fa-34fb-44e3-8dba-1fa6ab7bced4 disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 055e37fa-34fb-44e3-8dba-1fa6ab7bced4"
+2026/10/19 23:04:40 ERROR lifecycle integrity alarm ticket_id=9011f552-b03c-40db-85ca-395bccbe0e6d disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 9011f552-b03c-40db-85ca-395bccbe0e6d"
+2026/10/19 23:04:40 ERROR lifecycle integrity alarm ticket_id=3a2748f8-ec28-40c0-b901-5fbfc65a5219 disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 3a2748f8-ec28-40c0-b901-5fbfc65a5219"
+2026/10/19 23:04:40 ERROR lifecycle integrity alarm ticket_id=8541ad59-6e74-4639-a212-41b1d0b96a73 disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 8541ad59-6e74-4639-a212-41b1d0b96a73"
+2026/10/19 23:04:40 ERROR lifecycle integrity alarm ticket_id=59e768ba-a3d0-404e-9786-4734b0a6bf17 disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 59e768ba-a3d0-404e-9786-4734b0a6bf17"
+2026/10/19 23:04:41 ERROR lifecycle integrity alarm ticket_id=5a6c6300-dd0c-4e4d-876d-3760e97742db disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 5a6c6300-dd0c-4e4d-876d-3760e97742db"
+2026/10/19 23:04:41 ERROR lifecycle integrity alarm ticket_id=fae8a3ae-9d98-4330-8309-bd7467fc2f8c disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket fae8a3ae-9d98-4330-8309-bd7467fc2f8c"
+2026/10/19 23:04:41 ERROR lifecycle integrity alarm ticket_id=c144fd48-72a3-4cfd-81da-4ea163efeb58 disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket c144fd48-72a3-4cfd-81da-4ea163efeb58"
+2026/10/19 23:04:41 ERROR lifecycle integrity alarm ticket_id=e26bb2cf-4e4c-4e9c-a88e-d329136468a2 disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket e26bb2cf-4e4c-4e9c-a88e-d329136468a2"
+2026/10/19 23:04:41 ERROR lifecycle integrity alarm ticket_id=763bfa36-6c3a-4a65-9f39-6429c00caaab disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 763bfa36-6c3a-4a65-9f39-6429c00caaab"
+2026/10/19 23:04:41 ERROR lifecycle integrity alarm ticket_id=763bfa36-6c3a-4a65-9f39-6429c00caaab disposition=integrity_quarantined reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 763bfa36-6c3a-4a65-9f39-6429c00caaab"
+2026/10/19 23:04:42 ERROR lifecycle integrity alarm ticket_id=7838f9f1-e665-49a0-b326-d5b67f27d18a disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 7838f9f1-e665-49a0-b326-d5b67f27d18a"
+2026/10/19 23:04:47 ERROR lifecycle integrity alarm ticket_id=4139eda9-05e3-4107-899d-214bc2938f7a disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 4139eda9-05e3-4107-899d-214bc2938f7a"
+2026/10/19 23:04:53 ERROR lifecycle integrity alarm ticket_id=77f63009-3e45-4b9d-b9b8-4fe1bda16d08 disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 77f63009-3e45-4b9d-b9b8-4fe1bda16d08"
+2026/10/19 23:04:53 ERROR lifecycle integrity alarm ticket_id=77f63009-3e45-4b9d-b9b8-4fe1bda16d08 disposition=integrity_quarantined reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 77f63009-3e45-4b9d-b9b8-4fe1bda16d08"
+2026/10/19 23:04:53 ERROR lifecycle integrity alarm ticket_id=3e520106-d77d-4520-935a-f8e07f8f6ff6 disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 3e520106-d77d-4520-935a-f8e07f8f6ff6"
+2026/10/19 23:04:53 ERROR lifecycle integrity alarm ticket_id=3e520106-d77d-4520-935a-f8e07f8f6ff6 disposition=integrity_quarantined reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 3e520106-d77d-4520-935a-f8e07f8f6ff6"
+2026/10/19 23:04:54 ERROR lifecycle integrity verification failed during reconciliation ticket_id=05f2e825-acc3-4834-8671-c460f814e65e reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 05f2e825-acc3-4834-8671-c460f814e65e"
+2026/10/19 23:04:54 ERROR lifecycle integrity verification failed during reconciliation ticket_id=05f2e825-acc3-4834-8671-c460f814e65e reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 05f2e825-acc3-4834-8671-c460f814e65e"
+2026/10/19 23:04:55 ERROR lifecycle integrity verification failed during reconciliation ticket_id=d025fa17-efb4-4db4-a214-88627f0d78bd reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket d025fa17-efb4-4db4-a214-88627f0d78bd"
+2026/10/19 23:04:56 ERROR lifecycle integrity verification failed during reconciliation ticket_id=a743d91b-c6bf-4f34-9dc0-02264a2f3e92 reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket a743d91b-c6bf-4f34-9dc0-02264a2f3e92"
+2026/10/19 23:04:57 ERROR lifecycle integrity verification failed during reconciliation ticket_id=3f43548e-5aac-4922-8dd3-6563165fa71d reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 3f43548e-5aac-4922-8dd3-6563165fa71d"
+2026/10/19 23:04:57 ERROR lifecycle integrity alarm ticket_id=121b88b3-6127-4795-bb49-cb3401dff3c3 disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 121b88b3-6127-4795-bb49-cb3401dff3c3"
+2026/10/19 23:05:00 ERROR lifecycle integrity alarm ticket_id=e0fd905a-eef9-4769-8287-d66c10d80880 disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket e0fd905a-eef9-4769-8287-d66c10d80880"
+2026/10/19 23:05:00 ERROR lifecycle integrity alarm ticket_id=e0fd905a-eef9-4769-8287-d66c10d80880 disposition=integrity_quarantined reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket e0fd905a-eef9-4769-8287-d66c10d80880"
+2026/10/19 23:05:00 ERROR lifecycle integrity verification failed during reconciliation ticket_id=0117c935-23fa-485b-a2dc-dbac197c9bf5 reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 0117c935-23fa-485b-a2dc-dbac197c9bf5"
+2026/10/19 23:05:00 ERROR lifecycle integrity alarm ticket_id=96e0052e-2578-449f-b8f3-3b36be896870 disposition=exit_unverified reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 96e0052e-2578-449f-b8f3-3b36be896870"
+2026/10/19 23:05:00 ERROR lifecycle integrity alarm ticket_id=96e0052e-2578-449f-b8f3-3b36be896870 disposition=admitted_degraded reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 96e0052e-2578-449f-b8f3-3b36be896870"
+2026/10/19 23:05:01 ERROR lifecycle integrity verification failed during reconciliation ticket_id=f0e4146d-3cd3-43dc-842e-2e1cd3ca5be5 reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket f0e4146d-3cd3-43dc-842e-2e1cd3ca5be5"
+2026/10/19 23:05:01 ERROR lifecycle integrity verification failed during reconciliation ticket_id=f0e4146d-3cd3-43dc-842e-2e1cd3ca5be5 reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket f0e4146d-3cd3-43dc-842e-2e1cd3ca5be5"
+2026/10/19 23:05:02 ERROR lifecycle integrity verification failed during reconciliation ticket_id=6e0aecd1-da90-436e-ace7-0310a0a093d3 reason_code=entry_hash_mismatch error="entry hash mismatch at sequence 1 on ticket 6e0aecd1-da90-436e-ace7-0310a0a093d3"
+--- FAIL: TestRealConnectLookupDNSAtEverySite (2.12s)
+    --- FAIL: TestRealConnectLookupDNSAtEverySite/device_lookup (0.79s)
+        scanner_availability_smoke_test.go:190: device_lookup: got device_lookup/step_expired, want device_lookup/connect_dns:
+            *store.PreDecisionUnavailable: scanner store unavailable before decision (site=device_lookup class=step_expired): failed to connect to `user=postgres database=postgres`: hostname resolving er…
+              *pgconn.ConnectError: failed to connect to `user=postgres database=postgres`: hostname resolving error: lookup tkt557-20628d7a.invalid on 10.255.255.254:53: no such host
+                *fmt.wrapError: hostname resolving error: lookup tkt557-20628d7a.invalid on 10.255.255.254:53: no such host
+                  *errors.joinError: lookup tkt557-20628d7a.invalid on 10.255.255.254:53: no such host
+                    *net.DNSError: lookup tkt557-20628d7a.invalid on 10.255.255.254:53: no such host
+--- FAIL: TestRealMixedConnectLeavesUnderOneConnectError (5.24s)
+    --- FAIL: TestRealMixedConnectLeavesUnderOneConnectError/device_lookup (1.42s)
+        scanner_availability_smoke_test.go:339: device_lookup: unsupported failure classified as device_lookup/step_expired:
+            *store.PreDecisionUnavailable: scanner store unavailable before decision (site=device_lookup class=step_expired): failed to connect to `user=access database=access`:
+              *pgconn.ConnectError: failed to connect to `user=access database=access`:
+                *errors.joinError: lookup tkt557-a71b2ffa.invalid on 10.255.255.254:53: no such host
+                  *net.DNSError: lookup tkt557-a71b2ffa.invalid on 10.255.255.254:53: no such host
+                  *pgconn.perDialConnectError: 127.0.0.1:52481 (127.0.0.1): dial error: dial tcp 127.0.0.1:52481: operation was canceled
+                    *fmt.wrapError: dial error: dial tcp 127.0.0.1:52481: operation was canceled
+                      *net.OpError: dial tcp 127.0.0.1:52481: operation was canceled
+                        net.canceledError: operation was canceled
+                  *pgconn.perDialConnectError: 127.0.0.1:54079 (127.0.0.1): dial error: dial tcp 127.0.0.1:54079: operation was canceled
+                    *fmt.wrapError: dial error: dial tcp 127.0.0.1:54079: operation was canceled
+                      *net.OpError: dial tcp 127.0.0.1:54079: operation was canceled
+                        net.canceledError: operation was canceled
+FAIL
+FAIL	ticketing/services/access/internal/store	77.722s
+ok  	ticketing/services/access/internal/testdb	1.758s
+ok  	ticketing/services/access/internal/ticket	0.006s
+FAIL
+--- recovery PostgreSQL logs (exit 1): ---
+2026-10-20 03:05:15.151 UTC [80] FATAL:  the database system is not accepting connections
+2026-10-20 03:05:15.151 UTC [80] DETAIL:  Hot standby mode is disabled.
+2026-10-20 03:05:15.577 UTC [81] FATAL:  the database system is not accepting connections
+2026-10-20 03:05:15.577 UTC [81] DETAIL:  Hot standby mode is disabled.
+2026-10-20 03:05:16.008 UTC [82] FATAL:  the database system is not accepting connections
+2026-10-20 03:05:16.008 UTC [82] DETAIL:  Hot standby mode is disabled.
+2026-10-20 03:05:16.270 UTC [83] FATAL:  the database system is not accepting connections
+2026-10-20 03:05:16.270 UTC [83] DETAIL:  Hot standby mode is disabled.
+2026-10-20 03:05:16.433 UTC [84] FATAL:  the database system is not accepting connections
+2026-10-20 03:05:16.433 UTC [84] DETAIL:  Hot standby mode is disabled.
+2026-10-20 03:05:16.813 UTC [85] FATAL:  the database system is not accepting connections
+2026-10-20 03:05:16.813 UTC [85] DETAIL:  Hot standby mode is disabled.
+2026-10-20 03:05:17.295 UTC [86] FATAL:  the database system is not accepting connections
+2026-10-20 03:05:17.295 UTC [86] DETAIL:  Hot standby mode is disabled.
+2026-10-20 03:05:17.479 UTC [87] FATAL:  the database system is not accepting connections
+2026-10-20 03:05:17.479 UTC [87] DETAIL:  Hot standby mode is disabled.
+2026-10-20 03:05:17.794 UTC [88] FATAL:  the database system is not accepting connections
+2026-10-20 03:05:17.794 UTC [88] DETAIL:  Hot standby mode is disabled.
+2026-10-20 03:05:18.172 UTC [89] FATAL:  the database system is not accepting connections
+2026-10-20 03:05:18.172 UTC [89] DETAIL:  Hot standby mode is disabled.
+2026-10-20 03:05:18.609 UTC [90] FATAL:  the database system is not accepting connections
+2026-10-20 03:05:18.609 UTC [90] DETAIL:  Hot standby mode is disabled.
+2026-10-20 03:05:18.675 UTC [91] FATAL:  streaming replication receiver "walreceiver" could not connect to the primary server: connection to server at "127.0.0.1", port 1 failed: Connection refused
+		Is the server running on that host and accepting TCP/IP connections?
+2026-10-20 03:05:18.675 UTC [33] LOG:  waiting for WAL to become available at 0/1002000
+2026-10-20 03:05:23.678 UTC [92] FATAL:  streaming replication receiver "walreceiver" could not connect to the primary server: connection to server at "127.0.0.1", port 1 failed: Connection refused
+		Is the server running on that host and accepting TCP/IP connections?
+2026-10-20 03:05:23.679 UTC [33] LOG:  waiting for WAL to become available at 0/1002000
+2026-10-20 03:05:28.678 UTC [93] FATAL:  streaming replication receiver "walreceiver" could not connect to the primary server: connection to server at "127.0.0.1", port 1 failed: Connection refused
+		Is the server running on that host and accepting TCP/IP connections?
+2026-10-20 03:05:28.678 UTC [33] LOG:  waiting for WAL to become available at 0/1002000
+2026-10-20 03:05:33.705 UTC [94] FATAL:  streaming replication receiver "walreceiver" could not connect to the primary server: connection to server at "127.0.0.1", port 1 failed: Connection refused
+		Is the server running on that host and accepting TCP/IP connections?
+2026-10-20 03:05:33.705 UTC [33] LOG:  waiting for WAL to become available at 0/1002000
+2026-10-20 03:05:38.705 UTC [95] FATAL:  streaming replication receiver "walreceiver" could not connect to the primary server: connection to server at "127.0.0.1", port 1 failed: Connection refused
+		Is the server running on that host and accepting TCP/IP connections?
+2026-10-20 03:05:38.706 UTC [33] LOG:  waiting for WAL to become available at 0/1002000
+2026-10-20 03:05:43.706 UTC [96] FATAL:  streaming replication receiver "walreceiver" could not connect to the primary server: connection to server at "127.0.0.1", port 1 failed: Connection refused
+		Is the server running on that host and accepting TCP/IP connections?
+2026-10-20 03:05:43.706 UTC [33] LOG:  waiting for WAL to become available at 0/1002000
+make[1]: *** [Makefile:223: smoke] Error 1
+make[1]: Leaving directory '/home/mathieu/sources/ticketing_system.S-2-TKT-399-final-postmerge'

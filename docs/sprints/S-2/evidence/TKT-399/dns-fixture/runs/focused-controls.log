@@ -1,0 +1,190 @@
+=== RUN   TestRealConnectLookupDNSAtEverySite
+=== RUN   TestRealConnectLookupDNSAtEverySite/device_lookup
+    scanner_availability_smoke_test.go:215: TKT557-LATENCY site=device_lookup class=connect_dns/lookup ms=0.9
+=== RUN   TestRealConnectLookupDNSAtEverySite/policy_read
+    scanner_availability_smoke_test.go:215: TKT557-LATENCY site=policy_read class=connect_dns/lookup ms=0.5
+=== RUN   TestRealConnectLookupDNSAtEverySite/single_begin
+    scanner_availability_smoke_test.go:215: TKT557-LATENCY site=single_begin class=connect_dns/lookup ms=6.2
+=== RUN   TestRealConnectLookupDNSAtEverySite/pass_begin
+    scanner_availability_smoke_test.go:215: TKT557-LATENCY site=pass_begin class=connect_dns/lookup ms=7.3
+--- PASS: TestRealConnectLookupDNSAtEverySite (0.77s)
+    --- PASS: TestRealConnectLookupDNSAtEverySite/device_lookup (0.18s)
+    --- PASS: TestRealConnectLookupDNSAtEverySite/policy_read (0.20s)
+    --- PASS: TestRealConnectLookupDNSAtEverySite/single_begin (0.18s)
+    --- PASS: TestRealConnectLookupDNSAtEverySite/pass_begin (0.21s)
+=== RUN   TestRealConnectAttemptDNSAtEverySite
+=== RUN   TestRealConnectAttemptDNSAtEverySite/device_lookup
+    scanner_availability_smoke_test.go:241: TKT557-LATENCY site=device_lookup class=connect_dns/attempt ms=0.7
+=== RUN   TestRealConnectAttemptDNSAtEverySite/policy_read
+    scanner_availability_smoke_test.go:241: TKT557-LATENCY site=policy_read class=connect_dns/attempt ms=0.4
+=== RUN   TestRealConnectAttemptDNSAtEverySite/single_begin
+    scanner_availability_smoke_test.go:241: TKT557-LATENCY site=single_begin class=connect_dns/attempt ms=11.4
+=== RUN   TestRealConnectAttemptDNSAtEverySite/pass_begin
+    scanner_availability_smoke_test.go:241: TKT557-LATENCY site=pass_begin class=connect_dns/attempt ms=8.9
+--- PASS: TestRealConnectAttemptDNSAtEverySite (0.78s)
+    --- PASS: TestRealConnectAttemptDNSAtEverySite/device_lookup (0.15s)
+    --- PASS: TestRealConnectAttemptDNSAtEverySite/policy_read (0.16s)
+    --- PASS: TestRealConnectAttemptDNSAtEverySite/single_begin (0.21s)
+    --- PASS: TestRealConnectAttemptDNSAtEverySite/pass_begin (0.26s)
+=== RUN   TestDNSDisarmRestoresSuccessfulHealthyLookup
+=== RUN   TestDNSDisarmRestoresSuccessfulHealthyLookup/dns_lookup
+=== RUN   TestDNSDisarmRestoresSuccessfulHealthyLookup/dns_attempt
+=== RUN   TestDNSDisarmRestoresSuccessfulHealthyLookup/mixed_supported
+=== RUN   TestDNSDisarmRestoresSuccessfulHealthyLookup/mixed_unsupported
+=== RUN   TestDNSDisarmRestoresSuccessfulHealthyLookup/mixed_unsupported_first
+--- PASS: TestDNSDisarmRestoresSuccessfulHealthyLookup (1.45s)
+    --- PASS: TestDNSDisarmRestoresSuccessfulHealthyLookup/dns_lookup (0.18s)
+    --- PASS: TestDNSDisarmRestoresSuccessfulHealthyLookup/dns_attempt (0.18s)
+    --- PASS: TestDNSDisarmRestoresSuccessfulHealthyLookup/mixed_supported (0.19s)
+    --- PASS: TestDNSDisarmRestoresSuccessfulHealthyLookup/mixed_unsupported (0.44s)
+    --- PASS: TestDNSDisarmRestoresSuccessfulHealthyLookup/mixed_unsupported_first (0.45s)
+=== RUN   TestRealConnectRefusedAtEverySite
+=== RUN   TestRealConnectRefusedAtEverySite/device_lookup
+    scanner_availability_smoke_test.go:356: TKT557-LATENCY site=device_lookup class=connect_refused ms=0.2
+=== RUN   TestRealConnectRefusedAtEverySite/policy_read
+    scanner_availability_smoke_test.go:356: TKT557-LATENCY site=policy_read class=connect_refused ms=0.1
+=== RUN   TestRealConnectRefusedAtEverySite/single_begin
+    scanner_availability_smoke_test.go:356: TKT557-LATENCY site=single_begin class=connect_refused ms=4.9
+=== RUN   TestRealConnectRefusedAtEverySite/pass_begin
+    scanner_availability_smoke_test.go:356: TKT557-LATENCY site=pass_begin class=connect_refused ms=5.8
+--- PASS: TestRealConnectRefusedAtEverySite (0.60s)
+    --- PASS: TestRealConnectRefusedAtEverySite/device_lookup (0.18s)
+    --- PASS: TestRealConnectRefusedAtEverySite/policy_read (0.14s)
+    --- PASS: TestRealConnectRefusedAtEverySite/single_begin (0.14s)
+    --- PASS: TestRealConnectRefusedAtEverySite/pass_begin (0.14s)
+=== RUN   TestRealRecoveryStartupAtEverySite
+=== RUN   TestRealRecoveryStartupAtEverySite/device_lookup
+    scanner_availability_smoke_test.go:383: TKT557-LATENCY site=device_lookup class=connect_starting_up ms=1.6
+=== RUN   TestRealRecoveryStartupAtEverySite/policy_read
+    scanner_availability_smoke_test.go:383: TKT557-LATENCY site=policy_read class=connect_starting_up ms=1.2
+=== RUN   TestRealRecoveryStartupAtEverySite/single_begin
+    scanner_availability_smoke_test.go:383: TKT557-LATENCY site=single_begin class=connect_starting_up ms=7.0
+=== RUN   TestRealRecoveryStartupAtEverySite/pass_begin
+    scanner_availability_smoke_test.go:383: TKT557-LATENCY site=pass_begin class=connect_starting_up ms=5.8
+--- PASS: TestRealRecoveryStartupAtEverySite (0.59s)
+    --- PASS: TestRealRecoveryStartupAtEverySite/device_lookup (0.15s)
+    --- PASS: TestRealRecoveryStartupAtEverySite/policy_read (0.15s)
+    --- PASS: TestRealRecoveryStartupAtEverySite/single_begin (0.15s)
+    --- PASS: TestRealRecoveryStartupAtEverySite/pass_begin (0.14s)
+=== RUN   TestRealRecoveryThroughLocalhostIsOneSupportedSet
+=== RUN   TestRealRecoveryThroughLocalhostIsOneSupportedSet/device_lookup
+    scanner_availability_smoke_test.go:415: localhost resolves to [127.0.0.1]; class connect_starting_up
+=== RUN   TestRealRecoveryThroughLocalhostIsOneSupportedSet/single_begin
+    scanner_availability_smoke_test.go:415: localhost resolves to [127.0.0.1]; class connect_starting_up
+--- PASS: TestRealRecoveryThroughLocalhostIsOneSupportedSet (0.29s)
+    --- PASS: TestRealRecoveryThroughLocalhostIsOneSupportedSet/device_lookup (0.14s)
+    --- PASS: TestRealRecoveryThroughLocalhostIsOneSupportedSet/single_begin (0.14s)
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/device_lookup
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_supported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported_first
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/policy_read
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_supported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported_first
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/single_begin
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_supported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported_first
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/pass_begin
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_supported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported_first
+--- PASS: TestRealMixedConnectLeavesUnderOneConnectError (2.08s)
+    --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/device_lookup (0.52s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_supported (0.00s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported (0.25s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported_first (0.10s)
+    --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/policy_read (0.52s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_supported (0.00s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported (0.25s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported_first (0.10s)
+    --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/single_begin (0.51s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_supported (0.01s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported (0.26s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported_first (0.11s)
+    --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/pass_begin (0.53s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_supported (0.01s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported (0.26s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported_first (0.11s)
+=== RUN   TestRealRoleLimitAtEverySite
+=== RUN   TestRealRoleLimitAtEverySite/device_lookup
+    scanner_availability_smoke_test.go:475: TKT557-LATENCY site=device_lookup class=connect_too_many ms=5.2
+=== RUN   TestRealRoleLimitAtEverySite/policy_read
+    scanner_availability_smoke_test.go:475: TKT557-LATENCY site=policy_read class=connect_too_many ms=3.5
+=== RUN   TestRealRoleLimitAtEverySite/single_begin
+    scanner_availability_smoke_test.go:475: TKT557-LATENCY site=single_begin class=connect_too_many ms=8.3
+=== RUN   TestRealRoleLimitAtEverySite/pass_begin
+    scanner_availability_smoke_test.go:475: TKT557-LATENCY site=pass_begin class=connect_too_many ms=7.7
+--- PASS: TestRealRoleLimitAtEverySite (0.72s)
+    --- PASS: TestRealRoleLimitAtEverySite/device_lookup (0.22s)
+    --- PASS: TestRealRoleLimitAtEverySite/policy_read (0.19s)
+    --- PASS: TestRealRoleLimitAtEverySite/single_begin (0.17s)
+    --- PASS: TestRealRoleLimitAtEverySite/pass_begin (0.15s)
+=== RUN   TestRealWrongPasswordAtEverySiteIsNotAvailability
+=== RUN   TestRealWrongPasswordAtEverySiteIsNotAvailability/device_lookup
+=== RUN   TestRealWrongPasswordAtEverySiteIsNotAvailability/policy_read
+=== RUN   TestRealWrongPasswordAtEverySiteIsNotAvailability/single_begin
+=== RUN   TestRealWrongPasswordAtEverySiteIsNotAvailability/pass_begin
+--- PASS: TestRealWrongPasswordAtEverySiteIsNotAvailability (0.58s)
+    --- PASS: TestRealWrongPasswordAtEverySiteIsNotAvailability/device_lookup (0.14s)
+    --- PASS: TestRealWrongPasswordAtEverySiteIsNotAvailability/policy_read (0.13s)
+    --- PASS: TestRealWrongPasswordAtEverySiteIsNotAvailability/single_begin (0.14s)
+    --- PASS: TestRealWrongPasswordAtEverySiteIsNotAvailability/pass_begin (0.16s)
+=== RUN   TestRealBlockedDialExpiresAtEverySite
+=== RUN   TestRealBlockedDialExpiresAtEverySite/device_lookup
+    scanner_availability_smoke_test.go:521: TKT557-LATENCY site=device_lookup class=step_expired/blocked-dial ms=500.8
+=== RUN   TestRealBlockedDialExpiresAtEverySite/policy_read
+    scanner_availability_smoke_test.go:521: TKT557-LATENCY site=policy_read class=step_expired/blocked-dial ms=500.8
+=== RUN   TestRealBlockedDialExpiresAtEverySite/single_begin
+    scanner_availability_smoke_test.go:521: TKT557-LATENCY site=single_begin class=step_expired/blocked-dial ms=506.7
+=== RUN   TestRealBlockedDialExpiresAtEverySite/pass_begin
+    scanner_availability_smoke_test.go:521: TKT557-LATENCY site=pass_begin class=step_expired/blocked-dial ms=506.5
+--- PASS: TestRealBlockedDialExpiresAtEverySite (3.17s)
+    --- PASS: TestRealBlockedDialExpiresAtEverySite/device_lookup (0.79s)
+    --- PASS: TestRealBlockedDialExpiresAtEverySite/policy_read (0.79s)
+    --- PASS: TestRealBlockedDialExpiresAtEverySite/single_begin (0.79s)
+    --- PASS: TestRealBlockedDialExpiresAtEverySite/pass_begin (0.80s)
+=== RUN   TestIndependentDialTimeoutIsUnsupported
+=== RUN   TestIndependentDialTimeoutIsUnsupported/device_lookup
+=== RUN   TestIndependentDialTimeoutIsUnsupported/policy_read
+=== RUN   TestIndependentDialTimeoutIsUnsupported/single_begin
+=== RUN   TestIndependentDialTimeoutIsUnsupported/pass_begin
+--- PASS: TestIndependentDialTimeoutIsUnsupported (1.65s)
+    --- PASS: TestIndependentDialTimeoutIsUnsupported/device_lookup (0.40s)
+    --- PASS: TestIndependentDialTimeoutIsUnsupported/policy_read (0.44s)
+    --- PASS: TestIndependentDialTimeoutIsUnsupported/single_begin (0.40s)
+    --- PASS: TestIndependentDialTimeoutIsUnsupported/pass_begin (0.41s)
+=== RUN   TestLaterTicketLockDeadlineIsNotAvailability
+=== RUN   TestLaterTicketLockDeadlineIsNotAvailability/single_begin
+=== RUN   TestLaterTicketLockDeadlineIsNotAvailability/pass_begin
+--- PASS: TestLaterTicketLockDeadlineIsNotAvailability (3.29s)
+    --- PASS: TestLaterTicketLockDeadlineIsNotAvailability/single_begin (1.65s)
+    --- PASS: TestLaterTicketLockDeadlineIsNotAvailability/pass_begin (1.64s)
+=== RUN   TestLaterBackendLossIsNotAvailability
+=== RUN   TestLaterBackendLossIsNotAvailability/single_begin
+=== RUN   TestLaterBackendLossIsNotAvailability/pass_begin
+--- PASS: TestLaterBackendLossIsNotAvailability (0.51s)
+    --- PASS: TestLaterBackendLossIsNotAvailability/single_begin (0.25s)
+    --- PASS: TestLaterBackendLossIsNotAvailability/pass_begin (0.26s)
+=== RUN   TestPostHandoffSocketCutIsNotAvailability
+=== RUN   TestPostHandoffSocketCutIsNotAvailability/single_begin
+=== RUN   TestPostHandoffSocketCutIsNotAvailability/pass_begin
+--- PASS: TestPostHandoffSocketCutIsNotAvailability (0.36s)
+    --- PASS: TestPostHandoffSocketCutIsNotAvailability/single_begin (0.20s)
+    --- PASS: TestPostHandoffSocketCutIsNotAvailability/pass_begin (0.16s)
+=== RUN   TestSuccessfulTransactionOutlivesTheAcquisitionBound
+=== RUN   TestSuccessfulTransactionOutlivesTheAcquisitionBound/single_begin
+=== RUN   TestSuccessfulTransactionOutlivesTheAcquisitionBound/pass_begin
+--- PASS: TestSuccessfulTransactionOutlivesTheAcquisitionBound (1.64s)
+    --- PASS: TestSuccessfulTransactionOutlivesTheAcquisitionBound/single_begin (0.83s)
+    --- PASS: TestSuccessfulTransactionOutlivesTheAcquisitionBound/pass_begin (0.81s)
+=== RUN   TestLateCallbackAfterHandoffDoesNotCancelTheTransaction
+=== RUN   TestLateCallbackAfterHandoffDoesNotCancelTheTransaction/single_begin
+=== RUN   TestLateCallbackAfterHandoffDoesNotCancelTheTransaction/pass_begin
+--- PASS: TestLateCallbackAfterHandoffDoesNotCancelTheTransaction (0.33s)
+    --- PASS: TestLateCallbackAfterHandoffDoesNotCancelTheTransaction/single_begin (0.15s)
+    --- PASS: TestLateCallbackAfterHandoffDoesNotCancelTheTransaction/pass_begin (0.18s)
+PASS
+ok  	ticketing/services/access/internal/store	18.832s

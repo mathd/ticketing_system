@@ -1,0 +1,12 @@
+{
+  "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=8 -timeout=5m ./services/access/internal/testdb ./services/access/internal/store -run '^(TestDNSProducer.*|TestRealConnectLookupDNSAtEverySite|TestRealConnectAttemptDNSAtEverySite|TestRealMixedConnectLeavesUnderOneConnectError|TestDNSDisarmRestoresSuccessfulHealthyLookup)$'",
+  "start": "2026-10-20T04:13:00.100316+00:00",
+  "end": "2026-10-20T04:13:35.406214+00:00",
+  "seconds": 35.26254831702681,
+  "exit": 0,
+  "sha256": "068e37ef70817f469b618f13c8c5daface6478ecd5febcb520b7e5d80203d959",
+  "passingTestNames": 54,
+  "repetitionsPerTest": 8,
+  "skips": 0,
+  "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture"
+}

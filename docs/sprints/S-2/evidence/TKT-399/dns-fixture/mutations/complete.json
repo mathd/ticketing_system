@@ -1,0 +1,8 @@
+{
+  "head": "806378e3f75d0e6d60a6a90130dd94ecf8cbc16e",
+  "mutantFamilies": 10,
+  "additionalDirectNameMutant": 1,
+  "restoredRunsPerMutant": 8,
+  "originalDriverStopRetained": true,
+  "explanation": "05 main-store mutation failed earlier at exact wire-name assertion. 05b separately killed the absolute DNSError.Name input mutation."
+}

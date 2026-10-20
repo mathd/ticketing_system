@@ -1,0 +1,10 @@
+{
+  "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=1 -timeout=3m ./services/access/internal/testdb -run '^TestDNSProducerClosePartialFrame$'",
+  "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+  "start": "2026-10-20T04:12:13.487877+00:00",
+  "end": "2026-10-20T04:12:15.059924+00:00",
+  "seconds": 1.5720487419748679,
+  "exit": 1,
+  "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/10-omit-active-close-red.jsonl",
+  "sha256": "c1657825d3eebd391fc58b679b5685a6c55601799b1d3e541853c1664ff8b088"
+}

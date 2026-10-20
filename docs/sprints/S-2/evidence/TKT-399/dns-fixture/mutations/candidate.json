@@ -1,0 +1,11 @@
+{
+  "head": "806378e3f75d0e6d60a6a90130dd94ecf8cbc16e",
+  "tree": "97d94c4f8548ddd1e168a1e1a9e4a5aa4e13f595",
+  "sha256": {
+    "services/access/internal/testdb/scanner_smoke.go": "e7fab63c2673b67928c31e8466f9a9d97c82b521301597dbd14dfb2a2870cb4c",
+    "services/access/internal/testdb/dns_smoke.go": "7efe471a50157f20af8dca80d9540edb6411749a911e71378d85742b2235650d",
+    "services/access/internal/testdb/dns_smoke_test.go": "81f7c7605c8db37e63cfb191df652638a3187ec31c07598488c02ce63ecad985",
+    "services/access/internal/store/scanner_availability_smoke_test.go": "e447da3551382976ace1d71d68be519ebb77d3f7e4460b66c2c253920496302e",
+    "services/access/go.mod": "7d5812e2563bd275c46744277d67b0800ce686d60746824d31dfe745c3d0258c"
+  }
+}

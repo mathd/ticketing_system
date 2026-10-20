@@ -1,0 +1,122 @@
+=== RUN   TestDNSProducerRealResolver
+=== RUN   TestDNSProducerRealResolver/LookupHost
+=== RUN   TestDNSProducerRealResolver/DialContext
+--- PASS: TestDNSProducerRealResolver (0.00s)
+    --- PASS: TestDNSProducerRealResolver/LookupHost (0.00s)
+    --- PASS: TestDNSProducerRealResolver/DialContext (0.00s)
+=== RUN   TestDNSProducerConcurrentResolver
+=== RUN   TestDNSProducerConcurrentResolver/LookupHost
+=== RUN   TestDNSProducerConcurrentResolver/DialContext
+--- PASS: TestDNSProducerConcurrentResolver (0.00s)
+    --- PASS: TestDNSProducerConcurrentResolver/LookupHost (0.00s)
+    --- PASS: TestDNSProducerConcurrentResolver/DialContext (0.00s)
+=== RUN   TestDNSProducerProtocol
+=== RUN   TestDNSProducerProtocol/TypeA/RD=false
+=== RUN   TestDNSProducerProtocol/TypeA/RD=true
+=== RUN   TestDNSProducerProtocol/TypeAAAA/RD=false
+=== RUN   TestDNSProducerProtocol/TypeAAAA/RD=true
+--- PASS: TestDNSProducerProtocol (0.00s)
+    --- PASS: TestDNSProducerProtocol/TypeA/RD=false (0.00s)
+    --- PASS: TestDNSProducerProtocol/TypeA/RD=true (0.00s)
+    --- PASS: TestDNSProducerProtocol/TypeAAAA/RD=false (0.00s)
+    --- PASS: TestDNSProducerProtocol/TypeAAAA/RD=true (0.00s)
+=== RUN   TestDNSProducerRejectsInvalidRequests
+=== RUN   TestDNSProducerRejectsInvalidRequests/name
+=== RUN   TestDNSProducerRejectsInvalidRequests/class
+=== RUN   TestDNSProducerRejectsInvalidRequests/type
+=== RUN   TestDNSProducerRejectsInvalidRequests/two_questions
+=== RUN   TestDNSProducerRejectsInvalidRequests/response
+=== RUN   TestDNSProducerRejectsInvalidRequests/malformed
+=== RUN   TestDNSProducerRejectsInvalidRequests/empty
+=== RUN   TestDNSProducerRejectsInvalidRequests/truncated_frame
+--- PASS: TestDNSProducerRejectsInvalidRequests (0.00s)
+    --- PASS: TestDNSProducerRejectsInvalidRequests/name (0.00s)
+    --- PASS: TestDNSProducerRejectsInvalidRequests/class (0.00s)
+    --- PASS: TestDNSProducerRejectsInvalidRequests/type (0.00s)
+    --- PASS: TestDNSProducerRejectsInvalidRequests/two_questions (0.00s)
+    --- PASS: TestDNSProducerRejectsInvalidRequests/response (0.00s)
+    --- PASS: TestDNSProducerRejectsInvalidRequests/malformed (0.00s)
+    --- PASS: TestDNSProducerRejectsInvalidRequests/empty (0.00s)
+    --- PASS: TestDNSProducerRejectsInvalidRequests/truncated_frame (0.00s)
+=== RUN   TestDNSProducerClosePartialFrame
+--- PASS: TestDNSProducerClosePartialFrame (0.00s)
+=== RUN   TestProxyCutMatchesAcrossSocketReads
+=== RUN   TestProxyCutMatchesAcrossSocketReads/fin/three_reads
+=== RUN   TestProxyCutMatchesAcrossSocketReads/fin/split_after_"fo"
+=== RUN   TestProxyCutMatchesAcrossSocketReads/fin/split_after_"for_"
+=== RUN   TestProxyCutMatchesAcrossSocketReads/fin/split_after_"for_u"
+=== RUN   TestProxyCutMatchesAcrossSocketReads/fin/split_after_"for_up"
+=== RUN   TestProxyCutMatchesAcrossSocketReads/fin/split_after_"for_upd"
+=== RUN   TestProxyCutMatchesAcrossSocketReads/fin/split_after_"for_upda"
+=== RUN   TestProxyCutMatchesAcrossSocketReads/fin/split_after_"for_updat"
+=== RUN   TestProxyCutMatchesAcrossSocketReads/fin/whole_pattern_in_one_read
+=== RUN   TestProxyCutMatchesAcrossSocketReads/fin/split_after_"f"
+=== RUN   TestProxyCutMatchesAcrossSocketReads/fin/split_after_"for"
+=== RUN   TestProxyCutMatchesAcrossSocketReads/rst/split_after_"for_up"
+=== RUN   TestProxyCutMatchesAcrossSocketReads/rst/split_after_"for_updat"
+=== RUN   TestProxyCutMatchesAcrossSocketReads/rst/whole_pattern_in_one_read
+=== RUN   TestProxyCutMatchesAcrossSocketReads/rst/three_reads
+=== RUN   TestProxyCutMatchesAcrossSocketReads/rst/split_after_"fo"
+=== RUN   TestProxyCutMatchesAcrossSocketReads/rst/split_after_"for_"
+=== RUN   TestProxyCutMatchesAcrossSocketReads/rst/split_after_"for_upd"
+=== RUN   TestProxyCutMatchesAcrossSocketReads/rst/split_after_"for_upda"
+=== RUN   TestProxyCutMatchesAcrossSocketReads/rst/split_after_"f"
+=== RUN   TestProxyCutMatchesAcrossSocketReads/rst/split_after_"for"
+=== RUN   TestProxyCutMatchesAcrossSocketReads/rst/split_after_"for_u"
+--- PASS: TestProxyCutMatchesAcrossSocketReads (0.04s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/fin/three_reads (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/fin/split_after_"fo" (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/fin/split_after_"for_" (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/fin/split_after_"for_u" (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/fin/split_after_"for_up" (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/fin/split_after_"for_upd" (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/fin/split_after_"for_upda" (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/fin/split_after_"for_updat" (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/fin/whole_pattern_in_one_read (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/fin/split_after_"f" (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/fin/split_after_"for" (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/rst/split_after_"for_up" (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/rst/split_after_"for_updat" (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/rst/whole_pattern_in_one_read (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/rst/three_reads (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/rst/split_after_"fo" (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/rst/split_after_"for_" (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/rst/split_after_"for_upd" (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/rst/split_after_"for_upda" (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/rst/split_after_"f" (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/rst/split_after_"for" (0.00s)
+    --- PASS: TestProxyCutMatchesAcrossSocketReads/rst/split_after_"for_u" (0.00s)
+=== RUN   TestProxyWithholdMatchesAcrossSocketReads
+=== RUN   TestProxyWithholdMatchesAcrossSocketReads/split_after_"for"
+=== RUN   TestProxyWithholdMatchesAcrossSocketReads/split_after_"for_upd"
+=== RUN   TestProxyWithholdMatchesAcrossSocketReads/split_after_"for_updat"
+=== RUN   TestProxyWithholdMatchesAcrossSocketReads/three_reads
+=== RUN   TestProxyWithholdMatchesAcrossSocketReads/split_after_"for_"
+=== RUN   TestProxyWithholdMatchesAcrossSocketReads/split_after_"for_u"
+=== RUN   TestProxyWithholdMatchesAcrossSocketReads/split_after_"for_up"
+=== RUN   TestProxyWithholdMatchesAcrossSocketReads/split_after_"for_upda"
+=== RUN   TestProxyWithholdMatchesAcrossSocketReads/whole_pattern_in_one_read
+=== RUN   TestProxyWithholdMatchesAcrossSocketReads/split_after_"f"
+=== RUN   TestProxyWithholdMatchesAcrossSocketReads/split_after_"fo"
+--- PASS: TestProxyWithholdMatchesAcrossSocketReads (1.68s)
+    --- PASS: TestProxyWithholdMatchesAcrossSocketReads/split_after_"for" (0.15s)
+    --- PASS: TestProxyWithholdMatchesAcrossSocketReads/split_after_"for_upd" (0.15s)
+    --- PASS: TestProxyWithholdMatchesAcrossSocketReads/split_after_"for_updat" (0.15s)
+    --- PASS: TestProxyWithholdMatchesAcrossSocketReads/three_reads (0.15s)
+    --- PASS: TestProxyWithholdMatchesAcrossSocketReads/split_after_"for_" (0.15s)
+    --- PASS: TestProxyWithholdMatchesAcrossSocketReads/split_after_"for_u" (0.15s)
+    --- PASS: TestProxyWithholdMatchesAcrossSocketReads/split_after_"for_up" (0.15s)
+    --- PASS: TestProxyWithholdMatchesAcrossSocketReads/split_after_"for_upda" (0.15s)
+    --- PASS: TestProxyWithholdMatchesAcrossSocketReads/whole_pattern_in_one_read (0.15s)
+    --- PASS: TestProxyWithholdMatchesAcrossSocketReads/split_after_"f" (0.15s)
+    --- PASS: TestProxyWithholdMatchesAcrossSocketReads/split_after_"fo" (0.15s)
+=== RUN   TestProxyRuleIgnoresBytesReadBeforeItWasArmed
+=== RUN   TestProxyRuleIgnoresBytesReadBeforeItWasArmed/no_rule
+=== RUN   TestProxyRuleIgnoresBytesReadBeforeItWasArmed/a_replaced_rule
+--- PASS: TestProxyRuleIgnoresBytesReadBeforeItWasArmed (0.01s)
+    --- PASS: TestProxyRuleIgnoresBytesReadBeforeItWasArmed/no_rule (0.00s)
+    --- PASS: TestProxyRuleIgnoresBytesReadBeforeItWasArmed/a_replaced_rule (0.00s)
+=== RUN   TestProxyMatchBufferIsBounded
+--- PASS: TestProxyMatchBufferIsBounded (0.00s)
+PASS
+ok  	ticketing/services/access/internal/testdb	1.742s

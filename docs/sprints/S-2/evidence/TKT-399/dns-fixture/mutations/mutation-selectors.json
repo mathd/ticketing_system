@@ -1,0 +1,179 @@
+[
+  {
+    "id": "01-lookup-default",
+    "path": "services/access/internal/testdb/scanner_smoke.go",
+    "package": "./services/access/internal/store",
+    "selector": "^TestRealConnectLookupDNSAtEverySite$",
+    "expectedFailingTests": [
+      "TestRealConnectLookupDNSAtEverySite/device_lookup",
+      "TestRealConnectLookupDNSAtEverySite/policy_read",
+      "TestRealConnectLookupDNSAtEverySite/single_begin",
+      "TestRealConnectLookupDNSAtEverySite/pass_begin"
+    ],
+    "assertion": "no-owned-wire-questions"
+  },
+  {
+    "id": "02-attempt-default",
+    "path": "services/access/internal/testdb/scanner_smoke.go",
+    "package": "./services/access/internal/store",
+    "selector": "^TestRealConnectAttemptDNSAtEverySite$",
+    "expectedFailingTests": [
+      "TestRealConnectAttemptDNSAtEverySite/device_lookup",
+      "TestRealConnectAttemptDNSAtEverySite/policy_read",
+      "TestRealConnectAttemptDNSAtEverySite/single_begin",
+      "TestRealConnectAttemptDNSAtEverySite/pass_begin"
+    ],
+    "assertion": "no-owned-wire-questions"
+  },
+  {
+    "id": "03-mixed-default",
+    "path": "services/access/internal/testdb/scanner_smoke.go",
+    "package": "./services/access/internal/store",
+    "selector": "^TestRealMixedConnectLeavesUnderOneConnectError$",
+    "expectedFailingTests": [
+      "TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_supported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported_first",
+      "TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_supported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported_first",
+      "TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_supported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported_first",
+      "TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_supported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported_first"
+    ],
+    "assertion": "no-owned-wire-questions"
+  },
+  {
+    "id": "04-wrong-request-name",
+    "path": "services/access/internal/testdb/scanner_smoke.go",
+    "package": "./services/access/internal/store",
+    "selector": "^(TestRealConnectLookupDNSAtEverySite|TestRealConnectAttemptDNSAtEverySite|TestRealMixedConnectLeavesUnderOneConnectError)$",
+    "expectedFailingTests": [
+      "TestRealConnectLookupDNSAtEverySite/device_lookup",
+      "TestRealConnectLookupDNSAtEverySite/policy_read",
+      "TestRealConnectLookupDNSAtEverySite/single_begin",
+      "TestRealConnectLookupDNSAtEverySite/pass_begin",
+      "TestRealConnectAttemptDNSAtEverySite/device_lookup",
+      "TestRealConnectAttemptDNSAtEverySite/policy_read",
+      "TestRealConnectAttemptDNSAtEverySite/single_begin",
+      "TestRealConnectAttemptDNSAtEverySite/pass_begin",
+      "TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_supported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported_first",
+      "TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_supported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported_first",
+      "TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_supported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported_first",
+      "TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_supported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported_first"
+    ],
+    "assertion": "unexpected DNS question"
+  },
+  {
+    "id": "05-relative-request-name",
+    "path": "services/access/internal/testdb/scanner_smoke.go",
+    "package": "./services/access/internal/store",
+    "selector": "^(TestRealConnectLookupDNSAtEverySite|TestRealConnectAttemptDNSAtEverySite|TestRealMixedConnectLeavesUnderOneConnectError)$",
+    "expectedFailingTests": [
+      "TestRealConnectLookupDNSAtEverySite/device_lookup",
+      "TestRealConnectLookupDNSAtEverySite/policy_read",
+      "TestRealConnectLookupDNSAtEverySite/single_begin",
+      "TestRealConnectLookupDNSAtEverySite/pass_begin",
+      "TestRealConnectAttemptDNSAtEverySite/device_lookup",
+      "TestRealConnectAttemptDNSAtEverySite/policy_read",
+      "TestRealConnectAttemptDNSAtEverySite/single_begin",
+      "TestRealConnectAttemptDNSAtEverySite/pass_begin",
+      "TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_supported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported_first",
+      "TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_supported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported_first",
+      "TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_supported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported_first",
+      "TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_supported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported_first"
+    ],
+    "assertion": "DNS properties:"
+  },
+  {
+    "id": "06-servfail",
+    "path": "services/access/internal/testdb/dns_smoke.go",
+    "package": "./services/access/internal/testdb",
+    "selector": "^TestDNSProducerRealResolver$",
+    "expectedFailingTests": [
+      "TestDNSProducerRealResolver/LookupHost",
+      "TestDNSProducerRealResolver/DialContext"
+    ],
+    "assertion": "DNS properties:"
+  },
+  {
+    "id": "07-remove-unsupported-hop",
+    "path": "services/access/internal/testdb/scanner_smoke.go",
+    "package": "./services/access/internal/store",
+    "selector": "^TestRealMixedConnectLeavesUnderOneConnectError$/^(device_lookup|policy_read|single_begin|pass_begin)$/^(mixed_unsupported|mixed_unsupported_first)$",
+    "expectedFailingTests": [
+      "TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported_first",
+      "TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported_first",
+      "TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported_first",
+      "TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported_first"
+    ],
+    "assertion": "mixed socket leaf missing:"
+  },
+  {
+    "id": "08-remove-recovery-hop",
+    "path": "services/access/internal/testdb/scanner_smoke.go",
+    "package": "./services/access/internal/store",
+    "selector": "^TestRealMixedConnectLeavesUnderOneConnectError$",
+    "expectedFailingTests": [
+      "TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_supported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported_first",
+      "TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_supported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported_first",
+      "TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_supported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported_first",
+      "TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_supported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported",
+      "TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported_first"
+    ],
+    "assertion": "mixed 57P03 leaf missing:"
+  },
+  {
+    "id": "09-same-socket-order",
+    "path": "services/access/internal/testdb/scanner_smoke.go",
+    "package": "./services/access/internal/store",
+    "selector": "^TestRealMixedConnectLeavesUnderOneConnectError$/^(device_lookup|policy_read|single_begin|pass_begin)$/^mixed_unsupported_first$",
+    "expectedFailingTests": [
+      "TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported_first",
+      "TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported_first",
+      "TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported_first",
+      "TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported_first"
+    ],
+    "assertion": "mixed 57P03/socket order:"
+  },
+  {
+    "id": "10-omit-active-close",
+    "path": "services/access/internal/testdb/dns_smoke.go",
+    "package": "./services/access/internal/testdb",
+    "selector": "^TestDNSProducerClosePartialFrame$",
+    "expectedFailingTests": [
+      "TestDNSProducerClosePartialFrame"
+    ],
+    "assertion": "Close did not terminate the partial-frame handler within 1s"
+  }
+]

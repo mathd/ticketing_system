@@ -1,0 +1,12 @@
+{
+  "worktree": "/home/mathieu/sources/ticketing_system.S-2-TKT-399-final-postmerge",
+  "head": "2c8b35bbad7f24a863e7ef7ef8b9c89613931174",
+  "startedAt": "2026-10-20T02:59:53.630121+00:00",
+  "status": "FAIL",
+  "slot": 14,
+  "project": "ticketing-smoke-9af72414923d5d79",
+  "session": 41225,
+  "observedAt": "2026-10-20T03:06:19.679309+00:00",
+  "verdict": "FAIL exit=2 head=2c8b35bbad7f24a863e7ef7ef8b9c89613931174 tree=3bec9e9116273f948bbf7e5fe9abcd02bcb2122c log=/home/mathieu/sources/ticketing_system.S-2-TKT-399-final-postmerge/.gate.log",
+  "logSha256": "6d4dcd9a86b2eea59dd182d4cbf1ded9da002aa7293e52624b8d67ba0492bf56"
+}

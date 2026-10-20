@@ -1,0 +1,110 @@
+[
+  {
+    "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -tags smoke -count=1 -v ./services/access/internal/store -run '^(TestRealConnectLookupDNSAtEverySite|TestRealConnectAttemptDNSAtEverySite|TestRealMixedConnectLeavesUnderOneConnectError)$'",
+    "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+    "start": "2026-10-20T03:57:44.597248+00:00",
+    "end": "2026-10-20T03:57:50.311358+00:00",
+    "seconds": 5.714110876026098,
+    "exit": 1,
+    "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/tdd-red.log",
+    "label": "tdd-red",
+    "retainedLog": "runs/tdd-red.log",
+    "logSha256": "5edae3f201db6d0f8442de3c8edd7e6e04b3e4df7ff8de352faee2708008c894"
+  },
+  {
+    "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -tags smoke -count=1 -v ./services/access/internal/store -run '^TestRealConnectLookupDNSAtEverySite$'",
+    "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+    "start": "2026-10-20T03:58:48.472073+00:00",
+    "end": "2026-10-20T03:58:50.498122+00:00",
+    "seconds": 2.026060578005854,
+    "exit": 0,
+    "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/lookup-green.log",
+    "label": "lookup-green",
+    "retainedLog": "runs/lookup-green.log",
+    "logSha256": "f0890e497eb08c1c88a04c5fde6bd71c772fcb16ad85fc9ddfa468a220e8220a"
+  },
+  {
+    "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -tags smoke -count=1 -v ./services/access/internal/store -run '^TestRealConnectAttemptDNSAtEverySite$'",
+    "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+    "start": "2026-10-20T03:59:13.798452+00:00",
+    "end": "2026-10-20T03:59:15.772798+00:00",
+    "seconds": 1.974342929024715,
+    "exit": 0,
+    "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/attempt-green.log",
+    "label": "attempt-green",
+    "retainedLog": "runs/attempt-green.log",
+    "logSha256": "e0eefa9481e8475c6bd18bcfc3cece23a6f099bd853b5c2f7550b54e0e91e829"
+  },
+  {
+    "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -tags smoke -count=1 -v ./services/access/internal/store -run '^TestRealMixedConnectLeavesUnderOneConnectError$'",
+    "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+    "start": "2026-10-20T03:59:41.629471+00:00",
+    "end": "2026-10-20T03:59:45.353250+00:00",
+    "seconds": 3.7237746629980393,
+    "exit": 0,
+    "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mixed-green.log",
+    "label": "mixed-green",
+    "retainedLog": "runs/mixed-green.log",
+    "logSha256": "7072c0bf2f8edf7600d70281e32d89a49f2c1ec22b2472fe564e365eb36beeae"
+  },
+  {
+    "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -tags smoke -count=1 -v ./services/access/internal/testdb",
+    "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+    "start": "2026-10-20T03:59:49.852186+00:00",
+    "end": "2026-10-20T03:59:52.185073+00:00",
+    "seconds": 2.332890320045408,
+    "exit": 0,
+    "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/helper-green.log",
+    "label": "helper-green",
+    "retainedLog": "runs/helper-green.log",
+    "logSha256": "d34e72450b51d8923e4a179415671e4577ade7aee65a68b4124c1a36c251756d"
+  },
+  {
+    "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -tags smoke -count=1 -v ./services/access/internal/store -run '^(TestRealConnectLookupDNSAtEverySite|TestRealConnectAttemptDNSAtEverySite|TestRealMixedConnectLeavesUnderOneConnectError|TestDNSDisarmRestoresSuccessfulHealthyLookup|TestRealConnectRefusedAtEverySite|TestRealRecoveryStartupAtEverySite|TestRealRecoveryThroughLocalhostIsOneSupportedSet|TestRealRoleLimitAtEverySite|TestRealWrongPasswordAtEverySiteIsNotAvailability|TestIndependentDialTimeoutIsUnsupported|TestRealBlockedDialExpiresAtEverySite|TestLaterTicketLockDeadlineIsNotAvailability|TestLaterBackendLossIsNotAvailability|TestPostHandoffSocketCutIsNotAvailability|TestSuccessfulTransactionOutlivesTheAcquisitionBound|TestLateCallbackAfterHandoffDoesNotCancelTheTransaction)$'",
+    "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+    "start": "2026-10-20T04:00:06.611832+00:00",
+    "end": "2026-10-20T04:00:26.115232+00:00",
+    "seconds": 19.455778706993442,
+    "exit": 0,
+    "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/focused-controls.log",
+    "label": "focused-controls",
+    "retainedLog": "runs/focused-controls.log",
+    "logSha256": "4de2e1731ffd078e469c98ea519038d5a3604e2eeb778beaa0fb33940a6e13e2"
+  },
+  {
+    "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -race -tags smoke -count=1 -timeout=20m ./services/access/internal/testdb ./services/access/internal/store ./services/access/internal/api",
+    "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+    "start": "2026-10-20T04:01:06.548038+00:00",
+    "end": "2026-10-20T04:02:34.261399+00:00",
+    "seconds": 87.58560925803613,
+    "exit": 0,
+    "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/race-smoke.log",
+    "label": "race-smoke",
+    "retainedLog": "runs/race-smoke.log",
+    "logSha256": "7a37bbca69b8443535ccd31d1b5fd03fa08b234c459dd8598afa0afdd5013af7"
+  },
+  {
+    "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\n/home/mathieu/sources/ticketing_system/bin/golangci-lint-v2.14.0 run --build-tags smoke ./services/access/internal/testdb/... ./services/access/internal/store/...",
+    "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+    "start": "2026-10-20T04:03:05.036871+00:00",
+    "end": "2026-10-20T04:03:09.011922+00:00",
+    "seconds": 3.933778310951311,
+    "exit": 0,
+    "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/focused-lint.log",
+    "label": "focused-lint",
+    "retainedLog": "runs/focused-lint.log",
+    "logSha256": "e92606b0bf483111dff0a120c315ea165821348f31365020e2468a0059095c47"
+  },
+  {
+    "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -tags smoke -count=1 -v ./services/access/internal/store -run '^(TestRealConnectLookupDNSAtEverySite|TestRealConnectAttemptDNSAtEverySite|TestRealMixedConnectLeavesUnderOneConnectError|TestDNSDisarmRestoresSuccessfulHealthyLookup)$'",
+    "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+    "start": "2026-10-20T04:04:06.935310+00:00",
+    "end": "2026-10-20T04:04:13.045223+00:00",
+    "seconds": 6.068519209977239,
+    "exit": 0,
+    "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/final-focused.log",
+    "label": "final-focused",
+    "retainedLog": "runs/final-focused.log",
+    "logSha256": "793ae44203c7af8020c4455678dc707ab95183db7ce2cb71293851e6b2c0d373"
+  }
+]
