@@ -25,9 +25,11 @@ let batches: Array<Record<string, unknown>>[]
 let reply: () => Promise<Response>
 const reasons = ['already_redeemed', 'entry_limit_reached', 'exit_required', 'not_inside', 'exit_not_applicable', 'invalid_credential', 'revoked', 'refunded', 'exchanged', 'exit_unverified', 'integrity_quarantined', 'integrity_operator_controlled', 'occurrence_required', 'future_reason', 'invalid_occurrence', 'occurrence_collision']
 const generic = 'RejectedCredential is invalid or cannot be redeemed.'
+const exitRequired = 'RejectedDo not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.Reason: exit_required.'
+const entryLimit = 'RejectedDo not admit. No entries remain on this pass.Reason: entry_limit_reached.'
 const unconfirmed = 'Operator requiredScan response unconfirmed. Scanner did not open. Access may have recorded this scan. Get an operator; do not admit from this result.'
 const profiles: Array<{ name: string; status?: number; body?: unknown; error?: Error; text: string; outcome: Partial<TerminalOutcome> }> = [
-  ...reasons.map((reason) => ({ name: `denial ${reason}`, status: 422, body: { decision: 'rejected', reason }, text: reason === 'already_redeemed' ? 'RejectedAlready redeemed.' : generic, outcome: { cause: 'denied' as const, status: 422 as const, reason } })),
+  ...reasons.map((reason) => ({ name: `denial ${reason}`, status: 422, body: { decision: 'rejected', reason }, text: reason === 'already_redeemed' ? 'RejectedAlready redeemed.' : reason === 'exit_required' ? exitRequired : reason === 'entry_limit_reached' ? entryLimit : generic, outcome: { cause: 'denied' as const, status: 422 as const, reason } })),
   ...[409, 422].map((status) => ({ name: `unknown denial ${status}`, status, body: {}, text: 'RejectedAccess refused this scan; reason unavailable. Do not admit', outcome: { cause: 'denied' as const, status: status as 409 | 422, reason: null } })),
   { name: 'auth refusal', status: 401, text: 'Pair this deviceThis attempt was not authorized. Do not admit from this result.Pair this device and scan the ticket again.', outcome: { cause: 'auth_refused' } },
   ...[500, 501, 505, 599].map((status) => ({ name: `server ${status}`, status, text: 'Operator requiredOutcome unknown. Do not admit. Contact an operator.', outcome: { cause: 'unconfirmed_server_error' as const, status } })),

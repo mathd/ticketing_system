@@ -1571,7 +1571,7 @@ A failed outcome write does not give the scanner permission to choose another de
 | Already processed on this device | `This scan was already handled on this device. No second entry.` This requires a replay and an existing reservation owned by this page. |
 | Access accepted, but the local reservation cannot be confirmed | `Access recorded this scan; the scanner did not open; get an operator.` A missing or foreign record cannot prove that this device already handled the scan. |
 | `401` | `This attempt was not authorized. Do not admit from this result.` Pair the device and scan the ticket again. Older queued facts remain available for authenticated sync. |
-| `409` or `422` with a readable rejection | Rejected. The result remains terminal even if storage fails. Ordinary reason-specific copy remains in TKT-552. |
+| `409` or `422` with a readable rejection | Rejected. The result remains terminal even if storage fails. `exit_required` and `entry_limit_reached` have their own instructions, below. Every other readable reason shows `Credential is invalid or cannot be redeemed.`, except `already_redeemed`, which keeps its own text. |
 | `409` or `422` with an unreadable body | `Access refused this scan; reason unavailable. Do not admit`. It never becomes an offline admission. |
 | Invalid accepted `200`, an unexpected status, or an opaque redirect | `Scan response unconfirmed. Scanner did not open. Access may have recorded this scan. Get an operator; do not admit from this result.` |
 | `500`, `501`, or `505` through `599` | `Outcome unknown. Do not admit. Contact an operator.` Access can have committed before the error. |
@@ -1587,6 +1587,19 @@ browser-family, user-agent or version gate. Android Chrome, other engines and la
 not been tested. They select the fallback only on that same shape; other shapes need an operator.
 Expected, not verified on iOS or Firefox: a network-loss scan needs an operator. Re-run the native
 browser checks after a Chrome update. The owner selects venue devices.
+
+#### Entry rejection instructions
+
+Two readable Entry rejections have their own instruction. The result stays Rejected, and it shows these lines:
+
+- `exit_required` shows `Do not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.` It then shows `Reason: exit_required.`
+- `entry_limit_reached` shows `Do not admit. No entries remain on this pass.` It then shows `Reason: entry_limit_reached.`
+
+Every other readable reason, including an unknown value, keeps the generic instruction `Credential is invalid or cannot be redeemed.` and no Reason line. `already_redeemed` keeps its own text. The generic fallback is open-ended. TKT-565 tracks the remaining reason copy.
+
+Confirming that the holder has left is staff judgement, not a system check. Access cannot tell a missing Exit from a passback. If staff accept a claim of departure, record Exit, and then scan Entry, the presenter can be admitted. The `exit_required` instruction adds no guard and does not establish physical presence. This risk exists without the instruction too.
+
+After Exit is recorded, the Scan direction stays on Exit. Select Entry before the next scan. Otherwise the next scan runs as an Exit. It can record another Exit or show a neutral may-leave result, and it never gives an Entry decision. Pairing, replacing or clearing the device token, or a `401`, returns the selection to Entry, as described under Entry and Exit controls.
 
 #### Storage readiness and repair
 
@@ -1701,7 +1714,7 @@ created no Exit fact. TKT-551 adds separate aggregate counts. For example, a com
 "Synced 92 offline scan(s). 7 conflicts flagged for the operator. 6 rejected scans were not
 recorded." A rejected result never increases the Synced count. One rejection alone says
 "Synced 0 offline scan(s). 1 rejected scan was not recorded." With no rejection, the existing
-success text is unchanged. Entry reason-copy work remains TKT-552.
+success text is unchanged. Remaining Entry reason copy is tracked by TKT-565.
 
 After each applied batch, the first reconciliation alert reports completed-batch totals. For
 example, "Completed batches: Synced 90 offline scan(s). 6 conflicts flagged for the operator.
