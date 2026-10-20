@@ -1,0 +1,10 @@
+{
+  "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=1 -timeout=3m ./services/access/internal/store -run '^TestRealMixedConnectLeavesUnderOneConnectError$'",
+  "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+  "start": "2026-10-20T04:11:36.122955+00:00",
+  "end": "2026-10-20T04:11:39.542814+00:00",
+  "seconds": 3.3780480260029435,
+  "exit": 1,
+  "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/08-remove-recovery-hop-red.jsonl",
+  "sha256": "05ba3c654ec32f7b3d3b756f8e4736a8c0aa3421b0c1d55f0103f4cdf4bd3b14"
+}

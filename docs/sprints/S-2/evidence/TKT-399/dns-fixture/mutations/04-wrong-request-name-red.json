@@ -1,0 +1,10 @@
+{
+  "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=1 -timeout=3m ./services/access/internal/store -run '^(TestRealConnectLookupDNSAtEverySite|TestRealConnectAttemptDNSAtEverySite|TestRealMixedConnectLeavesUnderOneConnectError)$'",
+  "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+  "start": "2026-10-20T04:09:19.568865+00:00",
+  "end": "2026-10-20T04:09:24.296709+00:00",
+  "seconds": 4.727845999994315,
+  "exit": 1,
+  "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/04-wrong-request-name-red.jsonl",
+  "sha256": "922475b440ad4f061f61ce90c05f8719f625491e68e322418664cc2d9c36851f"
+}

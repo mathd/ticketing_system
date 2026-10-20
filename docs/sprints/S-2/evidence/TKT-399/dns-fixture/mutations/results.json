@@ -1,0 +1,265 @@
+{
+  "complete": {
+    "head": "806378e3f75d0e6d60a6a90130dd94ecf8cbc16e",
+    "mutantFamilies": 10,
+    "additionalDirectNameMutant": 1,
+    "restoredRunsPerMutant": 8,
+    "originalDriverStopRetained": true,
+    "explanation": "05 main-store mutation failed earlier at exact wire-name assertion. 05b separately killed the absolute DNSError.Name input mutation."
+  },
+  "records": [
+    {
+      "id": "01-lookup-default",
+      "red": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=1 -timeout=3m ./services/access/internal/store -run '^TestRealConnectLookupDNSAtEverySite$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:08:40.457912+00:00",
+        "end": "2026-10-20T04:08:42.581198+00:00",
+        "seconds": 2.1232851250097156,
+        "exit": 1,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/01-lookup-default-red.jsonl",
+        "sha256": "330adee1703b72f02047a154937512d5a8e1e662bd2842d18acb7003164f9a1c"
+      },
+      "restored": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=8 -timeout=3m ./services/access/internal/store -run '^TestRealConnectLookupDNSAtEverySite$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:08:42.599711+00:00",
+        "end": "2026-10-20T04:08:48.630980+00:00",
+        "seconds": 6.031269884028006,
+        "exit": 0,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/01-lookup-default-restored-8.jsonl",
+        "sha256": "4949b6e5b21e952a7318af60b6b74d971a44b08ed83061b981e879a147b83387"
+      }
+    },
+    {
+      "id": "02-attempt-default",
+      "red": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=1 -timeout=3m ./services/access/internal/store -run '^TestRealConnectAttemptDNSAtEverySite$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:08:48.647843+00:00",
+        "end": "2026-10-20T04:08:50.874151+00:00",
+        "seconds": 2.2263090609922074,
+        "exit": 1,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/02-attempt-default-red.jsonl",
+        "sha256": "94127f900438bac8adfce8ee4c88cd74acf07b0e95834b3524250e950283514e"
+      },
+      "restored": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=8 -timeout=3m ./services/access/internal/store -run '^TestRealConnectAttemptDNSAtEverySite$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:08:50.891767+00:00",
+        "end": "2026-10-20T04:08:57.173179+00:00",
+        "seconds": 6.281409660005011,
+        "exit": 0,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/02-attempt-default-restored-8.jsonl",
+        "sha256": "80a82d0885f2faab6c8df788648c7e93f163fe4d35ebb7a9c3ceb79f6156a920"
+      }
+    },
+    {
+      "id": "03-mixed-default",
+      "red": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=1 -timeout=3m ./services/access/internal/store -run '^TestRealMixedConnectLeavesUnderOneConnectError$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:08:57.193416+00:00",
+        "end": "2026-10-20T04:09:01.269954+00:00",
+        "seconds": 4.076538582041394,
+        "exit": 1,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/03-mixed-default-red.jsonl",
+        "sha256": "04dee133a8d31406baf85171a7e467df5a0c79af7dc22c18d33a4de18964f81d"
+      },
+      "restored": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=8 -timeout=3m ./services/access/internal/store -run '^TestRealMixedConnectLeavesUnderOneConnectError$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:09:01.287668+00:00",
+        "end": "2026-10-20T04:09:19.546413+00:00",
+        "seconds": 18.217034332978074,
+        "exit": 0,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/03-mixed-default-restored-8.jsonl",
+        "sha256": "14658e48640f848d2f9f8916bb161ebcb339943869769d10ed6cba6e2763e175"
+      }
+    },
+    {
+      "id": "04-wrong-request-name",
+      "red": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=1 -timeout=3m ./services/access/internal/store -run '^(TestRealConnectLookupDNSAtEverySite|TestRealConnectAttemptDNSAtEverySite|TestRealMixedConnectLeavesUnderOneConnectError)$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:09:19.568865+00:00",
+        "end": "2026-10-20T04:09:24.296709+00:00",
+        "seconds": 4.727845999994315,
+        "exit": 1,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/04-wrong-request-name-red.jsonl",
+        "sha256": "922475b440ad4f061f61ce90c05f8719f625491e68e322418664cc2d9c36851f"
+      },
+      "restored": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=8 -timeout=3m ./services/access/internal/store -run '^(TestRealConnectLookupDNSAtEverySite|TestRealConnectAttemptDNSAtEverySite|TestRealMixedConnectLeavesUnderOneConnectError)$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:09:24.312792+00:00",
+        "end": "2026-10-20T04:09:55.006401+00:00",
+        "seconds": 30.650566361960955,
+        "exit": 0,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/04-wrong-request-name-restored-8.jsonl",
+        "sha256": "d49d6162c944260f583abecc1f70814f1aa970dc0424f36580d0f5b835c61eaf"
+      }
+    },
+    {
+      "id": "05-relative-request-name",
+      "red": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=1 -timeout=3m ./services/access/internal/store -run '^(TestRealConnectLookupDNSAtEverySite|TestRealConnectAttemptDNSAtEverySite|TestRealMixedConnectLeavesUnderOneConnectError)$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:09:55.034771+00:00",
+        "end": "2026-10-20T04:10:00.316227+00:00",
+        "seconds": 5.281459769001231,
+        "exit": 1,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/05-relative-request-name-red.jsonl",
+        "sha256": "b3dc942444ec5f2edff6a1941c32dd27f05b46add71d096ce3dcdcb073a0969b"
+      },
+      "restored": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=8 -timeout=3m ./services/access/internal/store -run '^(TestRealConnectLookupDNSAtEverySite|TestRealConnectAttemptDNSAtEverySite|TestRealMixedConnectLeavesUnderOneConnectError)$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:10:45.873207+00:00",
+        "end": "2026-10-20T04:11:13.999523+00:00",
+        "seconds": 28.08723971695872,
+        "exit": 0,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/05-relative-request-name-restored-8.jsonl",
+        "sha256": "cce1c88c56ebe3d20bd4718a756b760f8ae228c58bc8ce40c396b4bb7edc9bae"
+      }
+    },
+    {
+      "id": "05b-relative-helper-input",
+      "red": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=1 -timeout=3m ./services/access/internal/testdb -run '^TestDNSProducerRealResolver$/^LookupHost$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:11:14.025269+00:00",
+        "end": "2026-10-20T04:11:14.742070+00:00",
+        "seconds": 0.7167972479946911,
+        "exit": 1,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/05b-relative-helper-input-red.jsonl",
+        "sha256": "c3096a43d4812089e0c3aac69c0fe2a1145578ddda1fcac332020a9138a3e6ea"
+      },
+      "restored": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=8 -timeout=3m ./services/access/internal/testdb -run '^TestDNSProducerRealResolver$/^LookupHost$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:11:14.759037+00:00",
+        "end": "2026-10-20T04:11:15.375160+00:00",
+        "seconds": 0.6161219150526449,
+        "exit": 0,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/05b-relative-helper-input-restored-8.jsonl",
+        "sha256": "3a857a30830c8658b6b94a9a229327077c9f49ae3c9408c23b3fe60f48aba9f0"
+      }
+    },
+    {
+      "id": "06-servfail",
+      "red": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=1 -timeout=3m ./services/access/internal/testdb -run '^TestDNSProducerRealResolver$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:11:15.392658+00:00",
+        "end": "2026-10-20T04:11:15.959282+00:00",
+        "seconds": 0.5666240190039389,
+        "exit": 1,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/06-servfail-red.jsonl",
+        "sha256": "b24d678cb11c5d92564c8fe4c2fa3fbe4e0648c3e73a3044552eadf4b9208f4f"
+      },
+      "restored": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=8 -timeout=3m ./services/access/internal/testdb -run '^TestDNSProducerRealResolver$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:11:15.974233+00:00",
+        "end": "2026-10-20T04:11:16.439419+00:00",
+        "seconds": 0.46518665400799364,
+        "exit": 0,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/06-servfail-restored-8.jsonl",
+        "sha256": "80211cc26839807c89566c1c129d50895decbca25e17d3732f9acf081d0e3621"
+      }
+    },
+    {
+      "id": "07-remove-unsupported-hop",
+      "red": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=1 -timeout=3m ./services/access/internal/store -run '^TestRealMixedConnectLeavesUnderOneConnectError$/^(device_lookup|policy_read|single_begin|pass_begin)$/^(mixed_unsupported|mixed_unsupported_first)$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:11:16.457882+00:00",
+        "end": "2026-10-20T04:11:18.929780+00:00",
+        "seconds": 2.471899695985485,
+        "exit": 1,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/07-remove-unsupported-hop-red.jsonl",
+        "sha256": "aafd18360f2aeea26377b7541d319e9c55de3328eb6bbdf26bab5b1b3c78894b"
+      },
+      "restored": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=8 -timeout=3m ./services/access/internal/store -run '^TestRealMixedConnectLeavesUnderOneConnectError$/^(device_lookup|policy_read|single_begin|pass_begin)$/^(mixed_unsupported|mixed_unsupported_first)$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:11:18.944949+00:00",
+        "end": "2026-10-20T04:11:36.104372+00:00",
+        "seconds": 17.159426639962476,
+        "exit": 0,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/07-remove-unsupported-hop-restored-8.jsonl",
+        "sha256": "0c001825c18413364cfc4b1c8bb8f2b6cd47894dcac8f07480befe2756ee2bed"
+      }
+    },
+    {
+      "id": "08-remove-recovery-hop",
+      "red": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=1 -timeout=3m ./services/access/internal/store -run '^TestRealMixedConnectLeavesUnderOneConnectError$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:11:36.122955+00:00",
+        "end": "2026-10-20T04:11:39.542814+00:00",
+        "seconds": 3.3780480260029435,
+        "exit": 1,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/08-remove-recovery-hop-red.jsonl",
+        "sha256": "05ba3c654ec32f7b3d3b756f8e4736a8c0aa3421b0c1d55f0103f4cdf4bd3b14"
+      },
+      "restored": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=8 -timeout=3m ./services/access/internal/store -run '^TestRealMixedConnectLeavesUnderOneConnectError$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:11:39.562216+00:00",
+        "end": "2026-10-20T04:11:56.822579+00:00",
+        "seconds": 17.260370125004556,
+        "exit": 0,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/08-remove-recovery-hop-restored-8.jsonl",
+        "sha256": "f5559ea03ed458e3413d5551ba59bfbe8a34f08c0bbb9c5711984b0e992ca49b"
+      }
+    },
+    {
+      "id": "09-same-socket-order",
+      "red": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=1 -timeout=3m ./services/access/internal/store -run '^TestRealMixedConnectLeavesUnderOneConnectError$/^(device_lookup|policy_read|single_begin|pass_begin)$/^mixed_unsupported_first$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:11:56.842252+00:00",
+        "end": "2026-10-20T04:11:59.816568+00:00",
+        "seconds": 2.974312998005189,
+        "exit": 1,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/09-same-socket-order-red.jsonl",
+        "sha256": "bb1a3dc58ae3827182eedd97e7405cb758f63230e4022ffbb15bb0c2ced06bc7"
+      },
+      "restored": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=8 -timeout=3m ./services/access/internal/store -run '^TestRealMixedConnectLeavesUnderOneConnectError$/^(device_lookup|policy_read|single_begin|pass_begin)$/^mixed_unsupported_first$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:11:59.830920+00:00",
+        "end": "2026-10-20T04:12:13.472691+00:00",
+        "seconds": 13.601292437000666,
+        "exit": 0,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/09-same-socket-order-restored-8.jsonl",
+        "sha256": "88ef2361988c5ff3673cf7433e51ef91f8cdcac712d5e91490978bc943042610"
+      }
+    },
+    {
+      "id": "10-omit-active-close",
+      "red": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=1 -timeout=3m ./services/access/internal/testdb -run '^TestDNSProducerClosePartialFrame$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:12:13.487877+00:00",
+        "end": "2026-10-20T04:12:15.059924+00:00",
+        "seconds": 1.5720487419748679,
+        "exit": 1,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/10-omit-active-close-red.jsonl",
+        "sha256": "c1657825d3eebd391fc58b679b5685a6c55601799b1d3e541853c1664ff8b088"
+      },
+      "restored": {
+        "command": "source /tmp/sdlc-S-2/dns-testdb-r3-20261020/environment.sh\ngo test -json -tags smoke -count=8 -timeout=3m ./services/access/internal/testdb -run '^TestDNSProducerClosePartialFrame$'",
+        "cwd": "/home/mathieu/sources/ticketing_system.TKT-399-dns-fixture",
+        "start": "2026-10-20T04:12:15.075228+00:00",
+        "end": "2026-10-20T04:12:15.490375+00:00",
+        "seconds": 0.41515051695751026,
+        "exit": 0,
+        "log": "/tmp/sdlc-S-2/TKT-399-dns-implementation/mutations-20261020T040840.441376Z/10-omit-active-close-restored-8.jsonl",
+        "sha256": "7ffa095db74d3b71ee48108faa92d72d91998d3a15eacbcc56d3aea093c5287d"
+      }
+    }
+  ]
+}

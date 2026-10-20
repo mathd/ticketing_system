@@ -1,0 +1,17 @@
+{
+  "observedAt": "2026-10-20T04:11:23.427386+00:00",
+  "comparedFromSquash": "371e44b3d8f141caa1e41988c4bae29a4c460d1d",
+  "candidate": "806378e3f75d0e6d60a6a90130dd94ecf8cbc16e",
+  "changedPaths": [
+    "services/access/go.mod",
+    "services/access/internal/store/scanner_availability_smoke_test.go",
+    "services/access/internal/testdb/dns_smoke.go",
+    "services/access/internal/testdb/dns_smoke_test.go",
+    "services/access/internal/testdb/scanner_smoke.go",
+    "web/scanner/src/App.exit-reconcile.test.tsx"
+  ],
+  "classification": "Only smoke fixtures, smoke assertions, same-version dependency declaration and scanner test waiting bound changed. No browser spec or production code changed.",
+  "currentChrome": "Google Chrome 155.0.8059.79",
+  "evidence": "docs/sprints/S-2/evidence/TKT-399/review-r8-verification.json",
+  "carryForward": "Prior real Chrome journeys remain applicable to unchanged production behavior and inputs. This is an applicability check, not a new browser run."
+}

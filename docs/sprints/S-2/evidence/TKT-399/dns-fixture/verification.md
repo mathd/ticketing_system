@@ -1,8 +1,8 @@
-# TKT-399 DNS fixture verification draft
+# TKT-399 DNS fixture verification
 
 This candidate changes only Access smoke fixtures, smoke assertions and the direct dependency declaration for the existing `golang.org/x/net v0.61.0`. `go.sum` is unchanged. Production code, the 500 ms step deadline, scanner behavior and earlier Exit evidence are unchanged.
 
-The implementation started from `2c8b35bbad7f24a863e7ef7ef8b9c89613931174` on `TKT-399-dns-fixture`. The target worktree and primary checkout were clean. The governing amended plan has SHA-256 `b879ddcb39ca850fc0f968a56c3309b147c7f0e3c6a0b77fd254627a42fe9fc0`. This is an uncommitted candidate receipt, not a gate, review or ticket-completion verdict.
+The implementation started from `2c8b35bbad7f24a863e7ef7ef8b9c89613931174` on `TKT-399-dns-fixture`. The target worktree and primary checkout were clean. The governing amended plan has SHA-256 `b879ddcb39ca850fc0f968a56c3309b147c7f0e3c6a0b77fd254627a42fe9fc0`. The candidate was committed as `806378e3f75d0e6d60a6a90130dd94ecf8cbc16e` before mutation checks. This receipt is not a gate, review or ticket-completion verdict.
 
 ## Observed TDD
 
@@ -50,8 +50,28 @@ The original verdict, failure record, probe and diagnosis are preserved verbatim
 
 ## Pending verification and limits
 
-No mutation has run. The parent must inspect and commit this candidate first. The external driver is `/tmp/sdlc-S-2/TKT-399-dns-implementation/mutate.py`; its ten owning selectors are in `mutation-selectors.json` beside it. It refuses dirty tracked files, an uncommitted candidate, changed candidate bytes and gate locks. It keeps byte copies, restores each independent mutant in `finally`, requires the named failing assertion, then requires eight restored passes. A survivor, skip or restored failure stops the driver. Its syntax and unique replacement targets were checked; its mutation execution remains unverified.
+All ten planned mutation families failed at their owning assertions. An additional direct helper-input mutant checks the absolute `DNSError.Name` assertion separately. Each of these eleven mutations was followed by eight passing restored runs. No selected case skipped. The source bytes match the committed candidate after restoration. See [all commands and log digests](mutations/results.json).
 
-Full local and post-merge gates, independent code-review round 9, CI, merge, COS validation and ticket completion remain with the parent. Browser evidence was not rerun in this bounded fixture task. This draft does not replace the original four functional COS or their evidence.
+The original driver stopped at the fifth mutant because it expected `DNS properties:`. All 20 main-store cases instead failed earlier at `unexpected DNS question`: this host appended its search suffix to the relative name. This was a driver-marker mismatch, not a surviving mutant or a clean-source failure. The original log and [diagnosis](mutations/05-observed-assertion.json) remain. D56 adds a direct helper LookupHost input mutation with an unchanged absolute expected name. It failed at `DNS properties:` before wire checks and passed eight restored runs. No fixture or production source was changed to obtain these results.
+
+The [original driver](mutations/mutate.py) and [continuation](mutations/continue-mutations.py) are exact copies of the temporary scripts executed. They contain local paths and require the owned test environment described by the command records. They contain no credentials.
+
+| Mutation | Red exit | Restored exit | Restored repetitions |
+|---|---:|---:|---:|
+| 01-lookup-default | 1 | 0 | 8 |
+| 02-attempt-default | 1 | 0 | 8 |
+| 03-mixed-default | 1 | 0 | 8 |
+| 04-wrong-request-name | 1 | 0 | 8 |
+| 05-relative-request-name | 1 | 0 | 8 |
+| 05b-relative-helper-input | 1 | 0 | 8 |
+| 06-servfail | 1 | 0 | 8 |
+| 07-remove-unsupported-hop | 1 | 0 | 8 |
+| 08-remove-recovery-hop | 1 | 0 | 8 |
+| 09-same-socket-order | 1 | 0 | 8 |
+| 10-omit-active-close | 1 | 0 | 8 |
+
+The complete DNS helper and store set, including concurrency, protocol, cleanup and healthy disarm controls, then passed eight restored repetitions with no skips. See [the complete set receipt](complete-fixture-restored-8.json). The Access race run remains valid because no code bytes changed after it.
+
+Full local and post-merge gates, independent code-review round 9, CI, merge, COS validation and ticket completion remain pending. Browser evidence was not rerun in this bounded fixture task. This draft does not replace the original four functional COS or their evidence.
 
 This proof excludes the host resolver chain, UDP, search-list behavior, SERVFAIL classification and DNS timeout shapes. The planned SERVFAIL mutant is discrimination evidence only. `DNSError.Server` still identifies the configured resolv.conf server, not the private listener; neither its value nor error-message spelling is asserted. The resolver still reads system lookup configuration. Owned DNS removes upstream transport latency, not scheduler or database delays. The successful healthy lookup uses an IP literal and does not prove DNS isolation. Global resolver non-mutation and healthy-path wiring need structural review.

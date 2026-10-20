@@ -1,0 +1,9 @@
+{"Time":"2026-10-20T00:12:14.011662476-04:00","Action":"start","Package":"ticketing/services/access/internal/testdb"}
+{"Time":"2026-10-20T00:12:14.014816948-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame"}
+{"Time":"2026-10-20T00:12:14.014882667-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Output":"=== RUN   TestDNSProducerClosePartialFrame\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.017091434-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Output":"    dns_smoke_test.go:288: Close did not terminate the partial-frame handler within 1s\n","OutputType":"error"}
+{"Time":"2026-10-20T00:12:15.017262305-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Output":"--- FAIL: TestDNSProducerClosePartialFrame (1.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.017285848-04:00","Action":"fail","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerClosePartialFrame","Elapsed":1}
+{"Time":"2026-10-20T00:12:15.0172981-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.018109619-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Output":"FAIL\tticketing/services/access/internal/testdb\t1.006s\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:12:15.018131479-04:00","Action":"fail","Package":"ticketing/services/access/internal/testdb","Elapsed":1.006}

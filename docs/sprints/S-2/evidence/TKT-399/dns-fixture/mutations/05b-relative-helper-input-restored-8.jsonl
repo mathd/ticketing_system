@@ -1,0 +1,68 @@
+{"Time":"2026-10-20T00:11:15.339364492-04:00","Action":"start","Package":"ticketing/services/access/internal/testdb"}
+{"Time":"2026-10-20T00:11:15.343050324-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver"}
+{"Time":"2026-10-20T00:11:15.343143511-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Output":"=== RUN   TestDNSProducerRealResolver\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.343182618-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost"}
+{"Time":"2026-10-20T00:11:15.343189004-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Output":"=== RUN   TestDNSProducerRealResolver/LookupHost\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.345655526-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Output":"--- PASS: TestDNSProducerRealResolver/LookupHost (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.345684831-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Elapsed":0}
+{"Time":"2026-10-20T00:11:15.345734692-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Output":"--- PASS: TestDNSProducerRealResolver (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.345738805-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Elapsed":0}
+{"Time":"2026-10-20T00:11:15.345792414-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver"}
+{"Time":"2026-10-20T00:11:15.345794609-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Output":"=== RUN   TestDNSProducerRealResolver\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.345827624-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost"}
+{"Time":"2026-10-20T00:11:15.345943026-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Output":"=== RUN   TestDNSProducerRealResolver/LookupHost\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.346400623-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Output":"--- PASS: TestDNSProducerRealResolver/LookupHost (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.346447478-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Elapsed":0}
+{"Time":"2026-10-20T00:11:15.34645573-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Output":"--- PASS: TestDNSProducerRealResolver (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.346504982-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Elapsed":0}
+{"Time":"2026-10-20T00:11:15.346523995-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver"}
+{"Time":"2026-10-20T00:11:15.346527516-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Output":"=== RUN   TestDNSProducerRealResolver\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.346572638-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost"}
+{"Time":"2026-10-20T00:11:15.346580135-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Output":"=== RUN   TestDNSProducerRealResolver/LookupHost\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.347112627-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Output":"--- PASS: TestDNSProducerRealResolver/LookupHost (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.34715322-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Elapsed":0}
+{"Time":"2026-10-20T00:11:15.34716094-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Output":"--- PASS: TestDNSProducerRealResolver (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.347165458-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Elapsed":0}
+{"Time":"2026-10-20T00:11:15.347170617-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver"}
+{"Time":"2026-10-20T00:11:15.347174342-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Output":"=== RUN   TestDNSProducerRealResolver\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.347177446-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost"}
+{"Time":"2026-10-20T00:11:15.347179933-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Output":"=== RUN   TestDNSProducerRealResolver/LookupHost\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.34761386-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Output":"--- PASS: TestDNSProducerRealResolver/LookupHost (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.34764158-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Elapsed":0}
+{"Time":"2026-10-20T00:11:15.347651053-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Output":"--- PASS: TestDNSProducerRealResolver (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.347656348-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Elapsed":0}
+{"Time":"2026-10-20T00:11:15.347711648-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver"}
+{"Time":"2026-10-20T00:11:15.3477272-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Output":"=== RUN   TestDNSProducerRealResolver\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.347733738-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost"}
+{"Time":"2026-10-20T00:11:15.347735826-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Output":"=== RUN   TestDNSProducerRealResolver/LookupHost\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.348377335-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Output":"--- PASS: TestDNSProducerRealResolver/LookupHost (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.34839627-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Elapsed":0}
+{"Time":"2026-10-20T00:11:15.348401596-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Output":"--- PASS: TestDNSProducerRealResolver (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.348403963-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Elapsed":0}
+{"Time":"2026-10-20T00:11:15.348414935-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver"}
+{"Time":"2026-10-20T00:11:15.348416991-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Output":"=== RUN   TestDNSProducerRealResolver\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.348486487-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost"}
+{"Time":"2026-10-20T00:11:15.348502028-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Output":"=== RUN   TestDNSProducerRealResolver/LookupHost\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.348836238-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Output":"--- PASS: TestDNSProducerRealResolver/LookupHost (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.348844496-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Elapsed":0}
+{"Time":"2026-10-20T00:11:15.348858911-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Output":"--- PASS: TestDNSProducerRealResolver (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.34886141-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Elapsed":0}
+{"Time":"2026-10-20T00:11:15.348901408-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver"}
+{"Time":"2026-10-20T00:11:15.348903938-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Output":"=== RUN   TestDNSProducerRealResolver\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.348971701-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost"}
+{"Time":"2026-10-20T00:11:15.348982235-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Output":"=== RUN   TestDNSProducerRealResolver/LookupHost\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.34923704-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Output":"--- PASS: TestDNSProducerRealResolver/LookupHost (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.349247809-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Elapsed":0}
+{"Time":"2026-10-20T00:11:15.349253889-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Output":"--- PASS: TestDNSProducerRealResolver (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.349280339-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Elapsed":0}
+{"Time":"2026-10-20T00:11:15.349316868-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver"}
+{"Time":"2026-10-20T00:11:15.349320053-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Output":"=== RUN   TestDNSProducerRealResolver\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.349351785-04:00","Action":"run","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost"}
+{"Time":"2026-10-20T00:11:15.349355325-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Output":"=== RUN   TestDNSProducerRealResolver/LookupHost\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.349669524-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Output":"--- PASS: TestDNSProducerRealResolver/LookupHost (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.349674277-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver/LookupHost","Elapsed":0}
+{"Time":"2026-10-20T00:11:15.34970804-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Output":"--- PASS: TestDNSProducerRealResolver (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.349728461-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Test":"TestDNSProducerRealResolver","Elapsed":0}
+{"Time":"2026-10-20T00:11:15.349775661-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-10-20T00:11:15.350200875-04:00","Action":"output","Package":"ticketing/services/access/internal/testdb","Output":"ok  \tticketing/services/access/internal/testdb\t0.010s\n"}
+{"Time":"2026-10-20T00:11:15.350223236-04:00","Action":"pass","Package":"ticketing/services/access/internal/testdb","Elapsed":0.011}
