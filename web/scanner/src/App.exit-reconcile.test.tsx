@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import App from './App'
 import type { StorageController } from './occurrence-readiness'
-import { createTestPage, destroyAllPages, mintOn } from './test/page-fixture'
+import { BOUND_MS, createTestPage, destroyAllPages, mintOn } from './test/page-fixture'
 import { rawGetAll } from './test/raw-db'
 import { STORE } from './occurrence-store'
 const runtime = vi.hoisted(() => ({ storage: null as StorageController | null }))
@@ -42,7 +42,7 @@ it.each(failures)('keeps exact mixed Entry, Exit and refusal rows after %s and r
     return Response.json({ results })
   }))
   render(<App />)
-  fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }, { timeout: BOUND_MS }))
   if (failure === '401') await screen.findByLabelText('Pairing token')
   else await screen.findByText(/^Sync failed:/)
   expect(await rawGetAll(dbName, STORE.occurrences)).toStrictEqual(before)
@@ -55,7 +55,7 @@ it.each(failures)('keeps exact mixed Entry, Exit and refusal rows after %s and r
     fireEvent.submit(screen.getByRole('form', { name: 'Device pairing' }))
     await screen.findByLabelText('Ticket credential')
   }
-  fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }, { timeout: BOUND_MS }))
   await screen.findByText('Synced 3 offline scan(s).')
   await waitFor(async () => expect(await rawGetAll(dbName, STORE.occurrences)).toStrictEqual(before.map(row => ({ ...row, state: 'SYNCED', result: 'recorded' }))))
   expect(batches[1]).toStrictEqual(expected)

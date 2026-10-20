@@ -1,0 +1,7 @@
+{
+  "command": "pnpm -r test",
+  "purpose": "Reproduce first-case failure with unchanged tree and full workspace concurrency",
+  "start": "2026-10-20T02:19:13.260281+00:00",
+  "end": "2026-10-20T02:19:51.253597+00:00",
+  "exit": 0
+}

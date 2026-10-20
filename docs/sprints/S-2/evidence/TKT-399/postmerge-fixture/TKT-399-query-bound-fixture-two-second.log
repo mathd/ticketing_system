@@ -1,0 +1,9 @@
+
+ RUN  v4.1.10 /home/mathieu/sources/ticketing_system.TKT-399-sync-fixture/web/scanner
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 11 skipped (12)
+   Start at  22:20:49
+   Duration  2.46s (transform 180ms, setup 37ms, import 270ms, tests 1.40s, environment 594ms)
+

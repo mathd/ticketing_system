@@ -1,0 +1,8 @@
+{
+  "head": "371e44b3d8f141caa1e41988c4bae29a4c460d1d",
+  "verdict": "FAIL exit=2 head=371e44b3d8f141caa1e41988c4bae29a4c460d1d tree=25c3bab983e7b3ec0c6a8bd93fb91e375e24f087 log=/home/mathieu/sources/ticketing_system.S-2-TKT-399-postmerge/.gate.log",
+  "observedAt": "2026-10-20T02:16:22.966844+00:00",
+  "failure": "App.exit-reconcile first transport case could not find Sync queued scans at line45; 1850/1851 tests passed; cause not yet established",
+  "logSha256": "e0f72222dbb8f85d2e5ff9c7d44ea7ce59f89450f91c14552570e2bb5f511c7e",
+  "verdictSha256": "66d129071738b23d989b45cb113cb62f4362ff34729a94b6507c800f70a46fc4"
+}

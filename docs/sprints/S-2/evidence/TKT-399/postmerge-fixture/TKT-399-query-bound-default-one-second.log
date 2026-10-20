@@ -1,0 +1,207 @@
+
+ RUN  v4.1.10 /home/mathieu/sources/ticketing_system.TKT-399-sync-fixture/web/scanner
+
+ ❯ src/App.exit-reconcile.test.tsx (12 tests | 1 failed | 11 skipped) 1045ms
+   × keeps exact mixed Entry, Exit and refusal rows after transport and retires only the exact valid reply 1044ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/App.exit-reconcile.test.tsx > keeps exact mixed Entry, Exit and refusal rows after transport and retires only the exact valid reply
+TestingLibraryElementError: Unable to find role="button" and name "Sync queued scans"
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<main[39m
+      [33mclass[39m=[32m"scanner"[39m
+    [36m>[39m
+      [36m<h1>[39m
+        [0mGate scanner[0m
+      [36m</h1>[39m
+      [36m<fieldset[39m
+        [33mclass[39m=[32m"scan-direction"[39m
+      [36m>[39m
+        [36m<legend>[39m
+          [0mScan direction[0m
+        [36m</legend>[39m
+        [36m<label>[39m
+          [36m<input[39m
+            [33mchecked[39m=[32m""[39m
+            [33mname[39m=[32m"direction"[39m
+            [33mtype[39m=[32m"radio"[39m
+            [33mvalue[39m=[32m"entry"[39m
+          [36m/>[39m
+          [0m Entry[0m
+        [36m</label>[39m
+        [36m<label>[39m
+          [36m<input[39m
+            [33mname[39m=[32m"direction"[39m
+            [33mtype[39m=[32m"radio"[39m
+            [33mvalue[39m=[32m"exit"[39m
+          [36m/>[39m
+          [0m Exit[0m
+        [36m</label>[39m
+      [36m</fieldset>[39m
+      [36m<p>[39m
+        [0mScan a ticket QR code or paste its credential [0m
+        [0mto validate entry.[0m
+      [36m</p>[39m
+      [36m<section[39m
+        [33maria-label[39m=[32m"Ticket scan input"[39m
+      [36m>[39m
+        [36m<form[39m
+          [33maria-label[39m=[32m"Ticket scan"[39m
+        [36m>[39m
+          [36m<label[39m
+            [33mfor[39m=[32m"qr-payload"[39m
+          [36m>[39m
+            [0mTicket credential[0m
+          [36m</label>[39m
+          [36m<textarea[39m
+            [33mid[39m=[32m"qr-payload"[39m
+            [33mplaceholder[39m=[32m"Paste QR credential"[39m
+            [33mrows[39m=[32m"4"[39m
+          [36m/>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"scanner-actions"[39m
+          [36m>[39m
+            [36m<button[39m
+              [33mdisabled[39m=[32m""[39m
+              [33mtype[39m=[32m"submit"[39m
+            [36m>[39m
+              [0mCheck ticket[0m
+            [36m</button>[39m
+            [36m<button[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [0mUse camera[0m
+            [36m</button>[39m
+            [36m<button[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [0mRefresh revocation list[0m
+            [36m</button>[39m
+          [36m</div>[39m
+        [36m</form>[39m
+        [36m<video[39m
+          [33maria-label[39m=[32m"Camera preview"[39m
+          [33mhidden[39m=[32m""[39m
+          [33mplaysinline[39m=[32m""[39m
+        [36m/>[39m
+      [36m</section>[39m
+      [36m<section[39m
+        [33maria-label[39m=[32m"Local scanner records"[39m
+        [33mclass[39m=[32m"local-records"[39m
+      [36m/>[39m
+    [36m</main>[39m
+  [36m</div>[39m
+[36m</body>[39m
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<main[39m
+      [33mclass[39m=[32m"scanner"[39m
+    [36m>[39m
+      [36m<h1>[39m
+        [0mGate scanner[0m
+      [36m</h1>[39m
+      [36m<fieldset[39m
+        [33mclass[39m=[32m"scan-direction"[39m
+      [36m>[39m
+        [36m<legend>[39m
+          [0mScan direction[0m
+        [36m</legend>[39m
+        [36m<label>[39m
+          [36m<input[39m
+            [33mchecked[39m=[32m""[39m
+            [33mname[39m=[32m"direction"[39m
+            [33mtype[39m=[32m"radio"[39m
+            [33mvalue[39m=[32m"entry"[39m
+          [36m/>[39m
+          [0m Entry[0m
+        [36m</label>[39m
+        [36m<label>[39m
+          [36m<input[39m
+            [33mname[39m=[32m"direction"[39m
+            [33mtype[39m=[32m"radio"[39m
+            [33mvalue[39m=[32m"exit"[39m
+          [36m/>[39m
+          [0m Exit[0m
+        [36m</label>[39m
+      [36m</fieldset>[39m
+      [36m<p>[39m
+        [0mScan a ticket QR code or paste its credential [0m
+        [0mto validate entry.[0m
+      [36m</p>[39m
+      [36m<section[39m
+        [33maria-label[39m=[32m"Ticket scan input"[39m
+      [36m>[39m
+        [36m<form[39m
+          [33maria-label[39m=[32m"Ticket scan"[39m
+        [36m>[39m
+          [36m<label[39m
+            [33mfor[39m=[32m"qr-payload"[39m
+          [36m>[39m
+            [0mTicket credential[0m
+          [36m</label>[39m
+          [36m<textarea[39m
+            [33mid[39m=[32m"qr-payload"[39m
+            [33mplaceholder[39m=[32m"Paste QR credential"[39m
+            [33mrows[39m=[32m"4"[39m
+          [36m/>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"scanner-actions"[39m
+          [36m>[39m
+            [36m<button[39m
+              [33mdisabled[39m=[32m""[39m
+              [33mtype[39m=[32m"submit"[39m
+            [36m>[39m
+              [0mCheck ticket[0m
+            [36m</button>[39m
+            [36m<button[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [0mUse camera[0m
+            [36m</button>[39m
+            [36m<button[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [0mRefresh revocation list[0m
+            [36m</button>[39m
+          [36m</div>[39m
+        [36m</form>[39m
+        [36m<video[39m
+          [33maria-label[39m=[32m"Camera preview"[39m
+          [33mhidden[39m=[32m""[39m
+          [33mplaysinline[39m=[32m""[39m
+        [36m/>[39m
+      [36m</section>[39m
+      [36m<section[39m
+        [33maria-label[39m=[32m"Local scanner records"[39m
+        [33mclass[39m=[32m"local-records"[39m
+      [36m/>[39m
+    [36m</main>[39m
+  [36m</div>[39m
+[36m</body>[39m
+ ❯ waitForWrapper ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/wait-for.js:163:27
+ ❯ ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:86:33
+ ❯ src/App.exit-reconcile.test.tsx:50:32
+     48|   })
+     49|   render(<App />)
+     50|   fireEvent.click(await screen.findByRole('button', { name: 'Sync queu…
+       |                                ^
+     51|   if (failure === '401') await screen.findByLabelText('Pairing token')
+     52|   else await screen.findByText(/^Sync failed:/)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 11 skipped (12)
+   Start at  22:20:46
+   Duration  2.06s (transform 188ms, setup 43ms, import 287ms, tests 1.05s, environment 564ms)
+
+undefined
+/home/mathieu/sources/ticketing_system.TKT-399-sync-fixture/web/scanner:
+[ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL] Command failed with exit code 1: vitest run src/App.exit-reconcile.test.tsx -t 'after transport'

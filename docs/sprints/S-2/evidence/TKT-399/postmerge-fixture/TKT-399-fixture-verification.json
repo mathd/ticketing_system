@@ -1,0 +1,187 @@
+[
+  {
+    "case": "mutation-exit-as-entry",
+    "command": [
+      "pnpm",
+      "--filter",
+      "scanner",
+      "exec",
+      "vitest",
+      "run",
+      "src/App.exit-reconcile.test.tsx",
+      "-t",
+      "after transport"
+    ],
+    "exit": 1,
+    "start": "2026-10-20T02:21:42.322220+00:00",
+    "end": "2026-10-20T02:21:44.907179+00:00",
+    "log": "/tmp/sdlc-S-2/TKT-399-fixture-mutation-exit-as-entry.log",
+    "logSha256": "4489fd3eade077285858ac0f4b725eb28f60de0f7c55e12cf606c1743dcf7a89"
+  },
+  {
+    "case": "restored-1",
+    "command": [
+      "pnpm",
+      "--filter",
+      "scanner",
+      "exec",
+      "vitest",
+      "run",
+      "src/App.exit-reconcile.test.tsx"
+    ],
+    "exit": 0,
+    "start": "2026-10-20T02:21:44.907646+00:00",
+    "end": "2026-10-20T02:21:47.831521+00:00",
+    "log": "/tmp/sdlc-S-2/TKT-399-fixture-restored-1.log",
+    "logSha256": "d8e720a951d62f14cb9c2b875decbce65c6e5a63a54dfed7d4ef6df32279e670"
+  },
+  {
+    "case": "restored-2",
+    "command": [
+      "pnpm",
+      "--filter",
+      "scanner",
+      "exec",
+      "vitest",
+      "run",
+      "src/App.exit-reconcile.test.tsx"
+    ],
+    "exit": 0,
+    "start": "2026-10-20T02:21:47.831840+00:00",
+    "end": "2026-10-20T02:21:50.385971+00:00",
+    "log": "/tmp/sdlc-S-2/TKT-399-fixture-restored-2.log",
+    "logSha256": "bf8690d12c7c3adb54bd38728c791f75c4755b5d7320e7a0a43c67a11b510d7c"
+  },
+  {
+    "case": "restored-3",
+    "command": [
+      "pnpm",
+      "--filter",
+      "scanner",
+      "exec",
+      "vitest",
+      "run",
+      "src/App.exit-reconcile.test.tsx"
+    ],
+    "exit": 0,
+    "start": "2026-10-20T02:21:50.386302+00:00",
+    "end": "2026-10-20T02:21:53.338086+00:00",
+    "log": "/tmp/sdlc-S-2/TKT-399-fixture-restored-3.log",
+    "logSha256": "d3112662a1581aa59d784783a60c9ab03c5c1c1c9068ac9ea09dea5f29a6c73b"
+  },
+  {
+    "case": "restored-4",
+    "command": [
+      "pnpm",
+      "--filter",
+      "scanner",
+      "exec",
+      "vitest",
+      "run",
+      "src/App.exit-reconcile.test.tsx"
+    ],
+    "exit": 0,
+    "start": "2026-10-20T02:21:53.338404+00:00",
+    "end": "2026-10-20T02:21:56.263565+00:00",
+    "log": "/tmp/sdlc-S-2/TKT-399-fixture-restored-4.log",
+    "logSha256": "d5d74a61bff05bf03b63d5ae4555d2686738885c6594672f097100e7b270fe43"
+  },
+  {
+    "case": "restored-5",
+    "command": [
+      "pnpm",
+      "--filter",
+      "scanner",
+      "exec",
+      "vitest",
+      "run",
+      "src/App.exit-reconcile.test.tsx"
+    ],
+    "exit": 0,
+    "start": "2026-10-20T02:21:56.263973+00:00",
+    "end": "2026-10-20T02:21:58.930219+00:00",
+    "log": "/tmp/sdlc-S-2/TKT-399-fixture-restored-5.log",
+    "logSha256": "d25bdf9b1c7ca8b0b92a49be0759af2e30ad65b6c245e02e2faf658946d911aa"
+  },
+  {
+    "case": "restored-6",
+    "command": [
+      "pnpm",
+      "--filter",
+      "scanner",
+      "exec",
+      "vitest",
+      "run",
+      "src/App.exit-reconcile.test.tsx"
+    ],
+    "exit": 0,
+    "start": "2026-10-20T02:21:58.930653+00:00",
+    "end": "2026-10-20T02:22:01.733891+00:00",
+    "log": "/tmp/sdlc-S-2/TKT-399-fixture-restored-6.log",
+    "logSha256": "6ed830df356c543302bbab59dfd83ef24e442994a5bd27023ea409f82106f1a4"
+  },
+  {
+    "case": "restored-7",
+    "command": [
+      "pnpm",
+      "--filter",
+      "scanner",
+      "exec",
+      "vitest",
+      "run",
+      "src/App.exit-reconcile.test.tsx"
+    ],
+    "exit": 0,
+    "start": "2026-10-20T02:22:01.734302+00:00",
+    "end": "2026-10-20T02:22:04.681134+00:00",
+    "log": "/tmp/sdlc-S-2/TKT-399-fixture-restored-7.log",
+    "logSha256": "3a5e7c5a7c50776399c7a921e1f63db5d5ed4ea3c723bab589b59a57159126db"
+  },
+  {
+    "case": "restored-8",
+    "command": [
+      "pnpm",
+      "--filter",
+      "scanner",
+      "exec",
+      "vitest",
+      "run",
+      "src/App.exit-reconcile.test.tsx"
+    ],
+    "exit": 0,
+    "start": "2026-10-20T02:22:04.681460+00:00",
+    "end": "2026-10-20T02:22:07.393294+00:00",
+    "log": "/tmp/sdlc-S-2/TKT-399-fixture-restored-8.log",
+    "logSha256": "1c4940c578713ccf7c097a17c3d7d239c5b3b4d0cdb948bf0495891cec2053f6"
+  },
+  {
+    "case": "full-scanner",
+    "command": [
+      "pnpm",
+      "--filter",
+      "scanner",
+      "test"
+    ],
+    "exit": 0,
+    "start": "2026-10-20T02:22:07.393663+00:00",
+    "end": "2026-10-20T02:22:39.016975+00:00",
+    "log": "/tmp/sdlc-S-2/TKT-399-fixture-full-scanner.log",
+    "logSha256": "0e03cd32a0f24593c2d2082253486c3297cfeacd51684599606557bf3e33fb9c"
+  },
+  {
+    "case": "typescript",
+    "command": [
+      "pnpm",
+      "--filter",
+      "scanner",
+      "exec",
+      "tsc",
+      "--noEmit"
+    ],
+    "exit": 0,
+    "start": "2026-10-20T02:22:39.017491+00:00",
+    "end": "2026-10-20T02:22:39.578807+00:00",
+    "log": "/tmp/sdlc-S-2/TKT-399-fixture-typescript.log",
+    "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+]

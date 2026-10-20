@@ -1,0 +1,95 @@
+{
+  "author": "codex/gpt-6.1-sol/high",
+  "verifiedCodeCommit": "6e1599667b855be710daca0fc89276eacc6b7890",
+  "mergedProductCandidate": "371e44b3d8f141caa1e41988c4bae29a4c460d1d",
+  "files": [
+    {
+      "path": "TKT-399-postmerge-first-failure.json",
+      "sha256": "4a4533126ea502a92a46b075341716255470bc8a74fa4580505fc3306420e6aa"
+    },
+    {
+      "path": "TKT-399-postmerge-first.log",
+      "sha256": "e0f72222dbb8f85d2e5ff9c7d44ea7ce59f89450f91c14552570e2bb5f511c7e"
+    },
+    {
+      "path": "TKT-399-postmerge-first.verdict",
+      "sha256": "66d129071738b23d989b45cb113cb62f4362ff34729a94b6507c800f70a46fc4"
+    },
+    {
+      "path": "TKT-399-postmerge-ts-diagnostic.json",
+      "sha256": "47001434acd00ed910a9eeecde41607bc208eb4cbecc592024de61b909c935f6"
+    },
+    {
+      "path": "TKT-399-postmerge-ts-diagnostic.log",
+      "sha256": "d06d22904bea0284da1e63f3cc35676bc95803288b38bc1ffe12f4d90b75977f"
+    },
+    {
+      "path": "TKT-399-query-bound-experiment.json",
+      "sha256": "1211ffbf2ce3faca5007e5f79aa7299bf1e4b9aa9335e2dfcc60c0569bfd6184"
+    },
+    {
+      "path": "TKT-399-query-bound-experiment.py",
+      "sha256": "2769541d08dfa2479a31ffeb67978430e91bae27ab6d4d3f76480aa33a9df8ac"
+    },
+    {
+      "path": "TKT-399-query-bound-default-one-second.log",
+      "sha256": "959951cf839995ad4ad9f6eae1ccdf8fd31f0704b940fce07db646c6f0951562"
+    },
+    {
+      "path": "TKT-399-query-bound-fixture-two-second.log",
+      "sha256": "917380ebdd9b3fdc4bc75bb2fcdefaa02dac6dac3b8cdbac2d8ec88e4c616001"
+    },
+    {
+      "path": "TKT-399-fixture-verification.py",
+      "sha256": "07df83bedd66af943b830160a7dd6f94a54701031aefb4e42822508ac7dd7e43"
+    },
+    {
+      "path": "TKT-399-fixture-verification.json",
+      "sha256": "bc978b821a10e472f413d590ee81b7ace62d1700c1b6b0514b3029338e176bf1"
+    },
+    {
+      "path": "TKT-399-fixture-mutation-exit-as-entry.log",
+      "sha256": "4489fd3eade077285858ac0f4b725eb28f60de0f7c55e12cf606c1743dcf7a89"
+    },
+    {
+      "path": "TKT-399-fixture-restored-1.log",
+      "sha256": "d8e720a951d62f14cb9c2b875decbce65c6e5a63a54dfed7d4ef6df32279e670"
+    },
+    {
+      "path": "TKT-399-fixture-restored-2.log",
+      "sha256": "bf8690d12c7c3adb54bd38728c791f75c4755b5d7320e7a0a43c67a11b510d7c"
+    },
+    {
+      "path": "TKT-399-fixture-restored-3.log",
+      "sha256": "d3112662a1581aa59d784783a60c9ab03c5c1c1c9068ac9ea09dea5f29a6c73b"
+    },
+    {
+      "path": "TKT-399-fixture-restored-4.log",
+      "sha256": "d5d74a61bff05bf03b63d5ae4555d2686738885c6594672f097100e7b270fe43"
+    },
+    {
+      "path": "TKT-399-fixture-restored-5.log",
+      "sha256": "d25bdf9b1c7ca8b0b92a49be0759af2e30ad65b6c245e02e2faf658946d911aa"
+    },
+    {
+      "path": "TKT-399-fixture-restored-6.log",
+      "sha256": "6ed830df356c543302bbab59dfd83ef24e442994a5bd27023ea409f82106f1a4"
+    },
+    {
+      "path": "TKT-399-fixture-restored-7.log",
+      "sha256": "3a5e7c5a7c50776399c7a921e1f63db5d5ed4ea3c723bab589b59a57159126db"
+    },
+    {
+      "path": "TKT-399-fixture-restored-8.log",
+      "sha256": "1c4940c578713ccf7c097a17c3d7d239c5b3b4d0cdb948bf0495891cec2053f6"
+    },
+    {
+      "path": "TKT-399-fixture-full-scanner.log",
+      "sha256": "0e03cd32a0f24593c2d2082253486c3297cfeacd51684599606557bf3e33fb9c"
+    },
+    {
+      "path": "TKT-399-fixture-typescript.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

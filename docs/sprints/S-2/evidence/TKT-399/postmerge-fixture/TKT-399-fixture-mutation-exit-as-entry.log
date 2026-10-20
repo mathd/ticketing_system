@@ -1,0 +1,47 @@
+
+ RUN  v4.1.10 /home/mathieu/sources/ticketing_system.TKT-399-sync-fixture/web/scanner
+
+ ❯ src/App.exit-reconcile.test.tsx (12 tests | 1 failed | 11 skipped) 245ms
+   × keeps exact mixed Entry, Exit and refusal rows after transport and retires only the exact valid reply 243ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/App.exit-reconcile.test.tsx > keeps exact mixed Entry, Exit and refusal rows after transport and retires only the exact valid reply
+AssertionError: expected [ { qr_payload: 'qr-3', …(3) }, …(2) ] to strictly equal [ { …(4) }, { …(4) }, { …(4) } ]
+
+- Expected
++ Received
+
+@@ -10,11 +10,11 @@
+      "occurred_at": "2026-10-18T09:00:01.123Z",
+      "occurrence_id": "72322d19-2c72-424e-b12f-3375081abbdf",
+      "qr_payload": "qr-1",
+    },
+    {
+-     "event_type": "exit",
++     "event_type": "entry",
+      "occurred_at": "2026-10-18T09:00:02.123Z",
+      "occurrence_id": "aabf2935-b72f-4875-9c08-f5906ec3b974",
+      "qr_payload": "qr-2",
+    },
+  ]
+
+ ❯ src/App.exit-reconcile.test.tsx:51:22
+     49|   const expected = before.map(row => ({ occurrence_id: row.occurrenceI…
+     50|     ...(row.localDecision === undefined ? { event_type: row.direction …
+     51|   expect(batches[0]).toStrictEqual(expected)
+       |                      ^
+     52|   broken = false
+     53|   if (failure === '401') {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 11 skipped (12)
+   Start at  22:21:43
+   Duration  1.70s (transform 339ms, setup 60ms, import 497ms, tests 245ms, environment 715ms)
+
+undefined
+/home/mathieu/sources/ticketing_system.TKT-399-sync-fixture/web/scanner:
+[ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL] Command failed with exit code 1: vitest run src/App.exit-reconcile.test.tsx -t 'after transport'
