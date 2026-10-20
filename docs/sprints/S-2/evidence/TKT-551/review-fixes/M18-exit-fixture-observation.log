@@ -1,0 +1,42 @@
+$ vitest run src/App.sync.test.tsx -t 'counts every result.*false'
+
+ RUN  v4.1.10 /home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner
+
+ ❯ src/App.sync.test.tsx (35 tests | 1 failed | 34 skipped) 35ms
+     × counts every result across real batches, including matching retired rows: false 34ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/App.sync.test.tsx > aggregate reconciliation reporting > counts every result across real batches, including matching retired rows: false
+AssertionError: expected { …(12) } to match object { direction: 'exit' }
+(13 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "direction": "exit",
++   "direction": "entry",
+  }
+
+ ❯ queueMixedBatches src/App.sync.test.tsx:95:22
+     93|   expect(before).toHaveLength(105)
+     94|   expect(before.every(row => row.state === 'QUEUED')).toBe(true)
+     95|   expect(before[98]).toMatchObject({ direction: 'exit' })
+       |                      ^
+     96|   expect(before[104]).toMatchObject({ direction: 'exit' })
+     97|   expect(before[99]).toMatchObject({ localDecision: 'revocation_refuse…
+ ❯ startMixedSync src/App.sync.test.tsx:124:19
+ ❯ src/App.sync.test.tsx:148:33
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 34 skipped (35)
+   Start at  09:23:17
+   Duration  942ms (transform 199ms, setup 39ms, import 287ms, tests 35ms, environment 480ms)
+
+/home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner:
+[ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL] scanner@0.0.0 test: `vitest run src/App.sync.test.tsx -t 'counts every result.*false'`
+Exit status 1

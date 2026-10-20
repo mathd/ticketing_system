@@ -1,0 +1,56 @@
+$ vitest run src/App.sync.test.tsx -t 'counts every result.*false'
+
+ RUN  v4.1.10 /home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner
+
+ ❯ src/App.sync.test.tsx (35 tests | 1 failed | 34 skipped) 30ms
+     × counts every result across real batches, including matching retired rows: false 29ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/App.sync.test.tsx > aggregate reconciliation reporting > counts every result across real batches, including matching retired rows: false
+AssertionError: expected { …(12) } to match object { localDecision: 'revocation_refused' }
+(14 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "localDecision": "revocation_refused",
++   "actuated": false,
++   "createdAt": "2026-10-20T12:01:39.001Z",
++   "decidedAt": "2026-10-20T12:01:39.002Z",
++   "direction": "entry",
++   "leaseExpiresAt": 1792502630468,
++   "localOutcome": {
++     "cause": "transport_failure",
++     "family": "queue",
++   },
++   "occurredAt": "2026-10-20T12:01:39.000Z",
++   "occurrenceId": "00000000-0551-4000-8000-000000000100",
++   "ownerId": "0ed04f04-f20a-472d-903c-de3841989cc3",
++   "qrPayload": "qr-100",
++   "recordFormat": 1,
++   "state": "QUEUED",
+  }
+
+ ❯ queueMixedBatches src/App.sync.test.tsx:97:22
+     95|   expect(before[98]).toMatchObject({ direction: 'exit' })
+     96|   expect(before[104]).toMatchObject({ direction: 'exit' })
+     97|   expect(before[99]).toMatchObject({ localDecision: 'revocation_refuse…
+       |                      ^
+     98|   return { before, results }
+     99| }
+ ❯ startMixedSync src/App.sync.test.tsx:124:19
+ ❯ src/App.sync.test.tsx:148:33
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 34 skipped (35)
+   Start at  09:23:19
+   Duration  915ms (transform 200ms, setup 36ms, import 271ms, tests 30ms, environment 479ms)
+
+/home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner:
+[ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL] scanner@0.0.0 test: `vitest run src/App.sync.test.tsx -t 'counts every result.*false'`
+Exit status 1

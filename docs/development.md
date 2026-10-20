@@ -1697,8 +1697,35 @@ pass. A remote refusal follows its normal terminal reason instead.
 
 An offline Exit is initially unknown. A single-policy ticket can later receive `rejected` at sync.
 That exact row retires as RESOLVED/rejected, and the page shows a separate per-row warning. It
-created no Exit fact. The aggregate sync-count change remains TKT-551. Entry reason-copy work
-remains TKT-552.
+created no Exit fact. TKT-551 adds separate aggregate counts. For example, a complete pass can say
+"Synced 92 offline scan(s). 7 conflicts flagged for the operator. 6 rejected scans were not
+recorded." A rejected result never increases the Synced count. One rejection alone says
+"Synced 0 offline scan(s). 1 rejected scan was not recorded." With no rejection, the existing
+success text is unchanged. Entry reason-copy work remains TKT-552.
+
+After each applied batch, the first reconciliation alert reports completed-batch totals. For
+example, "Completed batches: Synced 90 offline scan(s). 6 conflicts flagged for the operator.
+4 rejected scans were not recorded." Individual warnings follow it. This progress alert can
+appear during a pass that later succeeds. Full completion removes it and shows the final note.
+A later transport, authentication, response or storage failure leaves earlier batch totals
+visible beside the failure notice. A response whose local application fails adds no published
+count. "Last successful sync" means a completed pass, so it can still say "none" beside partial
+totals. After authentication or storage failure, the separate queue-count display may still
+include retired rows until the next refresh. The stored queue determines what can be sent.
+
+These reports are transient. When the next nonempty paired sync pass starts, before its first
+request, it replaces the previous partial report and individual reconciliation warnings.
+Reconnection or a queued local refusal can start this pass automatically. A coalesced follow-up
+also does so. The new pass can fail without applying any result; the old report is still gone.
+An empty queue read keeps the report. Page loss does not preserve a durable report, and there
+is no acknowledgement list. In the current page, a pairing-token change keeps reconciliation
+reports until the next nonempty paired pass replaces them. The live scan outcome is cleared.
+The retained report describes this device's rows, not the new pairing. Counts describe results
+received by this page whose application returned applied, including matching rows another page
+already retired. Several pages can
+therefore report the same rows. These are per-pass counts, not unique device-wide totals or
+evidence of physical passage. Legacy records that cannot sync remain queued and keep their
+existing warning; those warnings do not count as rejected results.
 
 Actual page loss before a final write commits can erase a terminal decision. Its committed PENDING
 row may recover as an uncertain Entry or Exit fact. The recovery notice shows the captured id,

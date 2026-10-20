@@ -1,0 +1,67 @@
+{
+  "head": "ed16ba55b1afff90b4266f011c94312674bdd26a",
+  "vitest": "4.1.10",
+  "testBudgetMs": 15000,
+  "perWaitBoundMs": 2000,
+  "source": "restored-full-01.json",
+  "scope": "aggregate cases under full 43-file scanner-suite load",
+  "timings": [
+    {
+      "fullName": "aggregate reconciliation reporting counts every result across real batches, including matching retired rows: false",
+      "status": "passed",
+      "duration": 670.0218070000001
+    },
+    {
+      "fullName": "aggregate reconciliation reporting counts every result across real batches, including matching retired rows: true",
+      "status": "passed",
+      "duration": 271.5643030000001
+    },
+    {
+      "fullName": "aggregate reconciliation reporting retains applied-batch totals when the next batch fails: transport",
+      "status": "passed",
+      "duration": 219.69414600000027
+    },
+    {
+      "fullName": "aggregate reconciliation reporting retains applied-batch totals when the next batch fails: 500",
+      "status": "passed",
+      "duration": 181.76963799999976
+    },
+    {
+      "fullName": "aggregate reconciliation reporting retains applied-batch totals when the next batch fails: 401",
+      "status": "passed",
+      "duration": 186.7139100000004
+    },
+    {
+      "fullName": "aggregate reconciliation reporting retains applied-batch totals when the next batch fails: malformed",
+      "status": "passed",
+      "duration": 118.65196600000036
+    },
+    {
+      "fullName": "aggregate reconciliation reporting retains applied-batch totals when the next batch fails: write",
+      "status": "passed",
+      "duration": 141.66740800000025
+    },
+    {
+      "fullName": "aggregate reconciliation reporting retains applied-batch totals when the next batch fails: incompatible",
+      "status": "passed",
+      "duration": 134.10329699999966
+    },
+    {
+      "fullName": "aggregate reconciliation reporting replaces the partial report at automatic retry start even if that retry applies nothing",
+      "status": "passed",
+      "duration": 227.83104300000014
+    },
+    {
+      "fullName": "aggregate reconciliation reporting keeps the final report and rejection warning when an online retry reads an empty queue",
+      "status": "passed",
+      "duration": 197.9296319999994
+    },
+    {
+      "fullName": "aggregate reconciliation reporting reports a single rejected result and preserves recorded-only copy on the next successful pass",
+      "status": "passed",
+      "duration": 232.46451400000024
+    }
+  ],
+  "maximumCaseMs": 670.0218070000001,
+  "note": "Per-test durations, not individual wait timings. No test bound or production deadline changed."
+}

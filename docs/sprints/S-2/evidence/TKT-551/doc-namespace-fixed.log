@@ -1,0 +1,10 @@
+$ vitest run test/doc-namespace.test.ts
+
+ RUN  v4.1.10 /home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner
+
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  01:43:01
+   Duration  591ms (transform 25ms, setup 36ms, import 18ms, tests 11ms, environment 437ms)
+

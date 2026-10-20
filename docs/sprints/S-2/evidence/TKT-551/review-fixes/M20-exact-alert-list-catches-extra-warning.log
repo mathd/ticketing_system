@@ -1,0 +1,41 @@
+$ vitest run src/App.legacy.test.tsx -t 'keeps completed-batch counts separate'
+
+ RUN  v4.1.10 /home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner
+
+ ❯ src/App.legacy.test.tsx (4 tests | 1 failed | 3 skipped) 183ms
+   × keeps completed-batch counts separate from a legacy 422 warning before a later failure 182ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/App.legacy.test.tsx > keeps completed-batch counts separate from a legacy 422 warning before a later failure
+AssertionError: expected [ …(4) ] to strictly equal [ …(3) ]
+
+- Expected
++ Received
+
+  [
+    "Completed batches: Synced 0 offline scan(s). 1 rejected scan was not recorded.",
+    "Reconciliation rejected for a-valid. This result is not recorded.",
+    "Pre-upgrade record b-isolated could not sync. It remains queued and listed in the export.",
++   "Reconciliation rejected for c-isolated. This result is not recorded.",
+  ]
+
+ ❯ src/App.legacy.test.tsx:36:70
+     34|   const partial = 'Completed batches: Synced 0 offline scan(s). 1 reje…
+     35|   expect(screen.getByText(partial)).toBeDefined()
+     36|   expect(screen.getAllByRole('alert').map(node => node.textContent)).t…
+       |                                                                      ^
+     37|     partial, 'Reconciliation rejected for a-valid. This result is not …
+     38|     'Pre-upgrade record b-isolated could not sync. It remains queued a…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 3 skipped (4)
+   Start at  09:23:22
+   Duration  1.10s (transform 194ms, setup 42ms, import 288ms, tests 183ms, environment 477ms)
+
+/home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner:
+[ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL] scanner@0.0.0 test: `vitest run src/App.legacy.test.tsx -t 'keeps completed-batch counts separate'`
+Exit status 1

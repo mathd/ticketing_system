@@ -1,0 +1,41 @@
+$ vitest run
+
+ RUN  v4.1.10 /home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner
+
+ ❯ test/doc-namespace.test.ts (3 tests | 1 failed) 46ms
+   × DOC-01 qualifies every decision identifier added to an ADR 37ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/doc-namespace.test.ts > DOC-01 qualifies every decision identifier added to an ADR
+AssertionError: expected [ …(3) ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   "+Full sync reporting was allocated to TKT-551 and is delivered under I7. Entry reason copy remains in TKT-552. Historical N8 is addressed by TKT-553 on M, `services/access/internal/api/server_test.go:324-400`. Do not reopen it. No domain event payload or Access reconciliation change is proposed. Ticket 0 covers the D34/D35/D39 amendments: S/R/F device lookup, narrow S availability, bounded read-only pre-decision steps and real-driver classification, Access outer recover, and Access/gateway timeout checks and documentation. Reconciliation event payload and recording semantics do not change.",
++   "+Full sync reporting was allocated to TKT-551 and is delivered under I7. Entry reason copy remains in TKT-552. Historical N8 is addressed by TKT-553 on M, `services/access/internal/api/server_test.go:324-400`. Do not reopen it. No domain event payload or Access reconciliation change is proposed. Ticket 0 covers the D34/D35/D39 amendments: S/R/F device lookup, narrow S availability, bounded read-only pre-decision steps and real-driver classification, Access outer recover, and Access/gateway timeout checks and documentation. Reconciliation event payload and recording semantics do not change.",
++   "+Full sync reporting was allocated to TKT-551 and is delivered under I7. Entry reason copy remains in TKT-552. Historical N8 is addressed by TKT-553 on M, `services/access/internal/api/server_test.go:324-400`. Do not reopen it. No domain event payload or Access reconciliation change is proposed. Ticket 0 covers the D34/D35/D39 amendments: S/R/F device lookup, narrow S availability, bounded read-only pre-decision steps and real-driver classification, Access outer recover, and Access/gateway timeout checks and documentation. Reconciliation event payload and recording semantics do not change.",
++ ]
+
+ ❯ test/doc-namespace.test.ts:30:23
+     28|     }
+     29|   }
+     30|   expect(unqualified).toEqual([])
+       |                       ^
+     31| })
+     32|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 42 passed (43)
+      Tests  1 failed | 1861 passed (1862)
+   Start at  01:42:24
+   Duration  20.59s (transform 4.57s, setup 2.31s, import 9.85s, tests 77.74s, environment 47.66s)
+
+/home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner:
+[ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL] scanner@0.0.0 test: `vitest run`
+Exit status 1

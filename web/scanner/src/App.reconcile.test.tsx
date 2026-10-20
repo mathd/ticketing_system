@@ -84,7 +84,7 @@ it('rolls back the valid first retirement when the second retirement write abort
 it('reports a rejected result as not recorded beside a recorded sibling', async () => {
   answer = (rows) => new Response(JSON.stringify({ results: [{ occurrence_id: rows[0].occurrence_id, result: 'recorded' }, { occurrence_id: rows[1].occurrence_id, result: 'rejected' }] }), { status: 200 })
   await renderWithQueue(<App />, page); fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
-  await screen.findByText('Synced 1 offline scan(s).')
+  await screen.findByText('Synced 1 offline scan(s). 1 rejected scan was not recorded.')
   expect(screen.getByText(`Reconciliation rejected for ${keys[1]}. This result is not recorded.`)).toBeDefined()
   expect(await rawGetAll(dbName, STORE.occurrences)).toEqual(expect.arrayContaining([expect.objectContaining({ occurrenceId: keys[0], state: 'SYNCED', result: 'recorded' }), expect.objectContaining({ occurrenceId: keys[1], state: 'RESOLVED', result: 'rejected' })]))
 })

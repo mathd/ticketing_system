@@ -1,0 +1,167 @@
+$ vitest run src/App.legacy.test.tsx -t 'keeps completed-batch counts separate'
+
+ RUN  v4.1.10 /home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner
+
+ ❯ src/App.legacy.test.tsx (4 tests | 1 failed | 3 skipped) 159ms
+   × keeps completed-batch counts separate from a legacy 422 warning before a later failure 158ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/App.legacy.test.tsx > keeps completed-batch counts separate from a legacy 422 warning before a later failure
+TestingLibraryElementError: Unable to find an element with the text: Completed batches: Synced 0 offline scan(s). 1 rejected scan was not recorded.. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<main[39m
+      [33mclass[39m=[32m"scanner"[39m
+    [36m>[39m
+      [36m<h1>[39m
+        [0mGate scanner[0m
+      [36m</h1>[39m
+      [36m<fieldset[39m
+        [33mclass[39m=[32m"scan-direction"[39m
+      [36m>[39m
+        [36m<legend>[39m
+          [0mScan direction[0m
+        [36m</legend>[39m
+        [36m<label>[39m
+          [36m<input[39m
+            [33mchecked[39m=[32m""[39m
+            [33mname[39m=[32m"direction"[39m
+            [33mtype[39m=[32m"radio"[39m
+            [33mvalue[39m=[32m"entry"[39m
+          [36m/>[39m
+          [0m Entry[0m
+        [36m</label>[39m
+        [36m<label>[39m
+          [36m<input[39m
+            [33mname[39m=[32m"direction"[39m
+            [33mtype[39m=[32m"radio"[39m
+            [33mvalue[39m=[32m"exit"[39m
+          [36m/>[39m
+          [0m Exit[0m
+        [36m</label>[39m
+      [36m</fieldset>[39m
+      [36m<p>[39m
+        [0mScan a ticket QR code or paste its credential [0m
+        [0mto validate entry.[0m
+      [36m</p>[39m
+      [36m<section[39m
+        [33maria-label[39m=[32m"Ticket scan input"[39m
+      [36m>[39m
+        [36m<form[39m
+          [33maria-label[39m=[32m"Ticket scan"[39m
+        [36m>[39m
+          [36m<label[39m
+            [33mfor[39m=[32m"qr-payload"[39m
+          [36m>[39m
+            [0mTicket credential[0m
+          [36m</label>[39m
+          [36m<textarea[39m
+            [33mid[39m=[32m"qr-payload"[39m
+            [33mplaceholder[39m=[32m"Paste QR credential"[39m
+            [33mrows[39m=[32m"4"[39m
+          [36m/>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"scanner-actions"[39m
+          [36m>[39m
+            [36m<button[39m
+              [33mdisabled[39m=[32m""[39m
+              [33mtype[39m=[32m"submit"[39m
+            [36m>[39m
+              [0mCheck ticket[0m
+            [36m</button>[39m
+            [36m<button[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [0mUse camera[0m
+            [36m</button>[39m
+            [36m<button[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [0mRefresh revocation list[0m
+            [36m</button>[39m
+          [36m</div>[39m
+        [36m</form>[39m
+        [36m<video[39m
+          [33maria-label[39m=[32m"Camera preview"[39m
+          [33mhidden[39m=[32m""[39m
+          [33mplaysinline[39m=[32m""[39m
+        [36m/>[39m
+        [36m<p[39m
+          [33mclass[39m=[32m"queue-note"[39m
+          [33mrole[39m=[32m"status"[39m
+        [36m>[39m
+          [0m2[0m
+          [0m queued offline scan[0m
+          [0ms[0m
+          [0m awaiting sync.[0m
+          [0m [0m
+          [36m<button[39m
+            [33mtype[39m=[32m"button"[39m
+          [36m>[39m
+            [0mSync queued scans[0m
+          [36m</button>[39m
+        [36m</p>[39m
+      [36m</section>[39m
+      [36m<p[39m
+        [33mclass[39m=[32m"sync-note"[39m
+        [33mrole[39m=[32m"status"[39m
+      [36m>[39m
+        [0mSync failed: The server answered but the reply could not be read. 2 scans are saved on this device and will be sent on the next sync. Last successful sync this session: none.[0m
+      [36m</p>[39m
+      [36m<p[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [0mReconciliation rejected for a-valid. This result is not recorded.[0m
+      [36m</p>[39m
+      [36m<p[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [0mPre-upgrade record b-isolated could not sync. It remains queued and listed in the export.[0m
+      [36m</p>[39m
+      [36m<section[39m
+        [33maria-label[39m=[32m"Local scanner records"[39m
+        [33mclass[39m=[32m"local-records"[39m
+      [36m>[39m
+        [36m<p>[39m
+          [0m3[0m
+          [0m pre-upgrade queued record(s) are listed for review. Their original cause is unknown.[0m
+        [36m</p>[39m
+        [36m<p>[39m
+          [0mThe export can contain ticket credentials. Keep the file private.[0m
+        [36m</p>[39m
+        [36m<button[39m
+          [33mclass[39m=[32m"scanner-export"[39m
+          [33mtype[39m=[32m"button"[39m
+        [36m>[39m
+          [0mExport local records[0m
+        [36m</button>[39m
+      [36m</section>[39m
+    [36m</main>[39m
+  [36m</div>[39m
+[36m</body>[39m
+ ❯ Object.getElementError ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/config.js:37:19
+ ❯ ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:76:38
+ ❯ ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:52:17
+ ❯ ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:95:19
+ ❯ src/App.legacy.test.tsx:35:17
+     33|   await screen.findByText(/^Sync failed: The server answered.*2 scans …
+     34|   const partial = 'Completed batches: Synced 0 offline scan(s). 1 reje…
+     35|   expect(screen.getByText(partial)).toBeDefined()
+       |                 ^
+     36|   expect(screen.getAllByRole('alert').slice(0, 3).map(node => node.tex…
+     37|     partial, 'Reconciliation rejected for a-valid. This result is not …
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 3 skipped (4)
+   Start at  01:44:38
+   Duration  1.02s (transform 184ms, setup 50ms, import 271ms, tests 159ms, environment 441ms)
+
+/home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner:
+[ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL] scanner@0.0.0 test: `vitest run src/App.legacy.test.tsx -t 'keeps completed-batch counts separate'`
+Exit status 1

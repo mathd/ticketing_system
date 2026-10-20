@@ -1,0 +1,71 @@
+$ vitest run --reporter=default --reporter=json --outputFile=/tmp/sdlc-S-2/TKT-551-review-fix-verification/restored-full-01.json
+
+ RUN  v4.1.10 /home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner
+
+ ✓ src/App.legacy.test.tsx (4 tests) 1005ms
+   ✓ keeps completed-batch counts separate from a legacy 422 warning before a later failure  523ms
+ ✓ src/App.exit-results.test.tsx (9 tests) 1276ms
+   ✓ renders the full no-send Exit at the literal 3000 ms lookup continuation  436ms
+ ✓ src/App.test.tsx (16 tests) 1640ms
+     ✓ renders the scanner and accepts a pasted credential  429ms
+ ✓ src/occurrence-latch.test.ts (271 tests) 1729ms
+ ✓ src/OccurrenceRecords.test.tsx (9 tests) 1807ms
+   ✓ shows hold and M02 controls in paired=false with selected-only acknowledgement  515ms
+ ✓ src/App.exit-reconcile.test.tsx (12 tests) 1808ms
+   ✓ keeps exact mixed Entry, Exit and refusal rows after transport and retires only the exact valid reply  512ms
+ ✓ src/App.storage.test.tsx (14 tests) 1848ms
+   ✓ keeps the page owner lock across React cleanup and remount  552ms
+ ✓ src/entry-scan.timing.test.ts (77 tests) 958ms
+ ✓ src/App.entry.test.tsx (38 tests) 3514ms
+   ✓ keeps live status 401 out of real App reconciliation while its queue control syncs  606ms
+ ✓ src/occurrence-store.test.ts (57 tests) 333ms
+ ✓ src/App.contract.test.tsx (4 tests) 951ms
+   ✓ resolves an invalid 200 without admission or reconciliation: { decision: 'accepted' }  631ms
+ ✓ src/entry-scan.test.ts (45 tests) 349ms
+ ✓ src/occurrence-exit-cells.test.ts (86 tests) 739ms
+ ✓ src/App.exit.test.tsx (34 tests) 4169ms
+   ✓ submits the selected Exit, commits one own mark and shows the exact neutral accepted result  595ms
+ ✓ src/App.transactions.test.tsx (33 tests) 4342ms
+   ✓ does not send before mint completion, then observes commit  549ms
+ ✓ src/App.occurrences.test.tsx (2 tests) 894ms
+   ✓ captures a fresh id and exact committed device time for each Entry request  697ms
+ ✓ src/occurrence-disposal.test.ts (14 tests) 154ms
+ ✓ src/occurrence-recovery.test.ts (15 tests) 242ms
+ ✓ src/occurrence-lifecycle.test.ts (12 tests) 175ms
+ ✓ src/occurrence-barrier.test.ts (8 tests) 243ms
+ ✓ test/tsconfig-strict.test.ts (1 test) 69ms
+ ✓ src/App.reconcile.test.tsx (15 tests) 1819ms
+   ✓ keeps both complete rows on malformed reconciliation null and retires both on a valid retry  451ms
+ ✓ src/reconcile-batch.test.ts (18 tests) 154ms
+ ✓ src/occurrence-migration.test.ts (8 tests) 112ms
+ ✓ src/App.sync.test.tsx (35 tests) 5765ms
+     ✓ counts every result across real batches, including matching retired rows: false  670ms
+ ✓ src/occurrence-checkpoint.test.ts (9 tests) 87ms
+ ✓ src/occurrence-exit.test.ts (9 tests) 80ms
+ ✓ src/App.guards.test.tsx (65 tests) 6145ms
+     ✓ checks replay=true against actual 'own ACT' before displaying a result  504ms
+ ✓ src/occurrence-stopped.test.ts (3 tests) 41ms
+ ✓ src/occurrence-checkpoint2.test.ts (7 tests) 53ms
+ ✓ src/occurrence-lock.test.ts (4 tests) 29ms
+ ✓ test/doc-namespace.test.ts (3 tests) 21ms
+ ✓ src/scan-result.test.ts (37 tests) 26ms
+ ✓ src/occurrence-coordinator.test.ts (9 tests) 15ms
+ ✓ src/occurrence-model.test.ts (54 tests) 13ms
+ ✓ src/scan-clock.test.ts (7 tests) 8ms
+ ✓ src/access-contract.test.ts (15 tests) 8ms
+ ✓ src/revocation.test.ts (5 tests) 7ms
+ ✓ src/occurrence-owner.test.ts (2 tests) 8ms
+ ✓ src/scan-result.exit.test.ts (2 tests) 4ms
+ ✓ src/App.safety.test.tsx (66 tests) 7961ms
+   ✓ protects 'denial already_redeemed' through a throw final write, close, expiry and foreign recovery  567ms
+ ✓ src/App.exit-matrix.test.tsx (232 tests) 13267ms
+   ✓ Exit 'already_redeemed' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty  633ms
+ ✓ src/App.latch-matrix.test.tsx (497 tests) 18219ms
+   ✓ AP I3-10 'entry' 'U01' / 'exception' / 'held' retains its first latch and published region  545ms
+
+ Test Files  43 passed (43)
+      Tests  1863 passed (1863)
+   Start at  09:23:24
+   Duration  20.29s (transform 3.93s, setup 2.61s, import 9.72s, tests 82.09s, environment 48.18s)
+
+JSON report written to /tmp/sdlc-S-2/TKT-551-review-fix-verification/restored-full-01.json

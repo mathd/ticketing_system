@@ -1,0 +1,280 @@
+$ vitest run src/App.sync.test.tsx -t 'counts every result.*false'
+
+ RUN  v4.1.10 /home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner
+
+ ❯ src/App.sync.test.tsx (34 tests | 1 failed | 33 skipped) 2194ms
+     × counts every result across real batches, including matching retired rows: false 2193ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/App.sync.test.tsx > aggregate reconciliation reporting > counts every result across real batches, including matching retired rows: false
+TestingLibraryElementError: Unable to find an element with the text: Synced 92 offline scan(s). 7 conflicts flagged for the operator. 6 rejected scans were not recorded.. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<main[39m
+      [33mclass[39m=[32m"scanner"[39m
+    [36m>[39m
+      [36m<h1>[39m
+        [0mGate scanner[0m
+      [36m</h1>[39m
+      [36m<fieldset[39m
+        [33mclass[39m=[32m"scan-direction"[39m
+      [36m>[39m
+        [36m<legend>[39m
+          [0mScan direction[0m
+        [36m</legend>[39m
+        [36m<label>[39m
+          [36m<input[39m
+            [33mchecked[39m=[32m""[39m
+            [33mname[39m=[32m"direction"[39m
+            [33mtype[39m=[32m"radio"[39m
+            [33mvalue[39m=[32m"entry"[39m
+          [36m/>[39m
+          [0m Entry[0m
+        [36m</label>[39m
+        [36m<label>[39m
+          [36m<input[39m
+            [33mname[39m=[32m"direction"[39m
+            [33mtype[39m=[32m"radio"[39m
+            [33mvalue[39m=[32m"exit"[39m
+          [36m/>[39m
+          [0m Exit[0m
+        [36m</label>[39m
+      [36m</fieldset>[39m
+      [36m<p>[39m
+        [0mScan a ticket QR code or paste its credential [0m
+        [0mto validate entry.[0m
+      [36m</p>[39m
+      [36m<section[39m
+        [33maria-label[39m=[32m"Ticket scan input"[39m
+      [36m>[39m
+        [36m<form[39m
+          [33maria-label[39m=[32m"Ticket scan"[39m
+        [36m>[39m
+          [36m<label[39m
+            [33mfor[39m=[32m"qr-payload"[39m
+          [36m>[39m
+            [0mTicket credential[0m
+          [36m</label>[39m
+          [36m<textarea[39m
+            [33mid[39m=[32m"qr-payload"[39m
+            [33mplaceholder[39m=[32m"Paste QR credential"[39m
+            [33mrows[39m=[32m"4"[39m
+          [36m/>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"scanner-actions"[39m
+          [36m>[39m
+            [36m<button[39m
+              [33mdisabled[39m=[32m""[39m
+              [33mtype[39m=[32m"submit"[39m
+            [36m>[39m
+              [0mCheck ticket[0m
+            [36m</button>[39m
+            [36m<button[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [0mUse camera[0m
+            [36m</button>[39m
+            [36m<button[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [0mRefresh revocation list[0m
+            [36m</button>[39m
+          [36m</div>[39m
+        [36m</form>[39m
+        [36m<video[39m
+          [33maria-label[39m=[32m"Camera preview"[39m
+          [33mhidden[39m=[32m""[39m
+          [33mplaysinline[39m=[32m""[39m
+        [36m/>[39m
+      [36m</section>[39m
+      [36m<p[39m
+        [33mclass[39m=[32m"sync-note"[39m
+        [33mrole[39m=[32m"status"[39m
+      [36m>[39m
+        [0mSynced 92 offline scan(s). 14 conflicts flagged for the operator. 6 rejected scans were not recorded.[0m
+      [36m</p>[39m
+      [36m<p[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [0mReconciliation rejected for 00000000-0551-4000-8000-000000000097. This result is not recorded.[0m
+      [36m</p>[39m
+      [36m<p[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [0mReconciliation rejected for 00000000-0551-4000-8000-000000000098. This result is not recorded.[0m
+      [36m</p>[39m
+      [36m<p[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [0mReconciliation rejected for 00000000-0551-4000-8000-000000000099. This result is not recorded.[0m
+      [36m</p>[39m
+      [36m<p[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [0mReconciliation rejected for 00000000-0551-4000-8000-000000000100. This result is not recorded.[0m
+      [36m</p>[39m
+      [36m<p[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [0mReconciliation rejected for 00000000-0551-4000-8000-000000000104. This result is not recorded.[0m
+      [36m</p>[39m
+      [36m<p[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [0mReconciliation rejected for 00000000-0551-4000-8000-000000000105. This result is not recorded.[0m
+      [36m</p>[39m
+      [36m<section[39m
+        [33maria-label[39m=[32m"Local scanner records"[39m
+        [33mclass[39m=[32m"local-records"[39m
+      [36m/>[39m
+    [36m</main>[39m
+  [36m</div>[39m
+[36m</body>[39m
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<main[39m
+      [33mclass[39m=[32m"scanner"[39m
+    [36m>[39m
+      [36m<h1>[39m
+        [0mGate scanner[0m
+      [36m</h1>[39m
+      [36m<fieldset[39m
+        [33mclass[39m=[32m"scan-direction"[39m
+      [36m>[39m
+        [36m<legend>[39m
+          [0mScan direction[0m
+        [36m</legend>[39m
+        [36m<label>[39m
+          [36m<input[39m
+            [33mchecked[39m=[32m""[39m
+            [33mname[39m=[32m"direction"[39m
+            [33mtype[39m=[32m"radio"[39m
+            [33mvalue[39m=[32m"entry"[39m
+          [36m/>[39m
+          [0m Entry[0m
+        [36m</label>[39m
+        [36m<label>[39m
+          [36m<input[39m
+            [33mname[39m=[32m"direction"[39m
+            [33mtype[39m=[32m"radio"[39m
+            [33mvalue[39m=[32m"exit"[39m
+          [36m/>[39m
+          [0m Exit[0m
+        [36m</label>[39m
+      [36m</fieldset>[39m
+      [36m<p>[39m
+        [0mScan a ticket QR code or paste its credential [0m
+        [0mto validate entry.[0m
+      [36m</p>[39m
+      [36m<section[39m
+        [33maria-label[39m=[32m"Ticket scan input"[39m
+      [36m>[39m
+        [36m<form[39m
+          [33maria-label[39m=[32m"Ticket scan"[39m
+        [36m>[39m
+          [36m<label[39m
+            [33mfor[39m=[32m"qr-payload"[39m
+          [36m>[39m
+            [0mTicket credential[0m
+          [36m</label>[39m
+          [36m<textarea[39m
+            [33mid[39m=[32m"qr-payload"[39m
+            [33mplaceholder[39m=[32m"Paste QR credential"[39m
+            [33mrows[39m=[32m"4"[39m
+          [36m/>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"scanner-actions"[39m
+          [36m>[39m
+            [36m<button[39m
+              [33mdisabled[39m=[32m""[39m
+              [33mtype[39m=[32m"submit"[39m
+            [36m>[39m
+              [0mCheck ticket[0m
+            [36m</button>[39m
+            [36m<button[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [0mUse camera[0m
+            [36m</button>[39m
+            [36m<button[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [0mRefresh revocation list[0m
+            [36m</button>[39m
+          [36m</div>[39m
+        [36m</form>[39m
+        [36m<video[39m
+          [33maria-label[39m=[32m"Camera preview"[39m
+          [33mhidden[39m=[32m""[39m
+          [33mplaysinline[39m=[32m""[39m
+        [36m/>[39m
+      [36m</section>[39m
+      [36m<p[39m
+        [33mclass[39m=[32m"sync-note"[39m
+        [33mrole[39m=[32m"status"[39m
+      [36m>[39m
+        [0mSynced 92 offline scan(s). 14 conflicts flagged for the operator. 6 rejected scans were not recorded.[0m
+      [36m</p>[39m
+      [36m<p[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [0mReconciliation rejected for 00000000-0551-4000-8000-000000000097. This result is not recorded.[0m
+      [36m</p>[39m
+      [36m<p[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [0mReconciliation rejected for 00000000-0551-4000-8000-000000000098. This result is not recorded.[0m
+      [36m</p>[39m
+      [36m<p[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [0mReconciliation rejected for 00000000-0551-4000-8000-000000000099. This result is not recorded.[0m
+      [36m</p>[39m
+      [36m<p[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [0mReconciliation rejected for 00000000-0551-4000-8000-000000000100. This result is not recorded.[0m
+      [36m</p>[39m
+      [36m<p[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [0mReconciliation rejected for 00000000-0551-4000-8000-000000000104. This result is not recorded.[0m
+      [36m</p>[39m
+      [36m<p[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [0mReconciliation rejected for 00000000-0551-4000-8000-000000000105. This result is not recorded.[0m
+      [36m</p>[39m
+      [36m<section[39m
+        [33maria-label[39m=[32m"Local scanner records"[39m
+        [33mclass[39m=[32m"local-records"[39m
+      [36m/>[39m
+    [36m</main>[39m
+  [36m</div>[39m
+[36m</body>[39m
+ ❯ waitForWrapper ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/wait-for.js:163:27
+ ❯ ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:86:33
+ ❯ src/App.sync.test.tsx:152:18
+    150|     }
+    151|     await act(async () => { second.answer(mixedResponse(second.body, f…
+    152|     await screen.findByText(mixedSyncNote, {}, { timeout: BOUND_MS })
+       |                  ^
+    153|     expectRejectionWarnings(fixture, 105)
+    154|     expect(screen.queryByText(/^Completed batches:/)).toBeNull()
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 33 skipped (34)
+   Start at  01:44:12
+   Duration  3.02s (transform 192ms, setup 35ms, import 267ms, tests 2.19s, environment 427ms)
+
+/home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner:
+[ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL] scanner@0.0.0 test: `vitest run src/App.sync.test.tsx -t 'counts every result.*false'`
+Exit status 1

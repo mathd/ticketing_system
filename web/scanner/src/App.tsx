@@ -293,12 +293,16 @@ function App() {
     const warnings = plan.unsendable.map((row) => `Pre-upgrade record ${String(row.key)} could not sync. It remains queued and listed in the export.`)
     const captured = pairing()
     if (!captured.token) return
-    const publishWarnings = () => {
-      if (mounted.current && isPairing(captured)) setReconcileWarnings([...warnings])
-    }
-    publishWarnings()
     let recorded = 0
     let conflicts = 0
+    let rejected = 0
+    const aggregateText = () => `Synced ${recorded} offline scan(s).${conflicts ? ` ${conflicts} conflict${conflicts === 1 ? '' : 's'} flagged for the operator.` : ''}${rejected ? ` ${rejected} rejected scan${rejected === 1 ? ' was' : 's were'} not recorded.` : ''}`
+    const publishWarnings = () => {
+      if (mounted.current && isPairing(captured)) setReconcileWarnings([
+        ...(recorded + conflicts + rejected > 0 ? [`Completed batches: ${aggregateText()}`] : []), ...warnings,
+      ])
+    }
+    publishWarnings()
     for (const batch of plan.batches) {
       if (!mounted.current || !isPairing(captured)) return
       const controller = new AbortController()
@@ -331,14 +335,17 @@ function App() {
       for (const result of data.results) {
         if (result.result === 'recorded' || result.result === 'synced') recorded += 1
         else if (result.result === 'conflict') conflicts += 1
-        else warnings.push(`Reconciliation rejected for ${result.occurrence_id}. This result is not recorded.`)
+        else {
+          rejected += 1
+          warnings.push(`Reconciliation rejected for ${result.occurrence_id}. This result is not recorded.`)
+        }
       }
       publishWarnings()
     }
     if (mounted.current && isPairing(captured)) {
       setReconcileWarnings(warnings)
       lastSuccessfulSyncAt.current = new Date().toISOString()
-      setSyncNote({ kind: 'success', text: `Synced ${recorded} offline scan(s).${conflicts ? ` ${conflicts} conflict${conflicts === 1 ? '' : 's'} flagged for the operator.` : ''}` })
+      setSyncNote({ kind: 'success', text: aggregateText() })
     }
     await refreshQueued()
   }

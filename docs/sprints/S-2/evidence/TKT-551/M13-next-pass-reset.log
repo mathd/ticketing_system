@@ -1,0 +1,181 @@
+$ vitest run src/App.sync.test.tsx -t 'replaces the partial report at automatic retry start'
+
+ RUN  v4.1.10 /home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner
+
+ ❯ src/App.sync.test.tsx (34 tests | 1 failed | 33 skipped) 2218ms
+     × replaces the partial report at automatic retry start even if that retry applies nothing 2217ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/App.sync.test.tsx > aggregate reconciliation reporting > replaces the partial report at automatic retry start even if that retry applies nothing
+AssertionError: expected <p role="alert"></p> to be null
+
+Ignored nodes: comments, script, style
+[36m<html>[39m
+  [36m<head />[39m
+  [36m<body>[39m
+    [36m<div>[39m
+      [36m<main[39m
+        [33mclass[39m=[32m"scanner"[39m
+      [36m>[39m
+        [36m<h1>[39m
+          [0mGate scanner[0m
+        [36m</h1>[39m
+        [36m<fieldset[39m
+          [33mclass[39m=[32m"scan-direction"[39m
+        [36m>[39m
+          [36m<legend>[39m
+            [0mScan direction[0m
+          [36m</legend>[39m
+          [36m<label>[39m
+            [36m<input[39m
+              [33mchecked[39m=[32m""[39m
+              [33mname[39m=[32m"direction"[39m
+              [33mtype[39m=[32m"radio"[39m
+              [33mvalue[39m=[32m"entry"[39m
+            [36m/>[39m
+            [0m Entry[0m
+          [36m</label>[39m
+          [36m<label>[39m
+            [36m<input[39m
+              [33mname[39m=[32m"direction"[39m
+              [33mtype[39m=[32m"radio"[39m
+              [33mvalue[39m=[32m"exit"[39m
+            [36m/>[39m
+            [0m Exit[0m
+          [36m</label>[39m
+        [36m</fieldset>[39m
+        [36m<p>[39m
+          [0mScan a ticket QR code or paste its credential [0m
+          [0mto validate entry.[0m
+        [36m</p>[39m
+        [36m<section[39m
+          [33maria-label[39m=[32m"Ticket scan input"[39m
+        [36m>[39m
+          [36m<form[39m
+            [33maria-label[39m=[32m"Ticket scan"[39m
+          [36m>[39m
+            [36m<label[39m
+              [33mfor[39m=[32m"qr-payload"[39m
+            [36m>[39m
+              [0mTicket credential[0m
+            [36m</label>[39m
+            [36m<textarea[39m
+              [33mid[39m=[32m"qr-payload"[39m
+              [33mplaceholder[39m=[32m"Paste QR credential"[39m
+              [33mrows[39m=[32m"4"[39m
+            [36m/>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"scanner-actions"[39m
+            [36m>[39m
+              [36m<button[39m
+                [33mdisabled[39m=[32m""[39m
+                [33mtype[39m=[32m"submit"[39m
+              [36m>[39m
+                [0mCheck ticket[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [0mUse camera[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33mtype[39m=[32m"button"[39m
+              [36m>[39m
+                [0mRefresh revocation list[0m
+              [36m</button>[39m
+            [36m</div>[39m
+          [36m</form>[39m
+          [36m<video[39m
+            [33maria-label[39m=[32m"Camera preview"[39m
+            [33mhidden[39m=[32m""[39m
+            [33mplaysinline[39m=[32m""[39m
+          [36m/>[39m
+          [36m<p[39m
+            [33mclass[39m=[32m"queue-note"[39m
+            [33mrole[39m=[32m"status"[39m
+          [36m>[39m
+            [0m5[0m
+            [0m queued offline scan[0m
+            [0ms[0m
+            [0m awaiting sync.[0m
+            [0m [0m
+            [36m<button[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [0mSync queued scans[0m
+            [36m</button>[39m
+          [36m</p>[39m
+        [36m</section>[39m
+        [36m<p[39m
+          [33mclass[39m=[32m"sync-note"[39m
+          [33mrole[39m=[32m"status"[39m
+        [36m>[39m
+          [0mSync failed: No connection. 5 scans are saved on this device and will be sent on the next sync. Last successful sync this session: none.[0m
+        [36m</p>[39m
+        [36m<p[39m
+          [33mrole[39m=[32m"alert"[39m
+        [36m>[39m
+          [0mCompleted batches: Synced 90 offline scan(s). 6 conflicts flagged for the operator. 4 rejected scans were not recorded.[0m
+        [36m</p>[39m
+        [36m<p[39m
+          [33mrole[39m=[32m"alert"[39m
+        [36m>[39m
+          [0mReconciliation rejected for 00000000-0551-4000-8000-000000000097. This result is not recorded.[0m
+        [36m</p>[39m
+        [36m<p[39m
+          [33mrole[39m=[32m"alert"[39m
+        [36m>[39m
+          [0mReconciliation rejected for 00000000-0551-4000-8000-000000000098. This result is not recorded.[0m
+        [36m</p>[39m
+        [36m<p[39m
+          [33mrole[39m=[32m"alert"[39m
+        [36m>[39m
+          [0mReconciliation rejected for 00000000-0551-4000-8000-000000000099. This result is not recorded.[0m
+        [36m</p>[39m
+        [36m<p[39m
+          [33mrole[39m=[32m"alert"[39m
+        [36m>[39m
+          [0mReconciliation rejected for 00000000-0551-4000-8000-000000000100. This result is not recorded.[0m
+        [36m</p>[39m
+        [36m<section[39m
+          [33maria-label[39m=[32m"Local scanner records"[39m
+          [33mclass[39m=[32m"local-records"[39m
+        [36m/>[39m
+      [36m</main>[39m
+    [36m</div>[39m
+  [36m</body>[39m
+[36m</html>[39m
+
+- Expected:
+null
+
++ Received:
+<p
+  role="alert"
+>
+  Completed batches: Synced 90 offline scan(s). 6 conflicts flagged for the operator. 4 rejected scans were not recorded.
+</p>
+
+ ❯ waitFor.timeout src/App.sync.test.tsx:202:69
+    200|     const retry = await bounded(held.next(), 'automatic retry')
+    201|     expect(retry.body.occurrences.map(row => row.occurrence_id)).toStr…
+    202|     await waitFor(() => expect(screen.queryByText(partialSyncNote)).to…
+       |                                                                     ^
+    203|     expectRejectionWarnings(fixture, 0)
+    204|     await act(async () => { retry.fail(new TypeError('still unavailabl…
+ ❯ runWithExpensiveErrorDiagnosticsDisabled ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/config.js:47:12
+ ❯ checkCallback ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/wait-for.js:124:77
+ ❯ Timeout.checkRealTimersCallback ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/wait-for.js:118:16
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 33 skipped (34)
+   Start at  01:44:40
+   Duration  3.03s (transform 182ms, setup 34ms, import 251ms, tests 2.22s, environment 431ms)
+
+/home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner:
+[ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL] scanner@0.0.0 test: `vitest run src/App.sync.test.tsx -t 'replaces the partial report at automatic retry start'`
+Exit status 1
