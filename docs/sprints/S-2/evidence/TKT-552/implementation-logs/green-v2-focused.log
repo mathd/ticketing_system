@@ -1,0 +1,610 @@
+label: green-v2-focused
+cwd: /home/mathieu/sources/ticketing_system.TKT-552-entry-copy
+command: env NO_COLOR=1 pnpm --filter scanner exec vitest run --reporter=verbose src/scan-result.test.ts src/scan-result.exit.test.ts src/App.test.tsx src/App.entry.test.tsx src/App.safety.test.tsx src/App.exit.test.tsx src/App.exit-matrix.test.tsx src/App.exit-results.test.tsx src/App.guards.test.tsx src/App.transactions.test.tsx src/App.storage.test.tsx src/entry-scan.test.ts
+start_utc: 2026-10-20T15:20:24Z
+----- output begins -----
+
+ RUN  v4.1.10 /home/mathieu/sources/ticketing_system.TKT-552-entry-copy/web/scanner
+
+ ✓ src/scan-result.test.ts > fixes the admission instructions independently of the renderer 3ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"stopped-before-send"} result 2ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"sent-unconfirmed"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"accepted-too-late"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"revocation-audit-not-saved"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"duplicate"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"mark-failed"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"auth-refused"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"denial-unreadable"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"queued"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"queued","status":503} result 1ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"storage-unready"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"mint-unconfirmed"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"cancelled","requestMayHaveBeenSent":false} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"cancelled","requestMayHaveBeenSent":true} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"body-unconfirmed"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"status-unconfirmed"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"server-error"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"local-failure"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"revocation-refused"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"rejected","reason":"already_redeemed"} result 1ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for not_inside 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for exit_not_applicable 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for invalid_credential 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for revoked 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for refunded 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for exchanged 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for exit_unverified 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for integrity_quarantined 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for integrity_operator_controlled 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for occurrence_required 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for unknown_future_reason 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for invalid_occurrence 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for occurrence_collision 0ms
+ ✓ src/scan-result.test.ts > renders the complete Entry instruction for exit_required with its Reason line 0ms
+ ✓ src/scan-result.test.ts > renders the complete Entry instruction for entry_limit_reached with its Reason line 0ms
+ ✓ src/scan-result.test.ts > uses validated server times without replacing them with current device time 34ms
+ ✓ src/scan-result.exit.test.ts > keeps the full cancelled Exit presentation for sent=false 3ms
+ ✓ src/scan-result.exit.test.ts > keeps the full cancelled Exit presentation for sent=true 0ms
+ ✓ src/entry-scan.test.ts > keeps status 401 terminal without trusting its body 29ms
+ ✓ src/entry-scan.test.ts > keeps status 500 terminal without trusting its body 11ms
+ ✓ src/entry-scan.test.ts > keeps status 501 terminal without trusting its body 12ms
+ ✓ src/entry-scan.test.ts > keeps status 505 terminal without trusting its body 8ms
+ ✓ src/entry-scan.test.ts > keeps status 599 terminal without trusting its body 9ms
+ ✓ src/entry-scan.test.ts > keeps status 201 terminal without trusting its body 8ms
+ ✓ src/entry-scan.test.ts > keeps status 204 terminal without trusting its body 7ms
+ ✓ src/entry-scan.test.ts > keeps status 301 terminal without trusting its body 10ms
+ ✓ src/entry-scan.test.ts > keeps status 400 terminal without trusting its body 12ms
+ ✓ src/entry-scan.test.ts > keeps status 403 terminal without trusting its body 12ms
+ ✓ src/entry-scan.test.ts > keeps status 404 terminal without trusting its body 10ms
+ ✓ src/entry-scan.test.ts > keeps status 429 terminal without trusting its body 14ms
+ ✓ src/entry-scan.test.ts > publishes status 502 offline permission before storage calls 14ms
+ ✓ src/entry-scan.test.ts > publishes status 503 offline permission before storage calls 5ms
+ ✓ src/entry-scan.test.ts > publishes status 504 offline permission before storage calls 5ms
+ ✓ src/entry-scan.test.ts > limits no-response queue authority to the native shape: TypeError: Failed to fetch 5ms
+ ✓ src/entry-scan.test.ts > limits no-response queue authority to the native shape: TypeError: network down 8ms
+ ✓ src/entry-scan.test.ts > limits no-response queue authority to the native shape: Error: Failed to fetch 6ms
+ ✓ src/entry-scan.test.ts > limits no-response queue authority to the native shape: NetworkError: Failed to fetch 6ms
+ ✓ src/entry-scan.test.ts > treats a synchronous fetch setup throw as a local failure 4ms
+ ✓ src/entry-scan.test.ts > commits status 409 as an unknown denial while its body is stalled 11ms
+ ✓ src/entry-scan.test.ts > commits status 422 as an unknown denial while its body is stalled 9ms
+ ✓ src/entry-scan.test.ts > keeps unreadable status 409 as denial rather than queue 6ms
+ ✓ src/entry-scan.test.ts > keeps unreadable status 422 as denial rather than queue 6ms
+ ✓ src/entry-scan.test.ts > requires a completed own mark for acceptance with replay true 6ms
+ ✓ src/entry-scan.test.ts > requires a completed own mark for acceptance with replay false 5ms
+ ✓ src/entry-scan.test.ts > requires a completed own mark for acceptance with replay undefined 6ms
+ ✓ src/entry-scan.test.ts > refuses malformed 200 acceptance {} 6ms
+ ✓ src/entry-scan.test.ts > refuses malformed 200 acceptance { decision: 'accepted', scanned_at: 'not-a-time' } 7ms
+ ✓ src/entry-scan.test.ts > refuses malformed 200 acceptance { decision: 'rejected', reason: 'refunded' } 7ms
+ ✓ src/entry-scan.test.ts > never sends when mint aborts 8ms
+ ✓ src/entry-scan.test.ts > stops unready input without retaining it for retry 5ms
+ ✓ src/entry-scan.test.ts > keeps the captured pairing and claimed time while a request waits 8ms
+ ✓ src/entry-scan.test.ts > handles completed own existing ACT with replay true without a new opening 7ms
+ ✓ src/entry-scan.test.ts > handles completed own existing ACT with replay false without a new opening 6ms
+ ✓ src/entry-scan.test.ts > handles completed own existing ACT with replay undefined without a new opening 5ms
+ ✓ src/entry-scan.test.ts > keeps a known local refusal typed and never sends it, commit 5ms
+ ✓ src/entry-scan.test.ts > keeps a known local refusal typed and never sends it, mint-abort 4ms
+ ✓ src/entry-scan.test.ts > keeps a known local refusal typed and never sends it, queue-abort 4ms
+ ✓ src/entry-scan.test.ts > waits for mint complete before invoking fetch 5ms
+ ✓ src/entry-scan.test.ts > publishes acceptance only after the mark completes, commit 5ms
+ ✓ src/entry-scan.test.ts > publishes acceptance only after the mark completes, abort 7ms
+ ✓ src/entry-scan.test.ts > settles cancellation against an in-flight mark, commit 8ms
+ ✓ src/entry-scan.test.ts > settles cancellation against an in-flight mark, abort 7ms
+ ✓ src/entry-scan.test.ts > rejects an invalid header before fetch without offline permission 4ms
+ ✓ src/App.test.tsx > App > renders the scanner and accepts a pasted credential 373ms
+ ✓ src/App.exit-results.test.tsx > renders the full no-send Exit at the literal 3000 ms lookup continuation 353ms
+ ✓ src/App.storage.test.tsx > keeps the page owner lock across React cleanup and remount 378ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=true against actual 'own ACT' before displaying a result 395ms
+ ✓ src/App.exit.test.tsx > submits the selected Exit, commits one own mark and shows the exact neutral accepted result 405ms
+ ✓ src/App.entry.test.tsx > keeps live status 401 out of real App reconciliation while its queue control syncs 413ms
+ ✓ src/App.entry.test.tsx > keeps live status 500 out of real App reconciliation while its queue control syncs 95ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'already_redeemed' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 403ms
+ ✓ src/App.test.tsx > App > shows the original scan time for a duplicate 53ms
+ ✓ src/App.test.tsx > App > rejects an invalid credential 58ms
+ ✓ src/App.transactions.test.tsx > does not send before mint completion, then observes commit 435ms
+ ✓ src/App.exit-results.test.tsx > renders the full no-send Exit at the literal 3000 ms mint continuation 82ms
+ ✓ src/App.exit-results.test.tsx > renders the full known accepted Exit at the literal 30000 ms body continuation 72ms
+ ✓ src/App.safety.test.tsx > protects 'denial already_redeemed' through a throw final write, close, expiry and foreign recovery 467ms
+ ✓ src/App.storage.test.tsx > disables new scan and camera inputs until an explicit storage retry succeeds 145ms
+ ✓ src/App.exit.test.tsx > keeps the exact terminal Exit reason already_redeemed and neutral leave result 94ms
+ ✓ src/App.exit.test.tsx > keeps the exact terminal Exit reason entry_limit_reached and neutral leave result 80ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=false against actual 'own ACT' before displaying a result 93ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=undefined against actual 'own ACT' before displaying a result 79ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'already_redeemed' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 136ms
+ ✓ src/App.test.tsx > App > submits a 409 'exit_required' denial and shows its complete Entry instruction 85ms
+ ✓ src/App.entry.test.tsx > keeps live status 501 out of real App reconciliation while its queue control syncs 78ms
+ ✓ src/App.exit-results.test.tsx > renders the full known accepted Exit at the literal 30000 ms mark continuation 112ms
+ ✓ src/App.transactions.test.tsx > does not send before mint completion, then observes abort 129ms
+ ✓ src/App.storage.test.tsx > sends nothing on an aborted mint and accepts a fresh presentation with the same owner 81ms
+ ✓ src/App.storage.test.tsx > keeps denial copy during a failed terminal write and repairs with the same owner 90ms
+ ✓ src/App.safety.test.tsx > protects 'denial entry_limit_reached' through a throw final write, close, expiry and foreign recovery 145ms
+ ✓ src/App.exit.test.tsx > keeps the exact terminal Exit reason exit_required and neutral leave result 71ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'already_redeemed' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 90ms
+ ✓ src/App.test.tsx > App > submits a 409 'entry_limit_reached' denial and shows its complete Entry instruction 73ms
+ ✓ src/App.test.tsx > App > keeps the paste path available when camera detection is unavailable 30ms
+ ✓ src/App.entry.test.tsx > keeps live status 505 out of real App reconciliation while its queue control syncs 72ms
+ ✓ src/App.entry.test.tsx > keeps live status 599 out of real App reconciliation while its queue control syncs 66ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=true against actual 'foreign ACT' before displaying a result 94ms
+ ✓ src/App.exit-results.test.tsx > renders full pre-send local Exit failure from clock without a request 58ms
+ ✓ src/App.exit-results.test.tsx > renders full pre-send local Exit failure from header without a request 73ms
+ ✓ src/App.transactions.test.tsx > opens only after the actual mark completes through 'ordinary' for 'entry' 134ms
+ ✓ src/App.storage.test.tsx > stores every feed page and advances the fingerprint only after the final page 24ms
+ ✓ src/App.storage.test.tsx > keeps the previous completion time absent when a later feed page fails 29ms
+ ✓ src/App.storage.test.tsx > stops a feed walk after unmount without closing the page store 23ms
+ ✓ src/App.exit.test.tsx > keeps the exact terminal Exit reason not_inside and neutral leave result 80ms
+ ✓ src/App.exit.test.tsx > keeps the exact terminal Exit reason exit_not_applicable and neutral leave result 61ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'already_redeemed' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 102ms
+ ✓ src/App.test.tsx > App > stops a failed camera loop and restores the paste path 100ms
+ ✓ src/App.test.tsx > App > stops a stream that resolves after the scanner unmounts and never attaches it 24ms
+ ✓ src/App.test.tsx > App > does not orphan a stream when camera startup is re-entered before the first resolves 33ms
+ ✓ src/App.safety.test.tsx > protects 'denial exit_required' through a throw final write, close, expiry and foreign recovery 142ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=false against actual 'foreign ACT' before displaying a result 95ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=undefined against actual 'foreign ACT' before displaying a result 65ms
+ ✓ src/App.entry.test.tsx > keeps live status 201 out of real App reconciliation while its queue control syncs 67ms
+ ✓ src/App.entry.test.tsx > keeps live status 301 out of real App reconciliation while its queue control syncs 54ms
+ ✓ src/App.exit-results.test.tsx > uses a supplied original time only for the correct Exit reason already_redeemed 87ms
+ ✓ src/App.exit-results.test.tsx > uses a supplied original time only for the correct Exit reason integrity_quarantined 49ms
+ ✓ src/App.exit-results.test.tsx > preserves the Entry introduction and varies only the Exit introduction 28ms
+ ✓ src/App.transactions.test.tsx > opens only after the actual mark completes through 'versionchange' for 'entry' 128ms
+ ✓ src/App.storage.test.tsx > allows token B to finish its feed while token A has a pending page 70ms
+ ✓ src/App.storage.test.tsx > retains the no-list notice for B until B completes its own pull 64ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'already_redeemed' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 115ms
+ ✓ src/App.exit.test.tsx > keeps the exact terminal Exit reason invalid_credential and neutral leave result 54ms
+ ✓ src/App.exit.test.tsx > keeps the exact terminal Exit reason revoked and neutral leave result 68ms
+ ✓ src/App.test.tsx > App > keeps the active stream when a superseded startup finishes late 31ms
+ ✓ src/App.test.tsx > App > ignores a stale getUserMedia rejection without disturbing the active message 31ms
+ ✓ src/App.test.tsx > App > stops the previous stream when the camera is restarted while already active 47ms
+ ✓ src/App.safety.test.tsx > protects 'denial not_inside' through a throw final write, close, expiry and foreign recovery 115ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=true against actual 'foreign PEND' before displaying a result 68ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=false against actual 'foreign PEND' before displaying a result 62ms
+ ✓ src/App.entry.test.tsx > keeps live status 400 out of real App reconciliation while its queue control syncs 60ms
+ ✓ src/App.entry.test.tsx > keeps live status 403 out of real App reconciliation while its queue control syncs 65ms
+ ✓ src/App.transactions.test.tsx > opens only after the actual mark completes through 'unexpected close' for 'entry' 111ms
+ ✓ src/App.storage.test.tsx > cancels an old scan on an external pairing change and ignores its late 401 40ms
+ ✓ src/App.storage.test.tsx > does not remove a newer localStorage token when the old scan gets 401 35ms
+ ✓ src/App.storage.test.tsx > refuses a listed ticket without a live request and commits a refusal queue row 38ms
+ ✓ src/App.test.tsx > App > stops the acquired stream when video playback fails 22ms
+ ✓ src/App.test.tsx > App > stops the acquired stream if BarcodeDetector construction throws 23ms
+ ✓ src/App.test.tsx > device pairing > asks to be paired instead of scanning, and never sends a scan unpaired 15ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'already_redeemed' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 91ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'already_redeemed' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 97ms
+ ✓ src/App.exit.test.tsx > keeps the exact terminal Exit reason refunded and neutral leave result 53ms
+ ✓ src/App.exit.test.tsx > keeps the exact terminal Exit reason exchanged and neutral leave result 70ms
+ ✓ src/App.safety.test.tsx > protects 'denial exit_not_applicable' through a throw final write, close, expiry and foreign recovery 101ms
+ ✓ src/App.safety.test.tsx > protects 'denial invalid_credential' through a throw final write, close, expiry and foreign recovery 95ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=undefined against actual 'foreign PEND' before displaying a result 63ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=true against actual 'missing' before displaying a result 64ms
+ ✓ src/App.entry.test.tsx > keeps live status 404 out of real App reconciliation while its queue control syncs 64ms
+ ✓ src/App.entry.test.tsx > keeps live status 429 out of real App reconciliation while its queue control syncs 60ms
+ ✓ src/App.storage.test.tsx > keeps a listed refusal when its mint aborts and creates no row 62ms
+ ✓ src/App.storage.test.tsx > keeps an accepted result after version change and disables new admission controls 60ms
+ ✓ src/App.transactions.test.tsx > opens only after the actual mark completes through 'ordinary' for 'exit' 116ms
+ ✓ src/App.test.tsx > device pairing > pairs, keeps the token across a reload, and sends it on every scan 66ms
+ ✓ src/App.test.tsx > device pairing > clears the refused token and resolves its occurrence without queueing it 46ms
+ ✓ src/App.exit.test.tsx > keeps the exact terminal Exit reason exit_unverified and neutral leave result 62ms
+ ✓ src/App.exit.test.tsx > keeps the exact terminal Exit reason integrity_quarantined and neutral leave result 51ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'already_redeemed' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 109ms
+ ✓ src/App.test.tsx > cancels a held camera detection across auth refusal and pairing B; fresh B detection works 96ms
+ ✓ src/App.safety.test.tsx > protects 'denial revoked' through a throw final write, close, expiry and foreign recovery 93ms
+ ✓ src/App.entry.test.tsx > publishes an accepted result through the real mark and keeps it stable on refresh and sync 57ms
+ ✓ src/App.entry.test.tsx > keeps the exact denial reason already_redeemed and the complete current Entry instruction 37ms
+ ✓ src/App.entry.test.tsx > keeps the exact denial reason entry_limit_reached and the complete current Entry instruction 25ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=false against actual 'missing' before displaying a result 59ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=undefined against actual 'missing' before displaying a result 44ms
+ ✓ src/App.transactions.test.tsx > opens only after the actual mark completes through 'versionchange' for 'exit' 113ms
+ ✓ src/App.exit.test.tsx > keeps the exact terminal Exit reason integrity_operator_controlled and neutral leave result 38ms
+ ✓ src/App.exit.test.tsx > keeps the exact terminal Exit reason occurrence_required and neutral leave result 36ms
+ ✓ src/App.exit.test.tsx > keeps the exact terminal Exit reason unknown_future_reason and neutral leave result 44ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'entry_limit_reached' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 53ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'entry_limit_reached' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 54ms
+ ✓ src/App.safety.test.tsx > protects 'denial refunded' through a throw final write, close, expiry and foreign recovery 70ms
+ ✓ src/App.safety.test.tsx > protects 'denial exchanged' through a throw final write, close, expiry and foreign recovery 82ms
+ ✓ src/App.entry.test.tsx > keeps the exact denial reason exit_required and the complete current Entry instruction 28ms
+ ✓ src/App.entry.test.tsx > keeps the exact denial reason not_inside and the complete current Entry instruction 28ms
+ ✓ src/App.entry.test.tsx > keeps the exact denial reason exit_not_applicable and the complete current Entry instruction 28ms
+ ✓ src/App.entry.test.tsx > keeps the exact denial reason invalid_credential and the complete current Entry instruction 28ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=true against actual 'QUEUED' before displaying a result 55ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=false against actual 'QUEUED' before displaying a result 53ms
+ ✓ src/App.exit.test.tsx > keeps the exact terminal Exit reason invalid_occurrence and neutral leave result 43ms
+ ✓ src/App.exit.test.tsx > keeps the exact terminal Exit reason occurrence_collision and neutral leave result 42ms
+ ✓ src/App.exit.test.tsx > uses exact R17-X for unreadable status 409 35ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'entry_limit_reached' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 61ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'entry_limit_reached' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 65ms
+ ✓ src/App.transactions.test.tsx > opens only after the actual mark completes through 'unexpected close' for 'exit' 98ms
+ ✓ src/App.transactions.test.tsx > settles pairing cancellation against a held mark commit without a second instruction 66ms
+ ✓ src/App.entry.test.tsx > keeps the exact denial reason revoked and the complete current Entry instruction 28ms
+ ✓ src/App.entry.test.tsx > keeps the exact denial reason refunded and the complete current Entry instruction 25ms
+ ✓ src/App.entry.test.tsx > keeps the exact denial reason exchanged and the complete current Entry instruction 27ms
+ ✓ src/App.entry.test.tsx > keeps the exact denial reason exit_unverified and the complete current Entry instruction 32ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=undefined against actual 'QUEUED' before displaying a result 57ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=true against actual 'RESOLVED' before displaying a result 41ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=false against actual 'RESOLVED' before displaying a result 44ms
+ ✓ src/App.safety.test.tsx > protects 'denial exit_unverified' through a throw final write, close, expiry and foreign recovery 76ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'entry_limit_reached' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 63ms
+ ✓ src/App.exit.test.tsx > uses exact R17-X for unreadable status 422 38ms
+ ✓ src/App.exit.test.tsx > keeps a queued Exit after switching mode and retires it only as the acknowledged Exit 69ms
+ ✓ src/App.transactions.test.tsx > settles pairing cancellation against a held mark abort without a second instruction 93ms
+ ✓ src/App.transactions.test.tsx > reads denial 409 body and publishes its memory result before TERM completes 43ms
+ ✓ src/App.transactions.test.tsx > reads denial 422 body and publishes its memory result before TERM completes 53ms
+ ✓ src/App.entry.test.tsx > keeps the exact denial reason integrity_quarantined and the complete current Entry instruction 25ms
+ ✓ src/App.entry.test.tsx > keeps the exact denial reason integrity_operator_controlled and the complete current Entry instruction 35ms
+ ✓ src/App.entry.test.tsx > keeps the exact denial reason occurrence_required and the complete current Entry instruction 34ms
+ ✓ src/App.safety.test.tsx > protects 'denial integrity_quarantined' through a throw final write, close, expiry and foreign recovery 70ms
+ ✓ src/App.safety.test.tsx > protects 'denial integrity_operator_controlled' through a throw final write, close, expiry and foreign recovery 88ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=undefined against actual 'RESOLVED' before displaying a result 50ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=true against actual 'ACT without reservation' before displaying a result 61ms
+ ✓ src/App.entry.test.tsx > keeps the exact denial reason unknown_future_reason and the complete current Entry instruction 26ms
+ ✓ src/App.entry.test.tsx > keeps the exact denial reason invalid_occurrence and the complete current Entry instruction 27ms
+ ✓ src/App.entry.test.tsx > keeps the exact denial reason occurrence_collision and the complete current Entry instruction 30ms
+ ✓ src/App.entry.test.tsx > retains an unknown denial at status 409 when the body is unreadable 30ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'entry_limit_reached' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 74ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'entry_limit_reached' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 66ms
+ ✓ src/App.exit.test.tsx > keeps single-policy reconciliation rejection separate from a recorded Exit 84ms
+ ✓ src/App.exit.test.tsx > never mints, refuses or sends a locally listed Exit 36ms
+ ✓ src/App.transactions.test.tsx > commits denial 409 while its body is stalled and never sends it on remount sync 84ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=false against actual 'ACT without reservation' before displaying a result 45ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > checks replay=undefined against actual 'ACT without reservation' before displaying a result 53ms
+ ✓ src/App.safety.test.tsx > protects 'denial occurrence_required' through a throw final write, close, expiry and foreign recovery 67ms
+ ✓ src/App.entry.test.tsx > retains an unknown denial at status 422 when the body is unreadable 28ms
+ ✓ src/App.entry.test.tsx > publishes the exact offline instruction for 502 and retains it through reconciliation 51ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'entry_limit_reached' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 79ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_required' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 43ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_required' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 43ms
+ ✓ src/App.exit.test.tsx > invalidates held Exit camera detection before mode changes its direction or pairing 61ms
+ ✓ src/App.exit.test.tsx > invalidates held Exit camera detection before storage changes its direction or pairing 55ms
+ ✓ src/App.safety.test.tsx > protects 'denial future_reason' through a throw final write, close, expiry and foreign recovery 85ms
+ ✓ src/App.safety.test.tsx > protects 'denial invalid_occurrence' through a throw final write, close, expiry and foreign recovery 77ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > admits a fresh durable reservation with replay=true 53ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > admits a fresh durable reservation with replay=false 40ms
+ ✓ src/App.guards.test.tsx > entry actuation and replay guards > admits a fresh durable reservation with replay=undefined 37ms
+ ✓ src/App.transactions.test.tsx > commits denial 422 while its body is stalled and never sends it on remount sync 74ms
+ ✓ src/App.transactions.test.tsx > queue-latch-no-storage-api at the actual App classification boundary 45ms
+ ✓ src/App.entry.test.tsx > publishes the exact offline instruction for 503 and retains it through reconciliation 49ms
+ ✓ src/App.entry.test.tsx > publishes the exact offline instruction for 504 and retains it through reconciliation 50ms
+ ✓ src/App.entry.test.tsx > publishes the local-failure instruction for a non-network TypeError 27ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_required' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 50ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_required' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 68ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=true against actual 'own ACT' before displaying a result 45ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=false against actual 'own ACT' before displaying a result 49ms
+ ✓ src/App.safety.test.tsx > protects 'denial occurrence_collision' through a throw final write, close, expiry and foreign recovery 71ms
+ ✓ src/App.exit.test.tsx > invalidates held Exit camera detection before feed-401 changes its direction or pairing 90ms
+ ✓ src/App.transactions.test.tsx > keeps the captured credential when the rendered field changes during mint 138ms
+ ✓ src/App.transactions.test.tsx > timed 'entry' 409 reaches actual App sync only through the eligible control 69ms
+ ✓ src/App.entry.test.tsx > automatically reconciles a listed refusal as refusal-only beside an explicit Entry control 40ms
+ ✓ src/App.entry.test.tsx > keeps 503 offline authority independent of browser family: Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0 38ms
+ ✓ src/App.entry.test.tsx > keeps 503 offline authority independent of browser family: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15 30ms
+ ✓ src/App.entry.test.tsx > keeps 503 offline authority independent of browser family: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 31ms
+ ✓ src/App.safety.test.tsx > protects 'unknown denial 409' through a throw final write, close, expiry and foreign recovery 74ms
+ ✓ src/App.safety.test.tsx > protects 'unknown denial 422' through a throw final write, close, expiry and foreign recovery 64ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=undefined against actual 'own ACT' before displaying a result 40ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=true against actual 'foreign ACT' before displaying a result 38ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=false against actual 'foreign ACT' before displaying a result 45ms
+ ✓ src/App.exit.test.tsx > invalidates held Exit camera detection before sync-401 changes its direction or pairing 102ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_required' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 68ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_required' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 63ms
+ ✓ src/App.transactions.test.tsx > timed 'entry' 422 reaches actual App sync only through the eligible control 50ms
+ ✓ src/App.transactions.test.tsx > timed 'entry' 200 reaches actual App sync only through the eligible control 55ms
+ ✓ src/App.safety.test.tsx > protects 'auth refusal' through a throw final write, close, expiry and foreign recovery 84ms
+ ✓ src/App.exit.test.tsx > invalidates held Exit camera detection before scan-401 changes its direction or pairing 116ms
+ ✓ src/App.exit.test.tsx > keeps the captured Exit while busy controls and a forced mode event cannot change it 88ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=undefined against actual 'foreign ACT' before displaying a result 53ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=true against actual 'foreign PEND' before displaying a result 34ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=false against actual 'foreign PEND' before displaying a result 36ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_required' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 62ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_required' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 49ms
+ ✓ src/App.transactions.test.tsx > timed 'entry' 'headers' reaches actual App sync only through the eligible control 56ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=undefined against actual 'foreign PEND' before displaying a result 57ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=true against actual 'missing' before displaying a result 40ms
+ ✓ src/App.exit.test.tsx > renders corrupt current-row warnings as text even when nothing can sync, then removes an obsolete warning 35ms
+ ✓ src/App.exit.test.tsx > shows actual recovered Exit direction on a second App and after exact sync retirement 71ms
+ ✓ src/App.safety.test.tsx > protects 'server 500' through a throw final write, close, expiry and foreign recovery 62ms
+ ✓ src/App.safety.test.tsx > protects 'server 501' through a throw final write, close, expiry and foreign recovery 79ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'not_inside' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 53ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'not_inside' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 50ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'not_inside' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 45ms
+ ✓ src/App.transactions.test.tsx > timed 'entry' 502 reaches actual App sync only through the eligible control 96ms
+ ✓ src/App.transactions.test.tsx > timed 'entry' 503 reaches actual App sync only through the eligible control 99ms
+ ✓ src/App.exit.test.tsx > publishes captured Exit storage-unready from the camera start race without any write or request 22ms
+ ✓ src/App.exit.test.tsx > publishes exact Exit mint failure after a real throw with no request or recovery fact 35ms
+ ✓ src/App.exit.test.tsx > publishes exact Exit mint failure after a real abort with no request or recovery fact 41ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=false against actual 'missing' before displaying a result 40ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=undefined against actual 'missing' before displaying a result 41ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=true against actual 'QUEUED' before displaying a result 35ms
+ ✓ src/App.exit.test.tsx > keeps Exit selected but disabled after actual connection loss, with no delayed presentation replay 40ms
+ ✓ src/App.safety.test.tsx > protects 'server 505' through a throw final write, close, expiry and foreign recovery 64ms
+ ✓ src/App.safety.test.tsx > protects 'server 599' through a throw final write, close, expiry and foreign recovery 59ms
+ ✓ src/App.transactions.test.tsx > timed 'entry' 504 reaches actual App sync only through the eligible control 91ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'not_inside' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 53ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'not_inside' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 54ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=false against actual 'QUEUED' before displaying a result 35ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=undefined against actual 'QUEUED' before displaying a result 35ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=true against actual 'RESOLVED' before displaying a result 31ms
+ ✓ src/App.safety.test.tsx > protects 'other status 201' through a throw final write, close, expiry and foreign recovery 50ms
+ ✓ src/App.safety.test.tsx > protects 'other status 301' through a throw final write, close, expiry and foreign recovery 57ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'not_inside' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 47ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'not_inside' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 52ms
+ ✓ src/App.transactions.test.tsx > timed 'entry' 'native' reaches actual App sync only through the eligible control 46ms
+ ✓ src/App.transactions.test.tsx > timed 'exit' 409 reaches actual App sync only through the eligible control 49ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=false against actual 'RESOLVED' before displaying a result 35ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=undefined against actual 'RESOLVED' before displaying a result 39ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=true against actual 'ACT without reservation' before displaying a result 32ms
+ ✓ src/App.safety.test.tsx > protects 'other status 400' through a throw final write, close, expiry and foreign recovery 52ms
+ ✓ src/App.safety.test.tsx > protects 'other status 403' through a throw final write, close, expiry and foreign recovery 54ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'not_inside' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 57ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_not_applicable' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 36ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_not_applicable' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 33ms
+ ✓ src/App.transactions.test.tsx > timed 'exit' 422 reaches actual App sync only through the eligible control 53ms
+ ✓ src/App.transactions.test.tsx > timed 'exit' 200 reaches actual App sync only through the eligible control 42ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=false against actual 'ACT without reservation' before displaying a result 31ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > checks replay=undefined against actual 'ACT without reservation' before displaying a result 34ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > admits a fresh durable reservation with replay=true 29ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > admits a fresh durable reservation with replay=false 31ms
+ ✓ src/App.safety.test.tsx > protects 'other status 404' through a throw final write, close, expiry and foreign recovery 51ms
+ ✓ src/App.safety.test.tsx > protects 'other status 429' through a throw final write, close, expiry and foreign recovery 53ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_not_applicable' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 32ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_not_applicable' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 40ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_not_applicable' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 47ms
+ ✓ src/App.transactions.test.tsx > timed 'exit' 'headers' reaches actual App sync only through the eligible control 89ms
+ ✓ src/App.transactions.test.tsx > timed 'exit' 502 reaches actual App sync only through the eligible control 42ms
+ ✓ src/App.guards.test.tsx > exit actuation and replay guards > admits a fresh durable reservation with replay=undefined 30ms
+ ✓ src/App.guards.test.tsx > retains a failed queue latch through pairing cancellation and repairs only that queue 58ms
+ ✓ src/App.safety.test.tsx > protects 'invalid accepted body' through a throw final write, close, expiry and foreign recovery 50ms
+ ✓ src/App.safety.test.tsx > protects 'TypeError' through a throw final write, close, expiry and foreign recovery 49ms
+ ✓ src/App.safety.test.tsx > protects 'Error' through a throw final write, close, expiry and foreign recovery 48ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_not_applicable' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 36ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_not_applicable' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 42ms
+ ✓ src/App.transactions.test.tsx > timed 'exit' 503 reaches actual App sync only through the eligible control 91ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_not_applicable' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 47ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'invalid_credential' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 27ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'invalid_credential' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 38ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'invalid_credential' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 33ms
+ ✓ src/App.guards.test.tsx > retains failed cancellation after throw through a late denial and sends only a queued control 91ms
+ ✓ src/App.guards.test.tsx > retains failed cancellation after abort through a late denial and sends only a queued control 47ms
+ ✓ src/App.safety.test.tsx > protects 'DOMException' through a throw final write, close, expiry and foreign recovery 49ms
+ ✓ src/App.safety.test.tsx > protects 'denial already_redeemed' through a abort final write, close, expiry and foreign recovery 49ms
+ ✓ src/App.transactions.test.tsx > timed 'exit' 504 reaches actual App sync only through the eligible control 90ms
+ ✓ src/App.transactions.test.tsx > timed 'exit' 'native' reaches actual App sync only through the eligible control 42ms
+ ✓ src/App.transactions.test.tsx > flushes the offline instruction to the DOM before the outcome transaction starts 24ms
+ ✓ src/App.guards.test.tsx > keeps O02 after an actual throw failure before pairing cancellation settles the scan 51ms
+ ✓ src/App.guards.test.tsx > keeps O02 after an actual abort failure before pairing cancellation settles the scan 45ms
+ ✓ src/App.guards.test.tsx > keeps denial 409 across late body and 'held' persistence 24ms
+ ✓ src/App.guards.test.tsx > keeps denial 409 across late body and 'throw' persistence 24ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'invalid_credential' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 38ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'invalid_credential' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 50ms
+ ✓ src/App.safety.test.tsx > protects 'denial entry_limit_reached' through a abort final write, close, expiry and foreign recovery 53ms
+ ✓ src/App.safety.test.tsx > protects 'denial exit_required' through a abort final write, close, expiry and foreign recovery 51ms
+ ✓ src/App.safety.test.tsx > protects 'denial not_inside' through a abort final write, close, expiry and foreign recovery 47ms
+ ✓ src/App.guards.test.tsx > keeps denial 409 across late body and 'abort' persistence 28ms
+ ✓ src/App.guards.test.tsx > keeps denial 422 across late body and 'held' persistence 32ms
+ ✓ src/App.guards.test.tsx > keeps denial 422 across late body and 'throw' persistence 27ms
+ ✓ src/App.guards.test.tsx > keeps denial 422 across late body and 'abort' persistence 28ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'invalid_credential' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 45ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'invalid_credential' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 44ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'invalid_credential' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 50ms
+ ✓ src/App.safety.test.tsx > protects 'denial exit_not_applicable' through a abort final write, close, expiry and foreign recovery 52ms
+ ✓ src/App.safety.test.tsx > protects 'denial invalid_credential' through a abort final write, close, expiry and foreign recovery 53ms
+ ✓ src/App.guards.test.tsx > publishes denial 409 before 'held' reason enrichment settles 34ms
+ ✓ src/App.guards.test.tsx > publishes denial 409 before 'throw' reason enrichment settles 25ms
+ ✓ src/App.guards.test.tsx > publishes denial 409 before 'abort' reason enrichment settles 28ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'revoked' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 33ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'revoked' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 32ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'revoked' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 39ms
+ ✓ src/App.safety.test.tsx > protects 'denial revoked' through a abort final write, close, expiry and foreign recovery 49ms
+ ✓ src/App.safety.test.tsx > protects 'denial refunded' through a abort final write, close, expiry and foreign recovery 50ms
+ ✓ src/App.guards.test.tsx > publishes denial 422 before 'held' reason enrichment settles 33ms
+ ✓ src/App.guards.test.tsx > publishes denial 422 before 'throw' reason enrichment settles 38ms
+ ✓ src/App.guards.test.tsx > publishes denial 422 before 'abort' reason enrichment settles 38ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'revoked' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 41ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'revoked' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 49ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'revoked' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 37ms
+ ✓ src/App.safety.test.tsx > protects 'denial exchanged' through a abort final write, close, expiry and foreign recovery 56ms
+ ✓ src/App.safety.test.tsx > protects 'denial exit_unverified' through a abort final write, close, expiry and foreign recovery 53ms
+ ✓ src/App.safety.test.tsx > protects 'denial integrity_quarantined' through a abort final write, close, expiry and foreign recovery 43ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'revoked' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 43ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'revoked' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 44ms
+ ✓ src/App.safety.test.tsx > protects 'denial integrity_operator_controlled' through a abort final write, close, expiry and foreign recovery 47ms
+ ✓ src/App.safety.test.tsx > protects 'denial occurrence_required' through a abort final write, close, expiry and foreign recovery 48ms
+ ✓ src/App.safety.test.tsx > protects 'denial future_reason' through a abort final write, close, expiry and foreign recovery 48ms
+ ✓ src/App.safety.test.tsx > protects 'denial invalid_occurrence' through a abort final write, close, expiry and foreign recovery 46ms
+ ✓ src/App.safety.test.tsx > protects 'denial occurrence_collision' through a abort final write, close, expiry and foreign recovery 43ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'refunded' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 31ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'refunded' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 33ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'refunded' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 30ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'refunded' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 36ms
+ ✓ src/App.safety.test.tsx > protects 'unknown denial 409' through a abort final write, close, expiry and foreign recovery 43ms
+ ✓ src/App.safety.test.tsx > protects 'unknown denial 422' through a abort final write, close, expiry and foreign recovery 45ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'refunded' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 41ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'refunded' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 37ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'refunded' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 43ms
+ ✓ src/App.safety.test.tsx > protects 'auth refusal' through a abort final write, close, expiry and foreign recovery 49ms
+ ✓ src/App.safety.test.tsx > protects 'server 500' through a abort final write, close, expiry and foreign recovery 42ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'refunded' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 44ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exchanged' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 30ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exchanged' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 30ms
+ ✓ src/App.safety.test.tsx > protects 'server 501' through a abort final write, close, expiry and foreign recovery 49ms
+ ✓ src/App.safety.test.tsx > protects 'server 505' through a abort final write, close, expiry and foreign recovery 42ms
+ ✓ src/App.safety.test.tsx > protects 'server 599' through a abort final write, close, expiry and foreign recovery 40ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exchanged' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 36ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exchanged' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 37ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exchanged' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 42ms
+ ✓ src/App.safety.test.tsx > protects 'other status 201' through a abort final write, close, expiry and foreign recovery 40ms
+ ✓ src/App.safety.test.tsx > protects 'other status 301' through a abort final write, close, expiry and foreign recovery 37ms
+ ✓ src/App.safety.test.tsx > protects 'other status 400' through a abort final write, close, expiry and foreign recovery 42ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exchanged' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 33ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exchanged' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 38ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exchanged' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 41ms
+ ✓ src/App.safety.test.tsx > protects 'other status 403' through a abort final write, close, expiry and foreign recovery 42ms
+ ✓ src/App.safety.test.tsx > protects 'other status 404' through a abort final write, close, expiry and foreign recovery 40ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_unverified' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 34ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_unverified' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 30ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_unverified' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 29ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_unverified' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 38ms
+ ✓ src/App.safety.test.tsx > protects 'other status 429' through a abort final write, close, expiry and foreign recovery 41ms
+ ✓ src/App.safety.test.tsx > protects 'invalid accepted body' through a abort final write, close, expiry and foreign recovery 44ms
+ ✓ src/App.safety.test.tsx > protects 'TypeError' through a abort final write, close, expiry and foreign recovery 48ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_unverified' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 42ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_unverified' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 44ms
+ ✓ src/App.safety.test.tsx > protects 'Error' through a abort final write, close, expiry and foreign recovery 48ms
+ ✓ src/App.safety.test.tsx > protects 'DOMException' through a abort final write, close, expiry and foreign recovery 39ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_unverified' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 43ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'exit_unverified' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 36ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'integrity_quarantined' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 32ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'integrity_quarantined' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 40ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'integrity_quarantined' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 33ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'integrity_quarantined' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 39ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'integrity_quarantined' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 48ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'integrity_quarantined' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 34ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'integrity_quarantined' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 44ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'integrity_quarantined' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 43ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'integrity_operator_controlled' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 36ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'integrity_operator_controlled' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 31ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'integrity_operator_controlled' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 33ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'integrity_operator_controlled' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 34ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'integrity_operator_controlled' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 37ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'integrity_operator_controlled' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 35ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'integrity_operator_controlled' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 33ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'integrity_operator_controlled' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 40ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'occurrence_required' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 27ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'occurrence_required' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 29ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'occurrence_required' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 25ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'occurrence_required' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 34ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'occurrence_required' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 40ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'occurrence_required' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 33ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'occurrence_required' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 36ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'occurrence_required' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 37ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'unknown_future_reason' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 31ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'unknown_future_reason' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 32ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'unknown_future_reason' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 27ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'unknown_future_reason' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 29ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'unknown_future_reason' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 38ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'unknown_future_reason' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 44ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'unknown_future_reason' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 39ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'unknown_future_reason' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 37ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'invalid_occurrence' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 30ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'invalid_occurrence' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 33ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'invalid_occurrence' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 41ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'invalid_occurrence' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 32ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'invalid_occurrence' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 38ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'invalid_occurrence' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 31ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'invalid_occurrence' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 37ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'invalid_occurrence' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 39ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'occurrence_collision' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 26ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'occurrence_collision' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 29ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'occurrence_collision' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 25ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'occurrence_collision' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 32ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'occurrence_collision' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 35ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'occurrence_collision' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 31ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'occurrence_collision' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 36ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'occurrence_collision' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 35ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '401' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 38ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '401' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 34ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '401' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 36ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '401' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 44ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '401' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 44ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '401' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 48ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '401' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 47ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '401' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 50ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '409-unreadable' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 29ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '409-unreadable' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 30ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '409-unreadable' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 29ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '409-unreadable' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 37ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '409-unreadable' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 52ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '409-unreadable' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 37ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '409-unreadable' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 39ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '409-unreadable' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 41ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '422-invalid' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 35ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '422-invalid' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 28ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '422-invalid' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 30ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '422-invalid' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 34ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '422-invalid' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 40ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '422-invalid' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 34ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '422-invalid' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 34ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '422-invalid' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 34ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '200-invalid' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 25ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '200-invalid' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 25ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '200-invalid' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 27ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '200-invalid' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 37ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '200-invalid' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 39ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '200-invalid' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 38ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '200-invalid' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 40ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '200-invalid' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 42ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '500' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 29ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '500' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 31ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '500' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 26ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '500' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 33ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '500' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 42ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '500' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 32ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '500' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 40ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '500' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 37ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '501' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 30ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '501' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 27ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '501' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 31ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '501' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 37ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '501' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 39ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '501' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 37ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '501' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 36ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '501' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 42ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '505' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 30ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '505' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 28ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '505' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 28ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '505' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 29ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '505' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 35ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '505' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 27ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '505' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 35ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '505' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 38ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '599' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 26ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '599' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 29ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '599' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 30ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '599' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 39ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '599' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 40ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '599' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 37ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '599' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 42ms
+ ✓ src/App.exit-matrix.test.tsx > Exit '599' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 42ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'status' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 31ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'status' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 31ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'status' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 27ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'status' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 32ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'status' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 42ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'status' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 31ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'status' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 35ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'status' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 36ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'plain-error' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 28ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'plain-error' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 28ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'plain-error' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 26ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'plain-error' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 36ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'plain-error' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 38ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'plain-error' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 34ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'plain-error' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 40ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'plain-error' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 40ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'dom-error' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 25ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'dom-error' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 26ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'dom-error' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 32ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'dom-error' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 34ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'dom-error' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 37ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'dom-error' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 35ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'dom-error' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 35ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'dom-error' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 39ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'type-error' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 28ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'type-error' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 30ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'type-error' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 31ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'type-error' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 37ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'type-error' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 39ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'type-error' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 35ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'type-error' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 38ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'type-error' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 38ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'mark-failed' / 'S' preserves the exact terminal fact or explicit page-loss uncertainty 30ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'mark-failed' / 'F-throw' preserves the exact terminal fact or explicit page-loss uncertainty 26ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'mark-failed' / 'F-abort' preserves the exact terminal fact or explicit page-loss uncertainty 28ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'mark-failed' / 'C' preserves the exact terminal fact or explicit page-loss uncertainty 34ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'mark-failed' / 'T' preserves the exact terminal fact or explicit page-loss uncertainty 41ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'mark-failed' / 'V' preserves the exact terminal fact or explicit page-loss uncertainty 40ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'mark-failed' / 'P-committed' preserves the exact terminal fact or explicit page-loss uncertainty 41ms
+ ✓ src/App.exit-matrix.test.tsx > Exit 'mark-failed' / 'P-uncommitted' preserves the exact terminal fact or explicit page-loss uncertainty 43ms
+
+ Test Files  12 passed (12)
+      Tests  593 passed (593)
+   Start at  11:20:25
+   Duration  11.38s (transform 2.67s, setup 828ms, import 5.28s, tests 28.32s, environment 11.56s)
+
+----- output ends -----
+end_utc: 2026-10-20T15:20:36Z
+exit_code: 0

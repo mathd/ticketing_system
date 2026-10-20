@@ -1,0 +1,1 @@
+f2aa371863bc826671997ef54130408c40d7bac1dbd051c985050ddfb406a4eb  web/scanner/src/scan-result.ts

@@ -1,0 +1,8 @@
+label: lint-changed-files-explicit
+cwd: /home/mathieu/sources/ticketing_system.TKT-552-entry-copy
+command: pnpm --filter scanner exec oxlint --deny-warnings src/scan-result.ts src/scan-result.test.ts src/App.test.tsx src/App.entry.test.tsx src/App.safety.test.tsx
+start_utc: 2026-10-20T15:17:50Z
+----- output begins -----
+----- output ends -----
+end_utc: 2026-10-20T15:17:51Z
+exit_code: 0

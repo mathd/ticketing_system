@@ -1,0 +1,13 @@
+diff --git a/web/scanner/src/scan-result.ts b/web/scanner/src/scan-result.ts
+index e521c62d..55fbde49 100644
+--- a/web/scanner/src/scan-result.ts
++++ b/web/scanner/src/scan-result.ts
+@@ -32,7 +32,7 @@ function presentEntry(result: EntryResult): ResultPresentation {
+       if (result.reason === 'exit_required') return refused('Rejected',
+         'Do not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.',
+         'Reason: exit_required.')
+-      if (result.reason === 'entry_limit_reached') return refused('Rejected', 'Do not admit. No entries remain on this pass.', 'Reason: entry_limit_reached.')
++      if (result.reason === 'entry_limit_reached') return refused('Rejected', 'Do not admit. No entries remain on this pass.')
+       return refused('Rejected', result.reason === 'already_redeemed'
+       ? result.originalScanAt ? `Already redeemed at ${readableTime(result.originalScanAt)}.` : 'Already redeemed.'
+       : 'Credential is invalid or cannot be redeemed.')

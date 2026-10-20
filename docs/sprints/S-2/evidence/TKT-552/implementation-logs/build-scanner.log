@@ -1,0 +1,18 @@
+label: build-scanner
+cwd: /home/mathieu/sources/ticketing_system.TKT-552-entry-copy
+command: pnpm --filter scanner build
+start_utc: 2026-10-20T15:17:33Z
+----- output begins -----
+$ tsc -b && vite build
+vite v8.2.1 building client environment for production...
+[2Ktransforming...✓ 31 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.50 kB │ gzip:  0.31 kB
+dist/assets/index-7nOgmnhB.css    1.27 kB │ gzip:  0.57 kB
+dist/assets/index-CI6VUCe1.js   257.61 kB │ gzip: 79.73 kB
+
+✓ built in 145ms
+----- output ends -----
+end_utc: 2026-10-20T15:17:34Z
+exit_code: 0

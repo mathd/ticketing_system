@@ -1,0 +1,424 @@
+{
+  "completedAt": "2026-10-20T15:27:27.875745+00:00",
+  "head": "661bf5fb5cf58d1753643f9000e4475163a0e845",
+  "sourceSha256": "f2aa371863bc826671997ef54130408c40d7bac1dbd051c985050ddfb406a4eb",
+  "mutantsKilled": 4,
+  "eachKilledBy": [
+    "exact presenter assertion",
+    "submitted App409 paragraph assertion"
+  ],
+  "restoredRuns": 8,
+  "testCounts": [
+    1865,
+    1865,
+    1865,
+    1865,
+    1865,
+    1865,
+    1865,
+    1865
+  ],
+  "records": [
+    {
+      "label": "remove-exit-required-branch",
+      "cwd": "/home/mathieu/sources/ticketing_system.TKT-552-entry-copy",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "exec",
+        "vitest",
+        "run",
+        "src/scan-result.test.ts",
+        "src/App.test.tsx",
+        "--reporter=verbose",
+        "--reporter=json",
+        "--outputFile.json=/tmp/sdlc-S-2/TKT-552-primary-verification/remove-exit-required-branch.vitest.json"
+      ],
+      "startedAt": "2026-10-20T15:24:20.689239+00:00",
+      "endedAt": "2026-10-20T15:24:22.791334+00:00",
+      "seconds": 2.1021004479844123,
+      "exit": 1,
+      "head": "661bf5fb5cf58d1753643f9000e4475163a0e845",
+      "sourceSha256": "748abb117412e1c43100478ea809bb67bf45a4cc59cadd39c8f36728dbc9b02a",
+      "logSha256": "a27a638fd8f8612a97371c533c3920f8ffa39df31662e34f470355da3dcf6fcc",
+      "tests": 55,
+      "passed": 53,
+      "failed": 2,
+      "failedAssertions": [
+        {
+          "file": "web/scanner/src/App.test.tsx",
+          "title": "App submits a 409 'exit_required' denial and shows its complete Entry instruction",
+          "messageFirstLine": "AssertionError: expected [ Array(1) ] to deeply equal [ \u2026(2) ]"
+        },
+        {
+          "file": "web/scanner/src/scan-result.test.ts",
+          "title": "renders the complete Entry instruction for exit_required with its Reason line",
+          "messageFirstLine": "AssertionError: expected { heading: 'Rejected', \u2026(2) } to deeply equal { heading: 'Rejected', \u2026(2) }"
+        }
+      ]
+    },
+    {
+      "label": "remove-entry-limit-branch",
+      "cwd": "/home/mathieu/sources/ticketing_system.TKT-552-entry-copy",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "exec",
+        "vitest",
+        "run",
+        "src/scan-result.test.ts",
+        "src/App.test.tsx",
+        "--reporter=verbose",
+        "--reporter=json",
+        "--outputFile.json=/tmp/sdlc-S-2/TKT-552-primary-verification/remove-entry-limit-branch.vitest.json"
+      ],
+      "startedAt": "2026-10-20T15:24:22.800941+00:00",
+      "endedAt": "2026-10-20T15:24:24.921476+00:00",
+      "seconds": 2.1205442429636605,
+      "exit": 1,
+      "head": "661bf5fb5cf58d1753643f9000e4475163a0e845",
+      "sourceSha256": "c09763d0276ef30fd26d6d1e3f0996eda939a27ad921b721d02baa74a5f0b5fe",
+      "logSha256": "8b849b603ea97b16633daccf3865ede556db055a4b3234a3dd6bf0d200fdf891",
+      "tests": 55,
+      "passed": 53,
+      "failed": 2,
+      "failedAssertions": [
+        {
+          "file": "web/scanner/src/App.test.tsx",
+          "title": "App submits a 409 'entry_limit_reached' denial and shows its complete Entry instruction",
+          "messageFirstLine": "AssertionError: expected [ Array(1) ] to deeply equal [ \u2026(2) ]"
+        },
+        {
+          "file": "web/scanner/src/scan-result.test.ts",
+          "title": "renders the complete Entry instruction for entry_limit_reached with its Reason line",
+          "messageFirstLine": "AssertionError: expected { heading: 'Rejected', \u2026(2) } to deeply equal { heading: 'Rejected', \u2026(2) }"
+        }
+      ]
+    },
+    {
+      "label": "remove-exit-required-reason",
+      "cwd": "/home/mathieu/sources/ticketing_system.TKT-552-entry-copy",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "exec",
+        "vitest",
+        "run",
+        "src/scan-result.test.ts",
+        "src/App.test.tsx",
+        "--reporter=verbose",
+        "--reporter=json",
+        "--outputFile.json=/tmp/sdlc-S-2/TKT-552-primary-verification/remove-exit-required-reason.vitest.json"
+      ],
+      "startedAt": "2026-10-20T15:24:24.931089+00:00",
+      "endedAt": "2026-10-20T15:24:27.192993+00:00",
+      "seconds": 2.261910180968698,
+      "exit": 1,
+      "head": "661bf5fb5cf58d1753643f9000e4475163a0e845",
+      "sourceSha256": "0c034d8875072837152d4f7d3a69c105e5d595e83ce06dd2ae1d59cd76fadf30",
+      "logSha256": "78bb3724d26281eabbac3abcba79d7e7276ee0b0f7f833247b99231742c1e5e1",
+      "tests": 55,
+      "passed": 53,
+      "failed": 2,
+      "failedAssertions": [
+        {
+          "file": "web/scanner/src/App.test.tsx",
+          "title": "App submits a 409 'exit_required' denial and shows its complete Entry instruction",
+          "messageFirstLine": "AssertionError: expected [ Array(1) ] to deeply equal [ \u2026(2) ]"
+        },
+        {
+          "file": "web/scanner/src/scan-result.test.ts",
+          "title": "renders the complete Entry instruction for exit_required with its Reason line",
+          "messageFirstLine": "AssertionError: expected { heading: 'Rejected', \u2026(2) } to deeply equal { heading: 'Rejected', \u2026(2) }"
+        }
+      ]
+    },
+    {
+      "label": "remove-entry-limit-reason",
+      "cwd": "/home/mathieu/sources/ticketing_system.TKT-552-entry-copy",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "exec",
+        "vitest",
+        "run",
+        "src/scan-result.test.ts",
+        "src/App.test.tsx",
+        "--reporter=verbose",
+        "--reporter=json",
+        "--outputFile.json=/tmp/sdlc-S-2/TKT-552-primary-verification/remove-entry-limit-reason.vitest.json"
+      ],
+      "startedAt": "2026-10-20T15:24:27.202597+00:00",
+      "endedAt": "2026-10-20T15:24:29.387579+00:00",
+      "seconds": 2.184989318018779,
+      "exit": 1,
+      "head": "661bf5fb5cf58d1753643f9000e4475163a0e845",
+      "sourceSha256": "fd3c5d059d85ba76a21d044e567f83871ccfa80f412f503d237d43720c58d802",
+      "logSha256": "843e38de30223ddd6f3913255ea595bb03c06f505089f7efce172892c6baa776",
+      "tests": 55,
+      "passed": 53,
+      "failed": 2,
+      "failedAssertions": [
+        {
+          "file": "web/scanner/src/App.test.tsx",
+          "title": "App submits a 409 'entry_limit_reached' denial and shows its complete Entry instruction",
+          "messageFirstLine": "AssertionError: expected [ Array(1) ] to deeply equal [ \u2026(2) ]"
+        },
+        {
+          "file": "web/scanner/src/scan-result.test.ts",
+          "title": "renders the complete Entry instruction for entry_limit_reached with its Reason line",
+          "messageFirstLine": "AssertionError: expected { heading: 'Rejected', \u2026(2) } to deeply equal { heading: 'Rejected', \u2026(2) }"
+        }
+      ]
+    },
+    {
+      "label": "restored-scanner-1",
+      "cwd": "/home/mathieu/sources/ticketing_system.TKT-552-entry-copy",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "exec",
+        "vitest",
+        "run",
+        "--reporter=verbose",
+        "--reporter=json",
+        "--outputFile.json=/tmp/sdlc-S-2/TKT-552-primary-verification/restored-scanner-1.vitest.json"
+      ],
+      "startedAt": "2026-10-20T15:24:29.395175+00:00",
+      "endedAt": "2026-10-20T15:24:51.778712+00:00",
+      "seconds": 22.351606927986722,
+      "exit": 0,
+      "head": "661bf5fb5cf58d1753643f9000e4475163a0e845",
+      "sourceSha256": "f2aa371863bc826671997ef54130408c40d7bac1dbd051c985050ddfb406a4eb",
+      "logSha256": "7092b97458e04a0aafaa79997bb4fc479d65556e7d855aa96ad945ee2837235b",
+      "tests": 1865,
+      "passed": 1865,
+      "failed": 0,
+      "failedAssertions": []
+    },
+    {
+      "label": "restored-scanner-2",
+      "cwd": "/home/mathieu/sources/ticketing_system.TKT-552-entry-copy",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "exec",
+        "vitest",
+        "run",
+        "--reporter=verbose",
+        "--reporter=json",
+        "--outputFile.json=/tmp/sdlc-S-2/TKT-552-primary-verification/restored-scanner-2.vitest.json"
+      ],
+      "startedAt": "2026-10-20T15:24:51.785170+00:00",
+      "endedAt": "2026-10-20T15:25:13.852658+00:00",
+      "seconds": 22.035576938011218,
+      "exit": 0,
+      "head": "661bf5fb5cf58d1753643f9000e4475163a0e845",
+      "sourceSha256": "f2aa371863bc826671997ef54130408c40d7bac1dbd051c985050ddfb406a4eb",
+      "logSha256": "780965c05b5458e6f08189df84358ab2c4bccbdf06928d837f37f2a2e17aae3b",
+      "tests": 1865,
+      "passed": 1865,
+      "failed": 0,
+      "failedAssertions": []
+    },
+    {
+      "label": "restored-scanner-3",
+      "cwd": "/home/mathieu/sources/ticketing_system.TKT-552-entry-copy",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "exec",
+        "vitest",
+        "run",
+        "--reporter=verbose",
+        "--reporter=json",
+        "--outputFile.json=/tmp/sdlc-S-2/TKT-552-primary-verification/restored-scanner-3.vitest.json"
+      ],
+      "startedAt": "2026-10-20T15:25:13.859026+00:00",
+      "endedAt": "2026-10-20T15:25:35.981182+00:00",
+      "seconds": 22.090382456954103,
+      "exit": 0,
+      "head": "661bf5fb5cf58d1753643f9000e4475163a0e845",
+      "sourceSha256": "f2aa371863bc826671997ef54130408c40d7bac1dbd051c985050ddfb406a4eb",
+      "logSha256": "ae658cfa57f390594207d04c29cbc87c9a42a652ac3cfaad7b37ffd9abd74ab5",
+      "tests": 1865,
+      "passed": 1865,
+      "failed": 0,
+      "failedAssertions": []
+    },
+    {
+      "label": "restored-scanner-4",
+      "cwd": "/home/mathieu/sources/ticketing_system.TKT-552-entry-copy",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "exec",
+        "vitest",
+        "run",
+        "--reporter=verbose",
+        "--reporter=json",
+        "--outputFile.json=/tmp/sdlc-S-2/TKT-552-primary-verification/restored-scanner-4.vitest.json"
+      ],
+      "startedAt": "2026-10-20T15:25:35.987264+00:00",
+      "endedAt": "2026-10-20T15:25:57.999311+00:00",
+      "seconds": 22.012049716024194,
+      "exit": 0,
+      "head": "661bf5fb5cf58d1753643f9000e4475163a0e845",
+      "sourceSha256": "f2aa371863bc826671997ef54130408c40d7bac1dbd051c985050ddfb406a4eb",
+      "logSha256": "de7381f31898090dfcf66b51c02f532faadabbf5de62707a1ba2f436b5be87f6",
+      "tests": 1865,
+      "passed": 1865,
+      "failed": 0,
+      "failedAssertions": []
+    },
+    {
+      "label": "restored-scanner-5",
+      "cwd": "/home/mathieu/sources/ticketing_system.TKT-552-entry-copy",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "exec",
+        "vitest",
+        "run",
+        "--reporter=verbose",
+        "--reporter=json",
+        "--outputFile.json=/tmp/sdlc-S-2/TKT-552-primary-verification/restored-scanner-5.vitest.json"
+      ],
+      "startedAt": "2026-10-20T15:25:58.004856+00:00",
+      "endedAt": "2026-10-20T15:26:20.032390+00:00",
+      "seconds": 21.99831513297977,
+      "exit": 0,
+      "head": "661bf5fb5cf58d1753643f9000e4475163a0e845",
+      "sourceSha256": "f2aa371863bc826671997ef54130408c40d7bac1dbd051c985050ddfb406a4eb",
+      "logSha256": "dfe4a6d0de6850a4082ccfde91cefe6722fa7ac1ea31fa8f12985ba4273f1b52",
+      "tests": 1865,
+      "passed": 1865,
+      "failed": 0,
+      "failedAssertions": []
+    },
+    {
+      "label": "restored-scanner-6",
+      "cwd": "/home/mathieu/sources/ticketing_system.TKT-552-entry-copy",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "exec",
+        "vitest",
+        "run",
+        "--reporter=verbose",
+        "--reporter=json",
+        "--outputFile.json=/tmp/sdlc-S-2/TKT-552-primary-verification/restored-scanner-6.vitest.json"
+      ],
+      "startedAt": "2026-10-20T15:26:20.038170+00:00",
+      "endedAt": "2026-10-20T15:26:42.321564+00:00",
+      "seconds": 22.284754515974782,
+      "exit": 0,
+      "head": "661bf5fb5cf58d1753643f9000e4475163a0e845",
+      "sourceSha256": "f2aa371863bc826671997ef54130408c40d7bac1dbd051c985050ddfb406a4eb",
+      "logSha256": "428af7b50a0d2ee3a128ce5316b878e938b6b856ba4f4977432bc5c12eb4266a",
+      "tests": 1865,
+      "passed": 1865,
+      "failed": 0,
+      "failedAssertions": []
+    },
+    {
+      "label": "restored-scanner-7",
+      "cwd": "/home/mathieu/sources/ticketing_system.TKT-552-entry-copy",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "exec",
+        "vitest",
+        "run",
+        "--reporter=verbose",
+        "--reporter=json",
+        "--outputFile.json=/tmp/sdlc-S-2/TKT-552-primary-verification/restored-scanner-7.vitest.json"
+      ],
+      "startedAt": "2026-10-20T15:26:42.328702+00:00",
+      "endedAt": "2026-10-20T15:27:04.257292+00:00",
+      "seconds": 21.92015558097046,
+      "exit": 0,
+      "head": "661bf5fb5cf58d1753643f9000e4475163a0e845",
+      "sourceSha256": "f2aa371863bc826671997ef54130408c40d7bac1dbd051c985050ddfb406a4eb",
+      "logSha256": "84486f0bb8a0c516059aa0ee1274e1d1d2e0775edcdfc3f30fdcf817394b4aae",
+      "tests": 1865,
+      "passed": 1865,
+      "failed": 0,
+      "failedAssertions": []
+    },
+    {
+      "label": "restored-scanner-8",
+      "cwd": "/home/mathieu/sources/ticketing_system.TKT-552-entry-copy",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "exec",
+        "vitest",
+        "run",
+        "--reporter=verbose",
+        "--reporter=json",
+        "--outputFile.json=/tmp/sdlc-S-2/TKT-552-primary-verification/restored-scanner-8.vitest.json"
+      ],
+      "startedAt": "2026-10-20T15:27:04.263701+00:00",
+      "endedAt": "2026-10-20T15:27:26.509478+00:00",
+      "seconds": 22.245778347016312,
+      "exit": 0,
+      "head": "661bf5fb5cf58d1753643f9000e4475163a0e845",
+      "sourceSha256": "f2aa371863bc826671997ef54130408c40d7bac1dbd051c985050ddfb406a4eb",
+      "logSha256": "717314dcb75390a32d4f6a845dedf51fcaaf76badae8319fa7f611fd52804bac",
+      "tests": 1865,
+      "passed": 1865,
+      "failed": 0,
+      "failedAssertions": []
+    },
+    {
+      "label": "scanner-lint",
+      "cwd": "/home/mathieu/sources/ticketing_system.TKT-552-entry-copy",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "lint"
+      ],
+      "startedAt": "2026-10-20T15:27:26.515148+00:00",
+      "endedAt": "2026-10-20T15:27:26.969658+00:00",
+      "seconds": 0.4545144390431233,
+      "exit": 0,
+      "head": "661bf5fb5cf58d1753643f9000e4475163a0e845",
+      "sourceSha256": "f2aa371863bc826671997ef54130408c40d7bac1dbd051c985050ddfb406a4eb",
+      "logSha256": "d4a09b61560776ae8feee6a490738c8d5748a904be5cbbc1d00a2d92a4587484"
+    },
+    {
+      "label": "scanner-build",
+      "cwd": "/home/mathieu/sources/ticketing_system.TKT-552-entry-copy",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "build"
+      ],
+      "startedAt": "2026-10-20T15:27:26.970155+00:00",
+      "endedAt": "2026-10-20T15:27:27.869552+00:00",
+      "seconds": 0.8994055789662525,
+      "exit": 0,
+      "head": "661bf5fb5cf58d1753643f9000e4475163a0e845",
+      "sourceSha256": "f2aa371863bc826671997ef54130408c40d7bac1dbd051c985050ddfb406a4eb",
+      "logSha256": "d370543b73c9281e0e8fdbe9336959ca5e0ddb5b0dee85db667d7de4c38179ce"
+    }
+  ],
+  "rawVitestReports": "Full machine reports remain in /tmp/sdlc-S-2/TKT-552-primary-verification; raw verbose outputs and compact results are committed here.",
+  "implementationEvidence": "red-v2 uses the final test bytes against the original presenter. The first request stub did not preserve routing; red-v1 is superseded, not removed. Green-v2 and primary repeats use the corrected wrapper. The safety red cases stop at the first text assertion; their full storage/close/expiry/recovery/sync/repair sequence executes in green.",
+  "browserBoundary": "No changed write form, control or contract. No host Chrome proof of the new copy is claimed. TKT-563 runs combined host-Chrome journeys; the existing journey checks the rejection heading and HTTP reason."
+}

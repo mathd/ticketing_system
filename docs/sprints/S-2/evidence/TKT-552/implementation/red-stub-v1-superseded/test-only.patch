@@ -1,0 +1,108 @@
+diff --git a/web/scanner/src/App.entry.test.tsx b/web/scanner/src/App.entry.test.tsx
+index 94af09bc..b12c8af8 100644
+--- a/web/scanner/src/App.entry.test.tsx
++++ b/web/scanner/src/App.entry.test.tsx
+@@ -91,7 +91,10 @@ it('publishes an accepted result through the real mark and keeps it stable on re
+ it.each(['already_redeemed', 'entry_limit_reached', 'exit_required', 'not_inside', 'exit_not_applicable', 'invalid_credential', 'revoked', 'refunded', 'exchanged', 'exit_unverified', 'integrity_quarantined', 'integrity_operator_controlled', 'occurrence_required', 'unknown_future_reason', 'invalid_occurrence', 'occurrence_collision'])('keeps the exact denial reason %s and the complete current Entry instruction', async (reason) => {
+   scanReply = async () => new Response(JSON.stringify({ decision: 'rejected', reason }), { status: 422 })
+   render(<App />); await scan()
+-  const expected = reason === 'already_redeemed' ? 'RejectedAlready redeemed.' : 'RejectedCredential is invalid or cannot be redeemed.'
++  const expected = reason === 'already_redeemed' ? 'RejectedAlready redeemed.'
++    : reason === 'exit_required' ? 'RejectedDo not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.Reason: exit_required.'
++      : reason === 'entry_limit_reached' ? 'RejectedDo not admit. No entries remain on this pass.Reason: entry_limit_reached.'
++        : 'RejectedCredential is invalid or cannot be redeemed.'
+   await waitFor(() => expect(screen.getByRole('alert', { name: 'Scan result' }).textContent).toBe(expected))
+   await waitFor(async () => expect(await rawGet(dbName, STORE.occurrences, scans[0].occurrence_id as string)).toMatchObject({ state: 'RESOLVED', localOutcome: { family: 'terminal', cause: 'denied', status: 422, reason } }))
+   expect((await page.store().queued()).entries).toEqual([])
+diff --git a/web/scanner/src/App.safety.test.tsx b/web/scanner/src/App.safety.test.tsx
+index 29bd33d5..a9a12da5 100644
+--- a/web/scanner/src/App.safety.test.tsx
++++ b/web/scanner/src/App.safety.test.tsx
+@@ -25,9 +25,11 @@ let batches: Array<Record<string, unknown>>[]
+ let reply: () => Promise<Response>
+ const reasons = ['already_redeemed', 'entry_limit_reached', 'exit_required', 'not_inside', 'exit_not_applicable', 'invalid_credential', 'revoked', 'refunded', 'exchanged', 'exit_unverified', 'integrity_quarantined', 'integrity_operator_controlled', 'occurrence_required', 'future_reason', 'invalid_occurrence', 'occurrence_collision']
+ const generic = 'RejectedCredential is invalid or cannot be redeemed.'
++const exitRequired = 'RejectedDo not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.Reason: exit_required.'
++const entryLimit = 'RejectedDo not admit. No entries remain on this pass.Reason: entry_limit_reached.'
+ const unconfirmed = 'Operator requiredScan response unconfirmed. Scanner did not open. Access may have recorded this scan. Get an operator; do not admit from this result.'
+ const profiles: Array<{ name: string; status?: number; body?: unknown; error?: Error; text: string; outcome: Partial<TerminalOutcome> }> = [
+-  ...reasons.map((reason) => ({ name: `denial ${reason}`, status: 422, body: { decision: 'rejected', reason }, text: reason === 'already_redeemed' ? 'RejectedAlready redeemed.' : generic, outcome: { cause: 'denied' as const, status: 422 as const, reason } })),
++  ...reasons.map((reason) => ({ name: `denial ${reason}`, status: 422, body: { decision: 'rejected', reason }, text: reason === 'already_redeemed' ? 'RejectedAlready redeemed.' : reason === 'exit_required' ? exitRequired : reason === 'entry_limit_reached' ? entryLimit : generic, outcome: { cause: 'denied' as const, status: 422 as const, reason } })),
+   ...[409, 422].map((status) => ({ name: `unknown denial ${status}`, status, body: {}, text: 'RejectedAccess refused this scan; reason unavailable. Do not admit', outcome: { cause: 'denied' as const, status: status as 409 | 422, reason: null } })),
+   { name: 'auth refusal', status: 401, text: 'Pair this deviceThis attempt was not authorized. Do not admit from this result.Pair this device and scan the ticket again.', outcome: { cause: 'auth_refused' } },
+   ...[500, 501, 505, 599].map((status) => ({ name: `server ${status}`, status, text: 'Operator requiredOutcome unknown. Do not admit. Contact an operator.', outcome: { cause: 'unconfirmed_server_error' as const, status } })),
+diff --git a/web/scanner/src/App.test.tsx b/web/scanner/src/App.test.tsx
+index 424b801f..4a932004 100644
+--- a/web/scanner/src/App.test.tsx
++++ b/web/scanner/src/App.test.tsx
+@@ -5,6 +5,7 @@ import type { StorageController } from './occurrence-readiness'
+ import { createTestPage, destroyAllPages, type TestPage } from './test/page-fixture'
+ import { rawGetAll } from './test/raw-db'
+ import { STORE } from './occurrence-store'
++import { ACCEPT_INSTRUCTION, OFFLINE_INSTRUCTION } from './scan-result'
+ const runtime = vi.hoisted(() => ({ storage: null as StorageController | null }))
+ vi.mock('./occurrence-readiness', async (load) => {
+   const actual = await load<typeof import('./occurrence-readiness')>()
+@@ -100,6 +101,38 @@ describe('App', () => {
+     expect(await screen.findByRole('heading', { name: 'Rejected' })).toBeDefined()
+   })
+ 
++  // routedFetch passes no Request to its scan callback, so these cases capture the real submitted Request.
++  it.each([
++    {
++      reason: 'exit_required',
++      lines: ['Do not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.', 'Reason: exit_required.'],
++      text: 'RejectedDo not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.Reason: exit_required.',
++    },
++    {
++      reason: 'entry_limit_reached',
++      lines: ['Do not admit. No entries remain on this pass.', 'Reason: entry_limit_reached.'],
++      text: 'RejectedDo not admit. No entries remain on this pass.Reason: entry_limit_reached.',
++    },
++  ])('submits a 409 $reason denial and shows its complete Entry instruction', async ({ reason, lines, text }) => {
++    const sent: Record<string, unknown>[] = []
++    vi.stubGlobal('fetch', vi.fn(async (input: Request | string) => {
++      if (typeof input === 'string' || input.url.includes('voided-tickets')) return new Response(JSON.stringify({ ticket_ids: [], next_cursor: null }), { status: 200 })
++      sent.push(await input.clone().json())
++      return new Response(JSON.stringify({ decision: 'rejected', reason }), { status: 409 })
++    }))
++    render(<App />)
++    pasteCredential('signed-ticket')
++    await screen.findByRole('heading', { name: 'Rejected' })
++    expect(sent).toHaveLength(1)
++    expect(sent[0]).toMatchObject({ direction: 'entry', qr_payload: 'signed-ticket' })
++    await waitFor(async () => expect(await rawGetAll(dbName, STORE.occurrences)).toMatchObject([{ state: 'RESOLVED', localOutcome: { family: 'terminal', cause: 'denied', status: 409, reason } }]))
++    const alert = screen.getByRole('alert', { name: 'Scan result' })
++    expect(Array.from(alert.querySelectorAll('p'), (paragraph) => paragraph.textContent)).toEqual(lines)
++    expect(alert.textContent).toBe(text)
++    expect(screen.queryByText(ACCEPT_INSTRUCTION)).toBeNull()
++    expect(screen.queryByText(OFFLINE_INSTRUCTION)).toBeNull()
++  })
++
+   it('keeps the paste path available when camera detection is unavailable', async () => {
+     render(<App />)
+     fireEvent.click(screen.getByRole('button', { name: 'Use camera' }))
+diff --git a/web/scanner/src/scan-result.test.ts b/web/scanner/src/scan-result.test.ts
+index 22cc24c1..38d28b79 100644
+--- a/web/scanner/src/scan-result.test.ts
++++ b/web/scanner/src/scan-result.test.ts
+@@ -31,11 +31,18 @@ const cases: Array<[EntryResult, string | undefined, string[]]> = [
+ it.each(cases)('renders the complete %j result', (result, heading, lines) => {
+   expect(presentResult(result, { direction: 'entry', requestMayHaveBeenSent: true })).toMatchObject({ heading, lines })
+ })
+-it.each(['entry_limit_reached', 'exit_required', 'not_inside', 'exit_not_applicable', 'invalid_credential',
++it.each(['not_inside', 'exit_not_applicable', 'invalid_credential',
+   'revoked', 'refunded', 'exchanged', 'exit_unverified', 'integrity_quarantined', 'integrity_operator_controlled',
+   'occurrence_required', 'unknown_future_reason', 'invalid_occurrence', 'occurrence_collision'])('keeps the scoped generic Entry copy for %s', (reason) => {
+   expect(presentResult({ kind: 'rejected', reason }, { direction: 'entry', requestMayHaveBeenSent: true })).toMatchObject({ heading: 'Rejected', lines: ['Credential is invalid or cannot be redeemed.'] })
+ })
++const ownEntryInstructions: Array<[string, string[]]> = [
++  ['exit_required', ['Do not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.', 'Reason: exit_required.']],
++  ['entry_limit_reached', ['Do not admit. No entries remain on this pass.', 'Reason: entry_limit_reached.']],
++]
++it.each(ownEntryInstructions)('renders the complete Entry instruction for %s with its Reason line', (reason, lines) => {
++  expect(presentResult({ kind: 'rejected', reason }, { direction: 'entry', requestMayHaveBeenSent: true })).toEqual({ heading: 'Rejected', tone: 'rejected', lines })
++})
+ it('uses validated server times without replacing them with current device time', () => {
+   const scannedAt = '2026-10-18T09:00:01.456Z'
+   const localized = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' }).format(new Date(scannedAt))

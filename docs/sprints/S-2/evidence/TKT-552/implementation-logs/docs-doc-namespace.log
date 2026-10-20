@@ -1,0 +1,20 @@
+label: docs-doc-namespace
+cwd: /home/mathieu/sources/ticketing_system.TKT-552-entry-copy
+command: env NO_COLOR=1 pnpm --filter scanner exec vitest run --reporter=verbose test/doc-namespace.test.ts
+start_utc: 2026-10-20T15:17:31Z
+----- output begins -----
+
+ RUN  v4.1.10 /home/mathieu/sources/ticketing_system.TKT-552-entry-copy/web/scanner
+
+ ✓ test/doc-namespace.test.ts > DOC-01 keeps decision and review identifiers out of the operator guide 2ms
+ ✓ test/doc-namespace.test.ts > DOC-01 qualifies every decision identifier added to an ADR 8ms
+ ✓ test/doc-namespace.test.ts > DOC-01 states the Entry time bounds and retains the page-loss warning 1ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  11:17:32
+   Duration  621ms (transform 28ms, setup 36ms, import 21ms, tests 12ms, environment 451ms)
+
+----- output ends -----
+end_utc: 2026-10-20T15:17:32Z
+exit_code: 0

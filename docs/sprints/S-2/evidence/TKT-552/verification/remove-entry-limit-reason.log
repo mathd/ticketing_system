@@ -1,0 +1,119 @@
+
+ RUN  v4.1.10 /home/mathieu/sources/ticketing_system.TKT-552-entry-copy/web/scanner
+
+ ✓ src/scan-result.test.ts > fixes the admission instructions independently of the renderer 2ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"stopped-before-send"} result 1ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"sent-unconfirmed"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"accepted-too-late"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"revocation-audit-not-saved"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"duplicate"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"mark-failed"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"auth-refused"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"denial-unreadable"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"queued"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"queued","status":503} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"storage-unready"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"mint-unconfirmed"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"cancelled","requestMayHaveBeenSent":false} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"cancelled","requestMayHaveBeenSent":true} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"body-unconfirmed"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"status-unconfirmed"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"server-error"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"local-failure"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"revocation-refused"} result 0ms
+ ✓ src/scan-result.test.ts > renders the complete {"kind":"rejected","reason":"already_redeemed"} result 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for not_inside 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for exit_not_applicable 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for invalid_credential 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for revoked 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for refunded 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for exchanged 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for exit_unverified 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for integrity_quarantined 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for integrity_operator_controlled 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for occurrence_required 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for unknown_future_reason 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for invalid_occurrence 0ms
+ ✓ src/scan-result.test.ts > keeps the scoped generic Entry copy for occurrence_collision 0ms
+ ✓ src/scan-result.test.ts > renders the complete Entry instruction for exit_required with its Reason line 0ms
+ × src/scan-result.test.ts > renders the complete Entry instruction for entry_limit_reached with its Reason line 7ms
+   → expected { heading: 'Rejected', …(2) } to deeply equal { heading: 'Rejected', …(2) }
+ ✓ src/scan-result.test.ts > uses validated server times without replacing them with current device time 11ms
+ ✓ src/App.test.tsx > App > renders the scanner and accepts a pasted credential 171ms
+ ✓ src/App.test.tsx > App > shows the original scan time for a duplicate 27ms
+ ✓ src/App.test.tsx > App > rejects an invalid credential 30ms
+ ✓ src/App.test.tsx > App > submits a 409 'exit_required' denial and shows its complete Entry instruction 42ms
+ × src/App.test.tsx > App > submits a 409 'entry_limit_reached' denial and shows its complete Entry instruction 37ms
+   → expected [ Array(1) ] to deeply equal [ …(2) ]
+ ✓ src/App.test.tsx > App > keeps the paste path available when camera detection is unavailable 15ms
+ ✓ src/App.test.tsx > App > stops a failed camera loop and restores the paste path 64ms
+ ✓ src/App.test.tsx > App > stops a stream that resolves after the scanner unmounts and never attaches it 15ms
+ ✓ src/App.test.tsx > App > does not orphan a stream when camera startup is re-entered before the first resolves 17ms
+ ✓ src/App.test.tsx > App > keeps the active stream when a superseded startup finishes late 16ms
+ ✓ src/App.test.tsx > App > ignores a stale getUserMedia rejection without disturbing the active message 16ms
+ ✓ src/App.test.tsx > App > stops the previous stream when the camera is restarted while already active 28ms
+ ✓ src/App.test.tsx > App > stops the acquired stream when video playback fails 13ms
+ ✓ src/App.test.tsx > App > stops the acquired stream if BarcodeDetector construction throws 13ms
+ ✓ src/App.test.tsx > device pairing > asks to be paired instead of scanning, and never sends a scan unpaired 10ms
+ ✓ src/App.test.tsx > device pairing > pairs, keeps the token across a reload, and sends it on every scan 52ms
+ ✓ src/App.test.tsx > device pairing > clears the refused token and resolves its occurrence without queueing it 25ms
+ ✓ src/App.test.tsx > cancels a held camera detection across auth refusal and pairing B; fresh B detection works 51ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/App.test.tsx > App > submits a 409 'entry_limit_reached' denial and shows its complete Entry instruction
+AssertionError: expected [ Array(1) ] to deeply equal [ …(2) ]
+
+- Expected
++ Received
+
+  [
+    "Do not admit. No entries remain on this pass.",
+-   "Reason: entry_limit_reached.",
+  ]
+
+ ❯ src/App.test.tsx:130:91
+    128|     await waitFor(async () => expect(await rawGetAll(dbName, STORE.occ…
+    129|     const alert = screen.getByRole('alert', { name: 'Scan result' })
+    130|     expect(Array.from(alert.querySelectorAll('p'), (paragraph) => para…
+       |                                                                                           ^
+    131|     expect(alert.textContent).toBe(text)
+    132|     expect(screen.queryByText(ACCEPT_INSTRUCTION)).toBeNull()
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/scan-result.test.ts > renders the complete Entry instruction for entry_limit_reached with its Reason line
+AssertionError: expected { heading: 'Rejected', …(2) } to deeply equal { heading: 'Rejected', …(2) }
+
+- Expected
++ Received
+
+  {
+    "heading": "Rejected",
+    "lines": [
+      "Do not admit. No entries remain on this pass.",
+-     "Reason: entry_limit_reached.",
+    ],
+    "tone": "rejected",
+  }
+
+ ❯ src/scan-result.test.ts:44:109
+     42| ]
+     43| it.each(ownEntryInstructions)('renders the complete Entry instruction …
+     44|   expect(presentResult({ kind: 'rejected', reason }, { direction: 'ent…
+       |                                                                                                             ^
+     45| })
+     46| it('uses validated server times without replacing them with current de…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  2 failed | 53 passed (55)
+   Start at  11:24:27
+   Duration  1.54s (transform 193ms, setup 58ms, import 308ms, tests 673ms, environment 986ms)
+
+JSON report written to /tmp/sdlc-S-2/TKT-552-primary-verification/remove-entry-limit-reason.vitest.json
+undefined
+/home/mathieu/sources/ticketing_system.TKT-552-entry-copy/web/scanner:
+[ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL] Command failed with exit code 1: vitest run src/scan-result.test.ts src/App.test.tsx '--reporter=verbose' '--reporter=json' '--outputFile.json=/tmp/sdlc-S-2/TKT-552-primary-verification/remove-entry-limit-reason.vitest.json'
