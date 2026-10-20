@@ -92,6 +92,9 @@ async function queueMixedBatches(): Promise<SyncFixture> {
   const before = await storedRows() as OccurrenceRecord[]
   expect(before).toHaveLength(105)
   expect(before.every(row => row.state === 'QUEUED')).toBe(true)
+  expect(before[98]).toMatchObject({ direction: 'exit' })
+  expect(before[104]).toMatchObject({ direction: 'exit' })
+  expect(before[99]).toMatchObject({ localDecision: 'revocation_refused' })
   return { before, results }
 }
 
@@ -175,9 +178,11 @@ describe('aggregate reconciliation reporting', () => {
     })
     if (failure === '401') {
       await screen.findByText('This device is not paired. Enter its pairing token to sync the queued scans.', {}, { timeout: BOUND_MS })
+      // D10 pins this stale display, not queue eligibility. See docs/development.md.
       expect(screen.getByText('105 offline scans are still saved on this device and will sync once it is paired.')).toBeDefined()
     } else if (failure === 'write' || failure === 'incompatible') {
       await screen.findByText('Storage is unavailable or incompatible. Keep this page open and retry storage.', {}, { timeout: BOUND_MS })
+      // D10 pins this stale display, not queue eligibility. See docs/development.md.
       expect(screen.getByText(/^105 queued offline scans awaiting sync\./)).toBeDefined()
     } else {
       const cause = failure === 'transport' ? 'No connection' : 'The server answered but the reply could not be read'
@@ -208,6 +213,29 @@ describe('aggregate reconciliation reporting', () => {
     expectRejectionWarnings(fixture, 0)
     expect(await storedRows()).toStrictEqual(expectedMixedRows(fixture, 100))
   }, 15_000)
+
+  it('keeps the final report and rejection warning when an online retry reads an empty queue', async () => {
+    const reconcile = vi.fn((body: ReconcileBody) => Promise.resolve(Response.json({
+      results: body.occurrences.map(row => ({ occurrence_id: row.occurrence_id, result: 'rejected' })),
+    })))
+    stubFetch(reconcile)
+    render(<App />)
+    await queueOneScan('empty-retry-ticket')
+    const before = await storedRows() as OccurrenceRecord[]
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    const note = 'Synced 0 offline scan(s). 1 rejected scan was not recorded.'
+    await screen.findByText(note, {}, { timeout: BOUND_MS })
+    await readsSettled()
+    expect(await page.store().queued()).toStrictEqual({ entries: [], warnings: [] })
+    const reads = queueReads.started
+    await act(async () => { window.dispatchEvent(new Event('online')) })
+    await waitFor(() => expect(queueReads.started).toBeGreaterThan(reads), { timeout: BOUND_MS })
+    await readsSettled()
+    expect(screen.getByText(note)).toBeDefined()
+    expect(screen.getByText(`Reconciliation rejected for ${before[0].occurrenceId}. This result is not recorded.`)).toBeDefined()
+    expect(reconcile).toHaveBeenCalledTimes(1)
+    expect(await storedRows()).toStrictEqual([terminalRow(before[0], 'rejected')])
+  })
 
   it('reports a single rejected result and preserves recorded-only copy on the next successful pass', async () => {
     stubFetch(body => Promise.resolve(Response.json({ results: body.occurrences.map(row => ({ occurrence_id: row.occurrence_id, result: 'rejected' })) })))

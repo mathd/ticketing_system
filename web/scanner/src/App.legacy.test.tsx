@@ -33,7 +33,7 @@ it('keeps completed-batch counts separate from a legacy 422 warning before a lat
   await screen.findByText(/^Sync failed: The server answered.*2 scans are saved/, {}, { timeout: BOUND_MS })
   const partial = 'Completed batches: Synced 0 offline scan(s). 1 rejected scan was not recorded.'
   expect(screen.getByText(partial)).toBeDefined()
-  expect(screen.getAllByRole('alert').slice(0, 3).map(node => node.textContent)).toStrictEqual([
+  expect(screen.getAllByRole('alert').map(node => node.textContent)).toStrictEqual([
     partial, 'Reconciliation rejected for a-valid. This result is not recorded.',
     'Pre-upgrade record b-isolated could not sync. It remains queued and listed in the export.',
   ])

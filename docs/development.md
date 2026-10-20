@@ -1718,8 +1718,11 @@ request, it replaces the previous partial report and individual reconciliation w
 Reconnection or a queued local refusal can start this pass automatically. A coalesced follow-up
 also does so. The new pass can fail without applying any result; the old report is still gone.
 An empty queue read keeps the report. Page loss does not preserve a durable report, and there
-is no acknowledgement list. Counts describe results received by this page whose application
-returned applied, including matching rows another page already retired. Several pages can
+is no acknowledgement list. In the current page, a pairing-token change keeps reconciliation
+reports until the next nonempty paired pass replaces them. The live scan outcome is cleared.
+The retained report describes this device's rows, not the new pairing. Counts describe results
+received by this page whose application returned applied, including matching rows another page
+already retired. Several pages can
 therefore report the same rows. These are per-pass counts, not unique device-wide totals or
 evidence of physical passage. Legacy records that cannot sync remain queued and keep their
 existing warning; those warnings do not count as rejected results.
