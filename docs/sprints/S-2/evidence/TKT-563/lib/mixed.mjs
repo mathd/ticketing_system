@@ -304,7 +304,7 @@ export async function mixedJourney(ctx, mutation = null, evidence = {}) {
         const row = wireRow(label);
         if (!row) return false;
         const keys = Object.keys(row).sort().join(',');
-        return EXPECT[label].refusal ? keys === 'local_decision,occurrence_id,occurred_at,qr_payload' : keys === 'event_type,occurrence_id,occurred_at,qr_payload';
+        return EXPECT[label].refusal ? keys === 'local_decision,occurred_at,occurrence_id,qr_payload' : keys === 'event_type,occurred_at,occurrence_id,qr_payload';
       }),
     );
     for (const label of ['A', 'B', 'C', 'D', 'E', 'F']) {
