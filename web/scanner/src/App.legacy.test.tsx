@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, screen } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
 import App from './App'
 import { renderWithQueue } from './test/render-queued'
 import { seedDatabase, V2_STORES, rawGetAll } from './test/raw-db'
-import { createTestPage, destroyAllPages, mintOn } from './test/page-fixture'
+import { BOUND_MS, createTestPage, destroyAllPages, mintOn } from './test/page-fixture'
 import type { StorageController } from './occurrence-readiness'
 import { STORE } from './occurrence-store'
 const runtime = vi.hoisted(() => ({ storage: null as StorageController | null }))
@@ -11,6 +11,38 @@ vi.mock('./occurrence-readiness', async (load) => ({ ...await load<typeof import
 beforeEach(() => { localStorage.setItem('scanner.device-token','token') })
 afterEach(() => { cleanup(); destroyAllPages(); localStorage.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 const directions = [{}, { direction: undefined }, { direction: null }, { direction: '' }, { direction: 0 }, { direction: false }, { direction: 'entry' }, { direction: 'exit' }]
+it('keeps completed-batch counts separate from a legacy 422 warning before a later failure', async () => {
+  const dbName = `legacy-partial-${crypto.randomUUID()}`
+  const rows = [
+    { occurrenceId: 'a-valid', state: 'QUEUED', qrPayload: 'credential', occurredAt: '2026-10-20T12:00:00.123Z', actuated: false },
+    { occurrenceId: 'b-isolated', state: 'QUEUED', qrPayload: { malformed: 'credential' }, occurredAt: '2026-10-20T12:00:01.123Z', actuated: false },
+    { occurrenceId: 'c-isolated', state: 'QUEUED', qrPayload: { malformed: 'other' }, occurredAt: '2026-10-20T12:00:02.123Z', actuated: false },
+  ]
+  await seedDatabase(dbName, 2, V2_STORES, { occurrences: rows })
+  const page = createTestPage({ dbName }); runtime.storage = page.storage; await page.ready()
+  const sent: string[][] = []
+  vi.stubGlobal('fetch', vi.fn(async (input: string, init?: RequestInit) => {
+    if (input.includes('voided-tickets')) return Response.json({ ticket_ids: [], next_cursor: null })
+    const batch = JSON.parse(init!.body as string).occurrences as Array<{ occurrence_id: string }>
+    sent.push(batch.map(row => row.occurrence_id))
+    if (batch[0].occurrence_id === 'a-valid') return Response.json({ results: [{ occurrence_id: 'a-valid', result: 'rejected' }] })
+    return new Response('{}', { status: batch[0].occurrence_id === 'b-isolated' ? 422 : 500 })
+  }))
+  await renderWithQueue(<App />, page)
+  fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }, { timeout: BOUND_MS }))
+  await screen.findByText(/^Sync failed: The server answered.*2 scans are saved/, {}, { timeout: BOUND_MS })
+  const partial = 'Completed batches: Synced 0 offline scan(s). 1 rejected scan was not recorded.'
+  expect(screen.getByText(partial)).toBeDefined()
+  expect(screen.getAllByRole('alert').slice(0, 3).map(node => node.textContent)).toStrictEqual([
+    partial, 'Reconciliation rejected for a-valid. This result is not recorded.',
+    'Pre-upgrade record b-isolated could not sync. It remains queued and listed in the export.',
+  ])
+  expect(sent).toStrictEqual([['a-valid'], ['b-isolated'], ['c-isolated']])
+  await waitFor(async () => expect(await rawGetAll(dbName, STORE.occurrences)).toStrictEqual([
+    { ...rows[0], state: 'RESOLVED', result: 'rejected' }, rows[1], rows[2],
+  ]), { timeout: BOUND_MS })
+})
+
 it('sends literal legacy direction classes and isolates an odd M02 beside a valid control', async () => {
   const dbName = `legacy-app-${crypto.randomUUID()}`
   const rows = directions.map((direction,index) => ({ occurrenceId: `row-${index}`, state:'QUEUED',qrPayload:'credential',occurredAt:'2026-10-18T12:34:56.789Z',actuated:false,...direction }))

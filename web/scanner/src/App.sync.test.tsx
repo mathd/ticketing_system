@@ -5,7 +5,7 @@ import App, { reconcileTimeoutMs } from './App'
 import type { CurrentRecord as OccurrenceRecord } from './occurrence-model'
 import type { QueuedEntry } from './occurrence-store'
 import type { StorageController } from './occurrence-readiness'
-import { createTestPage, destroyAllPages, type TestPage } from './test/page-fixture'
+import { BOUND_MS, bounded, createTestPage, destroyAllPages, mintOn, type TestPage } from './test/page-fixture'
 import { rawGetAll } from './test/raw-db'
 import { STORE } from './occurrence-store'
 const runtime = vi.hoisted(() => ({ storage: null as StorageController | null }))
@@ -61,6 +61,174 @@ const checkingOfflineNote = 'Sync failed: No connection. Checking the scans save
 const unknownOfflineNote = 'Sync failed: No connection. Any scans saved on this device will be sent on the next sync. Last successful sync this session: none.'
 const offlineNote = /Sync failed: No connection\. 1 scan is saved on this device and will be sent on the next sync\. Last successful sync this session: none\./
 const unreadableNote = /Sync failed: The server answered but the reply could not be read\. 1 scan is saved on this device and will be sent on the next sync\. Last successful sync this session: none\./
+
+const mixedSyncNote = 'Synced 92 offline scan(s). 7 conflicts flagged for the operator. 6 rejected scans were not recorded.'
+const partialSyncNote = 'Completed batches: Synced 90 offline scan(s). 6 conflicts flagged for the operator. 4 rejected scans were not recorded.'
+type SyncResult = 'recorded' | 'synced' | 'conflict' | 'rejected'
+type SyncFixture = { before: OccurrenceRecord[]; results: Map<string, SyncResult> }
+
+async function queueMixedBatches(): Promise<SyncFixture> {
+  // The literal partition sets both the 100+5 boundary and the expected 92/7/6 totals.
+  const partition: SyncResult[] = [
+    ...Array<SyncResult>(45).fill('recorded'), ...Array<SyncResult>(45).fill('synced'),
+    ...Array<SyncResult>(6).fill('conflict'), ...Array<SyncResult>(4).fill('rejected'),
+    'recorded', 'synced', 'conflict', 'rejected', 'rejected',
+  ]
+  const results = new Map<string, SyncResult>()
+  for (const [index, result] of partition.entries()) {
+    const kind = index % 3 === 0 ? 'refusal' : index % 3 === 1 ? 'entry' : 'exit'
+    const instant = Date.parse('2026-10-20T12:00:00Z') + index * 1000
+    const { scan } = await mintOn(page, {
+      occurrenceId: `00000000-0551-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      occurredAt: new Date(instant).toISOString(), createdAt: new Date(instant + 1).toISOString(),
+      ...(kind === 'refusal' ? { type: 'refusal' } : { direction: kind }),
+    })
+    page.coordinator.latch({ kind: 'queue', occurrenceId: scan.occurrenceId,
+      outcome: { family: 'queue', cause: kind === 'refusal' ? 'local_refusal' : 'transport_failure' },
+      decidedAt: new Date(instant + 2).toISOString() })
+    await page.coordinator.persist(scan.occurrenceId)
+    results.set(scan.occurrenceId, result)
+  }
+  const before = await storedRows() as OccurrenceRecord[]
+  expect(before).toHaveLength(105)
+  expect(before.every(row => row.state === 'QUEUED')).toBe(true)
+  return { before, results }
+}
+
+function mixedResponse(body: ReconcileBody, fixture: SyncFixture) {
+  return Response.json({ results: body.occurrences.map(row => {
+    const result = fixture.results.get(row.occurrence_id)
+    expect(result).toBeDefined()
+    return { occurrence_id: row.occurrence_id, result }
+  }) })
+}
+
+function terminalRow(row: OccurrenceRecord, result: SyncResult): OccurrenceRecord {
+  return { ...row, state: result === 'recorded' || result === 'synced' ? 'SYNCED' : 'RESOLVED', result }
+}
+
+function expectedMixedRows(fixture: SyncFixture, count: number) {
+  return fixture.before.map((row, index) => index < count ? terminalRow(row, fixture.results.get(row.occurrenceId)!) : row)
+}
+
+function expectRejectionWarnings(fixture: SyncFixture, count: number) {
+  const ids = fixture.before.slice(0, count).filter(row => fixture.results.get(row.occurrenceId) === 'rejected').map(row => row.occurrenceId)
+  const warnings = screen.queryAllByText(/^Reconciliation rejected for /)
+  expect(warnings.map(node => node.textContent)).toStrictEqual(ids.map(id => `Reconciliation rejected for ${id}. This result is not recorded.`))
+}
+
+async function startMixedSync() {
+  const fixture = await queueMixedBatches()
+  const held = holdReconciles()
+  render(<App />)
+  const button = await screen.findByRole('button', { name: 'Sync queued scans' }, { timeout: BOUND_MS })
+  await readsSettled()
+  expect(screen.getByText(/^105 queued offline scans awaiting sync\./)).toBeDefined()
+  fireEvent.click(button)
+  const first = await bounded(held.next(), 'first mixed batch')
+  expect(first.body.occurrences.map(row => row.occurrence_id)).toStrictEqual(fixture.before.slice(0, 100).map(row => row.occurrenceId))
+  await act(async () => { first.answer(mixedResponse(first.body, fixture)) })
+  const second = await bounded(held.next(), 'second mixed batch')
+  expect(second.body.occurrences.map(row => row.occurrence_id)).toStrictEqual(fixture.before.slice(100).map(row => row.occurrenceId))
+  return { fixture, held, second }
+}
+
+async function expectPartial(fixture: SyncFixture) {
+  await screen.findByText(partialSyncNote, {}, { timeout: BOUND_MS })
+  expectRejectionWarnings(fixture, 100)
+  expect(screen.getAllByRole('alert')[0].textContent).toBe(partialSyncNote)
+  await waitFor(async () => expect(await storedRows()).toStrictEqual(expectedMixedRows(fixture, 100)), { timeout: BOUND_MS })
+}
+
+describe('aggregate reconciliation reporting', () => {
+  it.each([false, true])('counts every result across real batches, including matching retired rows: %s', async alreadyApplied => {
+    const { fixture, second } = await startMixedSync()
+    if (alreadyApplied) {
+      const rows = fixture.before.slice(100)
+      const report = await page.store().applyReconcileResults(rows.map(row => row.occurrenceId), rows.map(row => ({ occurrence_id: row.occurrenceId, result: fixture.results.get(row.occurrenceId)! })))
+      expect(report).toStrictEqual({ status: 'applied', retired: 5, alreadyApplied: 0 })
+    }
+    await act(async () => { second.answer(mixedResponse(second.body, fixture)) })
+    await screen.findByText(mixedSyncNote, {}, { timeout: BOUND_MS })
+    expectRejectionWarnings(fixture, 105)
+    expect(screen.queryByText(/^Completed batches:/)).toBeNull()
+    await waitFor(async () => expect(await storedRows()).toStrictEqual(expectedMixedRows(fixture, 105)), { timeout: BOUND_MS })
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Sync queued scans' })).toBeNull(), { timeout: BOUND_MS })
+  }, 15_000)
+
+  it.each(['transport', '500', '401', 'malformed', 'write', 'incompatible'] as const)('retains applied-batch totals when the next batch fails: %s', async failure => {
+    const { fixture, second } = await startMixedSync()
+    await expectPartial(fixture)
+    let expected = expectedMixedRows(fixture, 100)
+    if (failure === 'incompatible') {
+      const row = fixture.before[103]
+      expect(fixture.results.get(row.occurrenceId)).toBe('rejected')
+      expect(await page.store().applyReconcileResults([row.occurrenceId], [{ occurrence_id: row.occurrenceId, result: 'recorded' }])).toStrictEqual({ status: 'applied', retired: 1, alreadyApplied: 0 })
+      expected = expected.map(item => item.occurrenceId === row.occurrenceId ? terminalRow(row, 'recorded') : item)
+    }
+    if (failure === 'write') queueReads.failMarkSyncedNext = true
+    await act(async () => {
+      if (failure === 'transport') second.fail(new TypeError('network down'))
+      else if (failure === '500' || failure === '401') second.answer(new Response('', { status: Number(failure) }))
+      else if (failure === 'malformed') second.answer(Response.json({ results: [] }))
+      else second.answer(mixedResponse(second.body, fixture))
+    })
+    if (failure === '401') {
+      await screen.findByText('This device is not paired. Enter its pairing token to sync the queued scans.', {}, { timeout: BOUND_MS })
+      expect(screen.getByText('105 offline scans are still saved on this device and will sync once it is paired.')).toBeDefined()
+    } else if (failure === 'write' || failure === 'incompatible') {
+      await screen.findByText('Storage is unavailable or incompatible. Keep this page open and retry storage.', {}, { timeout: BOUND_MS })
+      expect(screen.getByText(/^105 queued offline scans awaiting sync\./)).toBeDefined()
+    } else {
+      const cause = failure === 'transport' ? 'No connection' : 'The server answered but the reply could not be read'
+      await screen.findByText(`Sync failed: ${cause}. 5 scans are saved on this device and will be sent on the next sync. Last successful sync this session: none.`, {}, { timeout: BOUND_MS })
+    }
+    expect(screen.getByText(partialSyncNote)).toBeDefined()
+    expectRejectionWarnings(fixture, 100)
+    expect(screen.queryByText(mixedSyncNote)).toBeNull()
+    await waitFor(async () => expect(await storedRows()).toStrictEqual(expected), { timeout: BOUND_MS })
+  }, 15_000)
+
+  it('replaces the partial report at automatic retry start even if that retry applies nothing', async () => {
+    const { fixture, held, second } = await startMixedSync()
+    await expectPartial(fixture)
+    await act(async () => { second.fail(new TypeError('connection lost')) })
+    await screen.findByText(/^Sync failed: No connection\. 5 scans are saved/, {}, { timeout: BOUND_MS })
+    await readsSettled()
+    expect(screen.getByText(partialSyncNote)).toBeDefined()
+    await act(async () => { window.dispatchEvent(new Event('online')) })
+    const retry = await bounded(held.next(), 'automatic retry')
+    expect(retry.body.occurrences.map(row => row.occurrence_id)).toStrictEqual(fixture.before.slice(100).map(row => row.occurrenceId))
+    await waitFor(() => expect(screen.queryByText(partialSyncNote)).toBeNull(), { timeout: BOUND_MS })
+    expectRejectionWarnings(fixture, 0)
+    await act(async () => { retry.fail(new TypeError('still unavailable')) })
+    await readsSettled()
+    expect(screen.getByText(/^Sync failed: No connection\. 5 scans are saved/)).toBeDefined()
+    expect(screen.queryByText(/^Completed batches:/)).toBeNull()
+    expectRejectionWarnings(fixture, 0)
+    expect(await storedRows()).toStrictEqual(expectedMixedRows(fixture, 100))
+  }, 15_000)
+
+  it('reports a single rejected result and preserves recorded-only copy on the next successful pass', async () => {
+    stubFetch(body => Promise.resolve(Response.json({ results: body.occurrences.map(row => ({ occurrence_id: row.occurrence_id, result: 'rejected' })) })))
+    render(<App />)
+    await queueOneScan('rejected-ticket')
+    const before = await storedRows() as OccurrenceRecord[]
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    await screen.findByText('Synced 0 offline scan(s). 1 rejected scan was not recorded.', {}, { timeout: BOUND_MS })
+    await waitFor(async () => expect(await storedRows()).toStrictEqual([terminalRow(before[0], 'rejected')]), { timeout: BOUND_MS })
+    await readsSettled()
+    expect(screen.getByText(`Reconciliation rejected for ${before[0].occurrenceId}. This result is not recorded.`)).toBeDefined()
+    await queueOneScan('recorded-next')
+    const beforeNext = await storedRows() as OccurrenceRecord[]
+    stubFetch(body => Promise.resolve(recordedResponse(body)))
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+    await screen.findByText('Synced 1 offline scan(s).', {}, { timeout: BOUND_MS })
+    expect(screen.queryByText(/^Reconciliation rejected for /)).toBeNull()
+    expect(screen.queryByText(/^Completed batches:/)).toBeNull()
+    expect(await storedRows()).toStrictEqual(beforeNext.map(row => row.qrPayload === 'recorded-next' ? terminalRow(row, 'recorded') : row))
+  })
+})
 
 beforeEach(async () => {
   dbName = `app-sync-${crypto.randomUUID()}`
@@ -194,6 +362,7 @@ async function failSyncWith(reconcile: Reconcile, note: RegExp) {
   expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/reconciliations'))).toBe(true)
   // COS4: the queue is untouched, row for row.
   expect(await storedRows()).toEqual(before)
+  expect(screen.queryByText(/^Completed batches:/)).toBeNull()
   return before
 }
 
