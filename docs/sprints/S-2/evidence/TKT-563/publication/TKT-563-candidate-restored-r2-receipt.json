@@ -1,0 +1,22 @@
+{
+  "operation": "candidate-restored-r2",
+  "command": [
+    "docs/sprints/S-2/evidence/TKT-563/run-probe.sh",
+    "--variant",
+    "candidate",
+    "--repeat",
+    "8",
+    "--output",
+    "/tmp/sdlc-S-2/TKT-563-probe-candidate-restored-r2"
+  ],
+  "cwd": "/home/mathieu/sources/ticketing_system.TKT-563-sprint-report",
+  "start": "2026-10-20T21:13:10.208193+00:00",
+  "end": "2026-10-20T21:16:42.566455+00:00",
+  "elapsedSeconds": 212.03291568200802,
+  "exitCode": 0,
+  "head": "c2f77420377ef7851d6eb00230842fb05b398de1",
+  "tree": "0929e500526cc4cfd34db9ce60346500cca0b74f",
+  "trackedStatusAfter": "",
+  "log": "/tmp/sdlc-S-2/TKT-563-candidate-restored-r2.log",
+  "logSha256": "8ab8d59249e13a5065d0e919c871016a681a55b35603a6d2a6f37feb4a94b44d"
+}

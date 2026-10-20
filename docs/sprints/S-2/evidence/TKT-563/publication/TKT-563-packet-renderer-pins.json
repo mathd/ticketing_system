@@ -1,0 +1,19 @@
+{
+  "candidate": "c2f77420377ef7851d6eb00230842fb05b398de1",
+  "files": [
+    {
+      "path": ".claude/skills/sdlc-sprint-review/scripts/render_report.py",
+      "digest": "bf86d5b165546a7087f2b81fe05430fc729ca676ff906bb6030d25258f11d43c"
+    },
+    {
+      "path": ".claude/skills/sdlc-sprint-review/assets/report.html",
+      "digest": "1653b75dd72bec74fe4e3def228f23ebb500006bab5738d1b2da07b043b45b07"
+    },
+    {
+      "path": ".claude/skills/sdlc-sprint-review/assets/report.labels.json",
+      "digest": "a761da499c3485a5d104f32428fc25f61b1d8863e06ae8bdcbf439761d9804de"
+    }
+  ],
+  "committed": true,
+  "archiveRequired": false
+}

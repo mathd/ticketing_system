@@ -1,0 +1,31 @@
+{
+  "packetUnchanged": true,
+  "candidate": "c2f77420377ef7851d6eb00230842fb05b398de1",
+  "reportVersion": 1,
+  "files": [
+    {
+      "path": "/tmp/sdlc-S-2/TKT-563-sprint-r1-implementation-record.json",
+      "sha256": "2d9540f8f6d60aa0fba7416845bcd8a5efeaa753dcfc49331c1f1043019d3509"
+    },
+    {
+      "path": "/tmp/sdlc-S-2/TKT-563-sprint-r1-verification-record.json",
+      "sha256": "4e71be8173065a65c8bff50633bbd1bbe6475758aebd0c23063e045fa1c90603"
+    },
+    {
+      "path": "/tmp/sdlc-S-2/TKT-563-sprint-r1-retrospective-record.json",
+      "sha256": "84f10f73c5c2a06062a215b708aff56d128981a2e469f49fb4ca69289383ec52"
+    },
+    {
+      "path": "/tmp/sdlc-S-2/TKT-563-publication/report.en.v1.json",
+      "sha256": "39093027f280c06879fb4a78f1f774ac7405488b85019ab88ccbbc7ddcf2ca79"
+    },
+    {
+      "path": "/tmp/sdlc-S-2/TKT-563-publication/report.en.v1.html",
+      "sha256": "51c66f3225c245b2ad34ecc7d545a8646a50949ddf82b4523c965a752c537e4a"
+    },
+    {
+      "path": "/tmp/sdlc-S-2/TKT-563-report-draft-v1-browser-check.json",
+      "sha256": "f423d903ab7a388f956c7027e2cd989e9684b44d88ac1e5f438c27c7557c8a20"
+    }
+  ]
+}

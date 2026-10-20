@@ -1,0 +1,1837 @@
+{
+  "ticket": "TKT-559",
+  "measuredAt": "2026-10-19T03:54:24.506Z",
+  "browser": "155.0.8059.79",
+  "host": {
+    "platform": "linux",
+    "release": "6.18.33.2-microsoft-standard-WSL2",
+    "arch": "x64",
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12600K",
+    "logicalCPUs": 16
+  },
+  "reproduction": "make browser",
+  "context": "native Date.now/performance.now; no holds; valid multi-entry credential; production rendered controls",
+  "warmupScansExcluded": 10,
+  "measuredScans": 100,
+  "summaries": {
+    "mint": {
+      "count": 100,
+      "minMs": 0.40000003576278687,
+      "medianMs": 0.7000000476837158,
+      "p95Ms": 1.300000011920929,
+      "maxMs": 3.099999964237213,
+      "maxBelowSendLimit": true
+    },
+    "mark": {
+      "count": 100,
+      "minMs": 0.699999988079071,
+      "medianMs": 1.199999988079071,
+      "p95Ms": 2.300000011920929,
+      "maxMs": 2.800000011920929,
+      "maxBelowSendLimit": true
+    }
+  },
+  "samples": [
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "66fbec15-bcbe-4e1b-a573-91c47f8e7ead"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.9000000357627869,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "1bdf9e9c-1a2f-481d-90fb-4d6045216d28"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "2f3d0b32-e63c-482c-aecb-6dbfb2ea8e9d"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.699999988079071,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "8a701086-126f-4e86-9e4f-67abf109d7a4"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.699999988079071,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "34e365bf-7bb5-41cf-a8e8-c465d05ea39f"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.7000000476837158,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "6f92ae21-2071-4fef-b2b3-9abc267dd769"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.699999988079071,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "6845d772-5ffe-4eb3-b577-455fe056dc27"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5999999642372131,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "0d6ca26e-54ed-4592-9961-8f0bca33d696"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.9000000357627869,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "5daf5b93-d32d-4d54-af29-ddfed23359fb"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.699999988079071,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "a33b7c3e-8372-4e45-82c8-d3bcf6483c0d"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.40000003576278687,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "2fb4dc63-60b1-465f-af0e-a2d4ffa7ae36"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.6000000238418579,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "9250b84c-3652-421f-a323-8b9c5abe439c"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.6000000238418579,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "61ed81e5-63e9-4e76-9fee-4c6ba76fe07c"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "8beffb67-d750-4b96-a50f-9218cd7f480c"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.8999999761581421,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "360a5e7d-72f1-4cef-a1f7-56a7039196e3"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "f04434bf-7ff2-4216-b32b-4fa8af7dff00"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.699999988079071,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "3f9c350b-d297-4f03-878d-d37683e72d08"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.6000000238418579,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "a8df10b2-b3a8-427c-a1a3-670ea07ee0b0"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.6000000238418579,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "790de99f-fd7e-42e1-a6ef-04d05d7b3daa"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "64c2fad3-e01f-44c3-a3a5-00b021d32cf7"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "2f5e41da-3c2d-45f1-b39e-7bacca137dd8"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "66940f9f-8d15-4a01-9e54-6be666826d7e"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.4000000357627869,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "b2f25113-5dcf-4aac-82a1-aecdab817d0f"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.8999999761581421,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "fc269614-ff8e-41d5-9dde-e434fa2b96c3"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5999999642372131,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "a85b41c0-7c4f-4d1f-bd9f-5e61f2b90413"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "7eb1230b-8fd9-4bbb-890e-d2a047610776"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.7000000476837158,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "321e5e4a-2c8b-4417-b4fe-6a825f8ece81"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "d1ee5cc6-161c-4e17-8b8a-4ade2e87747c"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "d4a4970c-b4e4-4cbd-b26b-7d340f7fc93f"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.199999988079071,
+      "wallMs": 2
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "6d401a24-a58a-44c5-bf56-364410f2e6eb"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.7000000476837158,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "f03ec909-9c55-4846-8062-421b6d0a9c5e"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "cd0c6836-f73a-453b-94c7-e2d27bbd3265"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "5fa74551-77cd-4379-8394-38be6c8c1b3b"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.699999988079071,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "22920273-75f0-4e9f-bd2d-e69a6a2fd668"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "03831858-f364-4de8-b3ee-c9a3a9c2311d"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "5d184e2d-07dc-47a9-96a1-aae2a5ba5562"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.7999999523162842,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "c12ca7de-15fe-43c4-bb92-51f0fbc5f7b4"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "02f4dc8a-cde4-4c09-b7ce-ec14982bcc51"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "7cd6a7bb-612d-413d-9d7c-991c6d1936f9"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "2484c523-0aed-4fb2-a17f-1d7475f2f4bd"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.9000000357627869,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "dcf71232-79ef-4f35-99df-54cfb8e84978"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.7000000476837158,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "c2f717df-dfe8-4e3d-ae29-b58a02a38d3c"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5999999642372131,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "43f4a808-e6ba-4848-8a31-97cafbccfaa0"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5999999642372131,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "7395b17f-2002-45e0-b850-0959d05dce97"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.6000000238418579,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "01466df4-7ed7-4a54-aea9-2c42cb13adbe"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.699999988079071,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "476b1715-487d-4e2b-9662-1107a7b9ce08"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5999999642372131,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "ed0dc2e0-029a-41a3-ad6d-e60521a62fc5"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.699999988079071,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "2b33e42b-2fab-494e-afab-dfaf5f90b091"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.9000000357627869,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "81c8962a-ec6e-4c33-8c76-944895446146"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "fc4ffe9d-7f8c-4b80-be08-cce859b57420"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5999999642372131,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "5856907d-7fa9-4f55-b847-a241544f7ac0"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "5cceb691-be59-43f3-9cd0-e5c98284c5ca"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.9000000357627869,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "97e695e8-998f-4d15-9970-30d07d5bc9f8"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "52a6cc14-7c5a-417a-852b-65d76d098842"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.100000023841858,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "debbf511-9ea0-4f07-b86f-0df5a63d1566"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "6b0848c0-02be-433e-94b8-814684e796fd"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.6000000238418579,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "e73a1713-35cd-41e7-bb4b-6ebdc795a46e"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.7000000476837158,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "61b9905e-6485-433f-ab1a-502a8212d882"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.7000000476837158,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "fdc7553d-6b60-4f02-9a64-13fc4ac33231"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5999999642372131,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "0ba7c97d-e420-4422-9038-0446aa8fbf74"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.6000000238418579,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "d5271158-0c7f-4b83-93be-93fa82edb77c"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.6000000238418579,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "ba3f746c-b5ac-4f0c-b239-e8e15f111b5e"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.9000000357627869,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "a194d9ad-cda3-4437-9078-b1ed05f7e200"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.699999988079071,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "301539be-80bc-459a-afb4-b2893b931a87"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "ebe18c4d-42bd-4267-b31c-021d53a5b268"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "7c78f640-667d-4322-a4b6-8a2f1bf0a07d"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.300000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "f7d8b287-0d8a-4ee8-b436-59fdb52f9689"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "65406f6a-50bd-44bd-a73d-389a1da14c20"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.300000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "aadf1a57-4d9a-4b1f-be78-9ec666ad7376"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "451a312a-840e-4486-86aa-fc646899c785"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "002e638f-794c-4447-99ed-4d5ac08801c9"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.399999976158142,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "53cff711-c34a-4e33-ade0-4353a6bc91d8"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.300000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "8a4c5e7a-2389-4739-8a6f-9494bfbde432"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.8999999761581421,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "d8cfa95e-a1c9-48ad-bb3e-e4b51cacb64a"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.9000000357627869,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "7455b2ff-8087-4d3e-b4de-52cf507c241f"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5999999642372131,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "0dc4617b-67cf-4001-a569-6ab54563b753"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.699999988079071,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "d5896491-96d7-4fcd-886e-6686c77756c5"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.6000000238418579,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "233f59a8-2931-4dbb-ad9f-ef46823ea614"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.9000000357627869,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "a98fd9f1-38b5-4768-9a67-b294bb766868"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.300000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "3c7fcc61-eb24-412c-a9ce-a6c485935e1c"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "cdfa0258-80a8-4711-a106-1e22850e16c3"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5999999642372131,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "0ea7e417-867c-4198-9822-5032fe4a839f"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "0ec25f43-d0a6-461b-b0c1-babc23ecfa89"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.6000000238418579,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "b93c5ae0-ed4c-4807-858e-8de096873404"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5999999642372131,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "5533cf50-09bc-49e6-b244-8d197c979083"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5999999642372131,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "4f962b76-311c-4bc4-9495-7afc1a3bdd3b"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.8999999761581421,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "a7e4d0f0-9a25-4077-bf88-f1fc6728cdac"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.9000000357627869,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "e6384e9b-c77b-4824-b8f3-0ce5a8e796d7"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.9000000357627869,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "e55b808b-bfbd-4585-b25f-b50c85edca6e"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.8999999761581421,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "5e798251-738b-4711-838b-be9be77f9bea"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "c4539138-de39-4fe4-9abe-a05972e90eea"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.6000000238418579,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "01d4b414-004e-457b-9817-c24d725a9baa"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.9000000357627869,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "53c261c0-026a-45b2-b9d7-cac0763a354a"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.100000023841858,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "406b0607-9123-409e-9060-28af97ae1b1a"
+      ],
+      "durability": "strict",
+      "monotonicMs": 3.099999964237213,
+      "wallMs": 3
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "44eefa77-5601-4ec4-bb90-5d7788c9adc2"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.199999988079071,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "eaff6418-80bb-430b-99e2-4451bfa14b46"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.6000000238418579,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "8a9823f5-23f1-437b-aaee-d465c72e7f9e"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "8d7d9cba-66e2-4b34-bc12-651d43b80bfb"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5,
+      "wallMs": 0
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "1ce41b7f-4137-407d-9d66-dfbe97189580"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mint",
+      "occurrenceIds": [
+        "d144f623-63bb-46a4-9ac9-161b3f9c0586"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.5,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "66fbec15-bcbe-4e1b-a573-91c47f8e7ead"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.5,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "1bdf9e9c-1a2f-481d-90fb-4d6045216d28"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.899999976158142,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "2f3d0b32-e63c-482c-aecb-6dbfb2ea8e9d"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.5,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "8a701086-126f-4e86-9e4f-67abf109d7a4"
+      ],
+      "durability": "strict",
+      "monotonicMs": 2.300000011920929,
+      "wallMs": 3
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "34e365bf-7bb5-41cf-a8e8-c465d05ea39f"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.0999999642372131,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "6f92ae21-2071-4fef-b2b3-9abc267dd769"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.100000023841858,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "6845d772-5ffe-4eb3-b577-455fe056dc27"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.100000023841858,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "0d6ca26e-54ed-4592-9961-8f0bca33d696"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.2000000476837158,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "5daf5b93-d32d-4d54-af29-ddfed23359fb"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "a33b7c3e-8372-4e45-82c8-d3bcf6483c0d"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.0999999642372131,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "2fb4dc63-60b1-465f-af0e-a2d4ffa7ae36"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.199999988079071,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "9250b84c-3652-421f-a323-8b9c5abe439c"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "61ed81e5-63e9-4e76-9fee-4c6ba76fe07c"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.699999988079071,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "8beffb67-d750-4b96-a50f-9218cd7f480c"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "360a5e7d-72f1-4cef-a1f7-56a7039196e3"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "f04434bf-7ff2-4216-b32b-4fa8af7dff00"
+      ],
+      "durability": "strict",
+      "monotonicMs": 2.400000035762787,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "3f9c350b-d297-4f03-878d-d37683e72d08"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "a8df10b2-b3a8-427c-a1a3-670ea07ee0b0"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.8999999761581421,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "790de99f-fd7e-42e1-a6ef-04d05d7b3daa"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.2000000476837158,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "64c2fad3-e01f-44c3-a3a5-00b021d32cf7"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.399999976158142,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "2f5e41da-3c2d-45f1-b39e-7bacca137dd8"
+      ],
+      "durability": "strict",
+      "monotonicMs": 2.400000035762787,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "66940f9f-8d15-4a01-9e54-6be666826d7e"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "b2f25113-5dcf-4aac-82a1-aecdab817d0f"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.5999999642372131,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "fc269614-ff8e-41d5-9dde-e434fa2b96c3"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.8999999761581421,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "a85b41c0-7c4f-4d1f-bd9f-5e61f2b90413"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.699999988079071,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "7eb1230b-8fd9-4bbb-890e-d2a047610776"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "321e5e4a-2c8b-4417-b4fe-6a825f8ece81"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "d1ee5cc6-161c-4e17-8b8a-4ade2e87747c"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.8999999761581421,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "d4a4970c-b4e4-4cbd-b26b-7d340f7fc93f"
+      ],
+      "durability": "strict",
+      "monotonicMs": 2.100000023841858,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "6d401a24-a58a-44c5-bf56-364410f2e6eb"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "f03ec909-9c55-4846-8062-421b6d0a9c5e"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.8999999761581421,
+      "wallMs": 0
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "cd0c6836-f73a-453b-94c7-e2d27bbd3265"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.300000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "5fa74551-77cd-4379-8394-38be6c8c1b3b"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.4000000357627869,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "22920273-75f0-4e9f-bd2d-e69a6a2fd668"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.199999988079071,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "03831858-f364-4de8-b3ee-c9a3a9c2311d"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.100000023841858,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "5d184e2d-07dc-47a9-96a1-aae2a5ba5562"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.2999999523162842,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "c12ca7de-15fe-43c4-bb92-51f0fbc5f7b4"
+      ],
+      "durability": "strict",
+      "monotonicMs": 2.100000023841858,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "02f4dc8a-cde4-4c09-b7ce-ec14982bcc51"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.300000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "7cd6a7bb-612d-413d-9d7c-991c6d1936f9"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.4000000357627869,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "2484c523-0aed-4fb2-a17f-1d7475f2f4bd"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.300000011920929,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "dcf71232-79ef-4f35-99df-54cfb8e84978"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.0999999642372131,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "c2f717df-dfe8-4e3d-ae29-b58a02a38d3c"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.699999988079071,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "43f4a808-e6ba-4848-8a31-97cafbccfaa0"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.8999999761581421,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "7395b17f-2002-45e0-b850-0959d05dce97"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "01466df4-7ed7-4a54-aea9-2c42cb13adbe"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.4000000357627869,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "476b1715-487d-4e2b-9662-1107a7b9ce08"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.5,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "ed0dc2e0-029a-41a3-ad6d-e60521a62fc5"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.399999976158142,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "2b33e42b-2fab-494e-afab-dfaf5f90b091"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "81c8962a-ec6e-4c33-8c76-944895446146"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "fc4ffe9d-7f8c-4b80-be08-cce859b57420"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "5856907d-7fa9-4f55-b847-a241544f7ac0"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.0999999642372131,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "5cceb691-be59-43f3-9cd0-e5c98284c5ca"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.199999988079071,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "97e695e8-998f-4d15-9970-30d07d5bc9f8"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.399999976158142,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "52a6cc14-7c5a-417a-852b-65d76d098842"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "debbf511-9ea0-4f07-b86f-0df5a63d1566"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.300000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "6b0848c0-02be-433e-94b8-814684e796fd"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "e73a1713-35cd-41e7-bb4b-6ebdc795a46e"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.2999999523162842,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "61b9905e-6485-433f-ab1a-502a8212d882"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "fdc7553d-6b60-4f02-9a64-13fc4ac33231"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.300000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "0ba7c97d-e420-4422-9038-0446aa8fbf74"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.9000000357627869,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "d5271158-0c7f-4b83-93be-93fa82edb77c"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.8999999761581421,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "ba3f746c-b5ac-4f0c-b239-e8e15f111b5e"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.399999976158142,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "a194d9ad-cda3-4437-9078-b1ed05f7e200"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.5,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "301539be-80bc-459a-afb4-b2893b931a87"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.5999999642372131,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "ebe18c4d-42bd-4267-b31c-021d53a5b268"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.300000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "7c78f640-667d-4322-a4b6-8a2f1bf0a07d"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.100000023841858,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "f7d8b287-0d8a-4ee8-b436-59fdb52f9689"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "65406f6a-50bd-44bd-a73d-389a1da14c20"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.8999999761581421,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "aadf1a57-4d9a-4b1f-be78-9ec666ad7376"
+      ],
+      "durability": "strict",
+      "monotonicMs": 2.600000023841858,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "451a312a-840e-4486-86aa-fc646899c785"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "002e638f-794c-4447-99ed-4d5ac08801c9"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.199999988079071,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "53cff711-c34a-4e33-ade0-4353a6bc91d8"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.2000000476837158,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "8a4c5e7a-2389-4739-8a6f-9494bfbde432"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.100000023841858,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "d8cfa95e-a1c9-48ad-bb3e-e4b51cacb64a"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.199999988079071,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "7455b2ff-8087-4d3e-b4de-52cf507c241f"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 0
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "0dc4617b-67cf-4001-a569-6ab54563b753"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 0
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "d5896491-96d7-4fcd-886e-6686c77756c5"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.699999988079071,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "233f59a8-2931-4dbb-ad9f-ef46823ea614"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.800000011920929,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "a98fd9f1-38b5-4768-9a67-b294bb766868"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.5,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "3c7fcc61-eb24-412c-a9ce-a6c485935e1c"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.600000023841858,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "cdfa0258-80a8-4711-a106-1e22850e16c3"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "0ea7e417-867c-4198-9822-5032fe4a839f"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.9000000357627869,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "0ec25f43-d0a6-461b-b0c1-babc23ecfa89"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.8999999761581421,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "b93c5ae0-ed4c-4807-858e-8de096873404"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "5533cf50-09bc-49e6-b244-8d197c979083"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.199999988079071,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "4f962b76-311c-4bc4-9495-7afc1a3bdd3b"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.199999988079071,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "a7e4d0f0-9a25-4077-bf88-f1fc6728cdac"
+      ],
+      "durability": "strict",
+      "monotonicMs": 2.800000011920929,
+      "wallMs": 3
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "e6384e9b-c77b-4824-b8f3-0ce5a8e796d7"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.800000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "e55b808b-bfbd-4585-b25f-b50c85edca6e"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.399999976158142,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "5e798251-738b-4711-838b-be9be77f9bea"
+      ],
+      "durability": "strict",
+      "monotonicMs": 2.300000011920929,
+      "wallMs": 3
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "c4539138-de39-4fe4-9abe-a05972e90eea"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.600000023841858,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "01d4b414-004e-457b-9817-c24d725a9baa"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.300000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "53c261c0-026a-45b2-b9d7-cac0763a354a"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "406b0607-9123-409e-9060-28af97ae1b1a"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "44eefa77-5601-4ec4-bb90-5d7788c9adc2"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.699999988079071,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "eaff6418-80bb-430b-99e2-4451bfa14b46"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.8999999761581421,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "8a9823f5-23f1-437b-aaee-d465c72e7f9e"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.600000023841858,
+      "wallMs": 2
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "8d7d9cba-66e2-4b34-bc12-651d43b80bfb"
+      ],
+      "durability": "strict",
+      "monotonicMs": 0.800000011920929,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "1ce41b7f-4137-407d-9d66-dfbe97189580"
+      ],
+      "durability": "strict",
+      "monotonicMs": 1.4000000357627869,
+      "wallMs": 1
+    },
+    {
+      "phase": "mark",
+      "occurrenceIds": [
+        "d144f623-63bb-46a4-9ac9-161b3f9c0586"
+      ],
+      "durability": "strict",
+      "monotonicMs": 2.300000011920929,
+      "wallMs": 2
+    }
+  ],
+  "limitation": "Host observation only. The 3 s bound is not a measured venue allowance. TKT-560 venue qualification remains required."
+}

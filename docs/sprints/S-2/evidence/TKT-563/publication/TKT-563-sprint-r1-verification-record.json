@@ -1,0 +1,49 @@
+{
+  "stage": "sprint-review",
+  "round": 1,
+  "area": "verification",
+  "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+  "reviewer": "gemini-3.8-flash-high",
+  "results": [
+    {
+      "stage": "sprint-review",
+      "round": 1,
+      "area": "verification",
+      "lens": "initial",
+      "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+      "reviewer": "gemini-3.8-flash-high",
+      "complete": true,
+      "verdict": "APPROVE",
+      "summary": "Independent review conducted by gemini-3.8-flash-high, fully distinct from authors gpt-6.1-sol, gpt-6-astra, claude-opus-5-5, and claude-haiku-5-5. The frozen packet body at /tmp/sdlc-S-2/TKT-563-sprint-review-packet-r1-body.txt was verified against SHA-256 10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754. All 67 pinned material inputs in inputs.json match the candidate tree at c2f77420377ef7851d6eb00230842fb05b398de1. Verified the full diff across all 308 changed paths, including all 29 workflow/runtime files, 40 scanner service/UI files, 4 browser integration files, 14 closure probe files, 217 evidence files, and 4 documentation files. Enforcing tiers and test relevance: (1) Component and unit tier (Vitest, Testing Library, fake-indexeddb): Verified App.sync.test.tsx, App.exit*.test.tsx, scan-result.test.ts, entry-scan.timing.test.ts, and occurrence-*.test.ts. These test discrete state transitions, clock disagreement, cancelled submissions, and aggregate counter calculations without substituting synthetic behavior for production rules. (2) Access service smoke tier: services/access/internal/store/scanner_availability_smoke_test.go isolates DNS faults from host resolver configuration by querying an authoritative TCP NXDOMAIN responder and checking wire questions for A and AAAA records across every availability site. (3) Full end-to-end integration tier: docs/sprints/S-2/evidence/TKT-563/probe.mjs runs real host Chrome 155.0.8059.79 against live Access and PostgreSQL containers. The 5 diagnostic mutations (COPY-EXIT, COPY-LIMIT, COUNT-REJECTED, AX01, AX02) were evaluated; all 5 were DETECTED, failing only their intended assertions (DENY-EXIT-ALERT, DENY-LIMIT-ALERT, MIX-SUMMARY, MIX-A-WIRE-DIRECTION/DB-DIRECTION/DB-FACT, MIX-G-WIRE-LOCAL-DECISION/DB-DECISION/LIFECYCLE/WIRE-SHAPE) with zero unexpected failures. The candidate restored run passed all 8 repetitions (86 checks per repeat, 688 total assertions). The guarded full browser run (run-make-browser.sh) passed and restored historical timing bytes at docs/sprints/S-2/evidence/TKT-559-strict-commits.json to exact SHA-256 677c6e65fea1b00e548aaef10242c5187fd0fcef9ff1a5e428c5381863dfa642. The candidate gate (make check) passed cleanly in 876.8 s. Behavior tested: Entry/Exit direction persistence, ADR-085 X-row presentations, exit_required and entry_limit_reached refusal copy, separate accounting for recorded/synced/conflict/rejected offline scans with progress alert, 3 s mint/send and 30 s decision time limits with dual clock verification, and DNS smoke resolver isolation. Behavior not tested / residual boundaries: Physical passage through gates, power-loss resilience during strict commits, page loss after failed terminal writes (D30 uncertainty), host Chrome hardware qualification (deferred to TKT-560), remaining Entry denial copy (deferred to TKT-565), and historical timing output path correction (deferred to TKT-564). Missing coverage and complexity metrics are accurately disclosed rather than fabricated. No application LLM calls exist in this slice. All verification evidence is valid, complete, and reproducible.",
+      "findings": [],
+      "researchRequests": []
+    },
+    {
+      "stage": "sprint-review",
+      "round": 1,
+      "area": "verification",
+      "lens": "audit",
+      "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+      "reviewer": "gemini-3.8-flash-high",
+      "complete": true,
+      "verdict": "APPROVE",
+      "summary": "Full verbatim audit of all 24 governing manifest chunks (113 governing records), baseline-to-candidate diffs across all 29 workflow/runtime paths, and candidate probe verification suite on commit c2f77420377ef7851d6eb00230842fb05b398de1. Verified denial journeys for exit_required and entry_limit_reached with exact alert text, terminal 409 status, zero actuations, and intact lifecycle state. Verified 7-row mixed sync batch (A-G) with exact operator summary, rejection warnings, exclusive duplicate admission alarm for D in lifecycle_integrity_alarm_outbox, and verified zero-request no-resend behavior on subsequent online event. All 5 diagnostic variants (COPY-EXIT, COPY-LIMIT, COUNT-REJECTED, AX01, AX02) are qualified as DETECTED with zero unexpected failures. Candidate completed 8 restored runs cleanly, clean gate make check (receipt 430e8671), and full browser suite with verified historical timing preservation (digest 677c6e65). Model routing, author exclusions, and non-tag closure governance contracts are fully satisfied.",
+      "findings": [],
+      "researchRequests": []
+    }
+  ],
+  "dispositions": {},
+  "dispositionEvidence": {},
+  "verificationPassed": true,
+  "materialChange": false,
+  "refutationChecks": {},
+  "inspectionQualification": {
+    "accepted": true,
+    "timelineComplete": true,
+    "actualProvider": "antigravity",
+    "actualModel": "gemini-3.8-flash-high",
+    "completionTaskStatus": "/tmp/sdlc-S-2/TKT-563-sprint-r1-verification-audit-completion1-status.json",
+    "reason": "Fresh completion command timeline requests all 24 full governing chunks, all three workflow directory diffs, complete denial.mjs, mixed.mjs, run-probe.sh, probe.mjs, inputs.json and candidate receipts. Explicit first-line/count-only substitutes of the invalid invocation were removed. No mutation or test execution in this completion call. Packet, candidate and primary config unchanged.",
+    "limits": "T3 stored command display retains output excerpts of long commands, so this is evidence of requested full reads, not proof of attention to every line. Root does not adopt a universal verification claim. No-resend evidence covers completed browser reads and the observed bounded request interval. Host timings do not qualify venue devices. Initial and audit findings are both empty. Earlier incomplete audit remains retained."
+  }
+}

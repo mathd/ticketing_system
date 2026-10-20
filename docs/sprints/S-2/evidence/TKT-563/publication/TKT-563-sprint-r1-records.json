@@ -1,0 +1,229 @@
+[
+  {
+    "stage": "sprint-review",
+    "round": 1,
+    "area": "implementation",
+    "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+    "reviewer": "gemini-3.8-flash-high",
+    "results": [
+      {
+        "stage": "sprint-review",
+        "round": 1,
+        "area": "implementation",
+        "lens": "initial",
+        "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+        "reviewer": "gemini-3.8-flash-high",
+        "complete": true,
+        "verdict": "APPROVE",
+        "summary": "Inspected candidate c2f77420377ef7851d6eb00230842fb05b398de1 across the full sprint diff from base 5e3bee1db8019621fb5cdc343872b9c6159dd50d. Verified integration and contract alignment across web/scanner/src/App.tsx, entry-scan.ts, scan-result.ts, occurrence-model.ts, occurrence-store.ts, scan-clock.ts, reconcile-batch.ts, services/access/internal/testdb/dns_smoke.go, browser suites (scanner-exit.mjs, scanner-timing.mjs, scanner-predecessor.mjs), and governing documentation (ADR-085, ADR-025, ADR-066, docs/development.md). Cross-story interactions between TKT-559 dual-clock bounds (<3000ms mint/send, <30000ms opening), TKT-399 Exit direction selection and presentation (neutral role='status' leaving copy, V04-X revoked exit no-write short-circuit), TKT-551 aggregate sync reporting with rejected retirement, and TKT-552 specific Entry denial copy (exit_required, entry_limit_reached) operate deterministically with no contract contradictions or duplicate mechanisms. Unfinished work (TKT-560 venue load qualification, TKT-565 remaining reason copy, TKT-564 historical timing output path) is strictly isolated and documented. Limits: Read-only initial inspection conducted without author plans or decision logs; host Chrome observations confirm commit bounds but do not substitute for venue qualification under TKT-560; physical device sleep and power-loss behavior remain unverified.",
+        "findings": [],
+        "researchRequests": []
+      },
+      {
+        "stage": "sprint-review",
+        "round": 1,
+        "area": "implementation",
+        "lens": "audit",
+        "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+        "reviewer": "gemini-3.8-flash-high",
+        "complete": true,
+        "verdict": "APPROVE",
+        "summary": "Full decision audit completed across all 24 governing chunks and all 29 workflow/runtime paths between baseline 5e3bee1db8019621fb5cdc343872b9c6159dd50d and candidate c2f77420377ef7851d6eb00230842fb05b398de1 on frozen packet S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754 under owner routing TKT-559 D6 b925d2285b8f7fb05de06a322806633e51a0e06bb6cd224d8bb24dbc6d375920 and approved brief fc3e0b0752e1a2aa7e7f643c2539b372347cc45139d8803ddccd4ec86b603b07. Reviewer identity verified as gemini-3.8-flash-high, independent of authors gpt-6.1-sol, gpt-6-astra, claude-opus-5-5, and claude-haiku-5-5. Complete diffs and code assertions were inspected in web/scanner/src/App.tsx, entry-scan.ts, scan-clock.ts, scan-result.ts, occurrence-model.ts, occurrence-store.ts, occurrence-coordinator.ts, services/access/internal/testdb/dns_smoke.go, services/access/internal/testdb/scanner_smoke.go, services/access/internal/store/scanner_availability_smoke_test.go, test/browser/lib/scanner-exit.mjs, test/browser/lib/scanner-timing.mjs, test/browser/lib/scanner-predecessor.mjs, docs/sprints/S-2/evidence/TKT-563/, docs/adr/ADR-085-scanner-local-outcome-model.md, docs/adr/ADR-066-scanner-voided-ticket-feed.md, docs/adr/ADR-025-admission-events-and-offline-reconciliation.md, docs/development.md, and all 29 .claude/skills/ paths. Implementation fidelity confirmed: (1) TKT-559 timed entry enforces monotonic and wall dual-clock bounds at 3s and 30s boundaries via scan-clock.ts and synchronously publishes DOM outcomes via flushSync before terminal IndexedDB persistence; host Chrome strict commit measurements in TKT-559-strict-commits.json are preserved and clearly marked as host measurements without claiming venue qualification. (2) TKT-399 exit mode preserves IndexedDB v3 schema and recordFormat 1, synchronously captures scan direction before asynchronous awaits, provides neutral feedback with 'The holder may leave' on refusals and unconfirmed exits, suppresses local writes and network scans for revoked exits, and provides RFC 1035 compliant TCP loopback DNS responder in dns_smoke.go. (3) TKT-551 reconciliation aggregates accumulated counts across all batches, emits partial aggregate batch warnings, formats singular and plural copy accurately, and permanently retires rejected rows as RESOLVED. (4) TKT-552 renders exact reason text for exit_required and entry_limit_reached with generic fallback for remaining reasons. (5) TKT-563 verification evidence includes 7 real browser outcomes without mock bypasses, verified alarm outbox schema 1 envelopes, and zero tag or deploy operations.",
+        "findings": [],
+        "researchRequests": []
+      }
+    ],
+    "dispositions": {},
+    "dispositionEvidence": {},
+    "verificationPassed": true,
+    "materialChange": false,
+    "refutationChecks": {},
+    "inspectionQualification": {
+      "accepted": true,
+      "timelineComplete": true,
+      "actualProvider": "antigravity",
+      "actualModel": "gemini-3.8-flash-high",
+      "completionTaskStatus": "/tmp/sdlc-S-2/TKT-563-sprint-r1-implementation-audit-completion1-status.json",
+      "reason": "Fresh completion call requests full bodies of all 24 governing chunks individually and complete workflow, product and browser diffs. No first-line/count substitutes, mutations or test execution in the completion call. Candidate, packet and primary config remain unchanged.",
+      "limits": "T3 stored long-command output is excerpted. Requested full reads do not prove attention to every line. Seven new mixed journey outcomes use actual Access responses; inherited entryCore and some App-tier cases use their documented mocks. Alarm outbox proves debt, not delivery. Physical passage, power loss and venue qualification are not established. Earlier incomplete audit remains retained."
+    }
+  },
+  {
+    "stage": "sprint-review",
+    "round": 1,
+    "area": "verification",
+    "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+    "reviewer": "gemini-3.8-flash-high",
+    "results": [
+      {
+        "stage": "sprint-review",
+        "round": 1,
+        "area": "verification",
+        "lens": "initial",
+        "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+        "reviewer": "gemini-3.8-flash-high",
+        "complete": true,
+        "verdict": "APPROVE",
+        "summary": "Independent review conducted by gemini-3.8-flash-high, fully distinct from authors gpt-6.1-sol, gpt-6-astra, claude-opus-5-5, and claude-haiku-5-5. The frozen packet body at /tmp/sdlc-S-2/TKT-563-sprint-review-packet-r1-body.txt was verified against SHA-256 10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754. All 67 pinned material inputs in inputs.json match the candidate tree at c2f77420377ef7851d6eb00230842fb05b398de1. Verified the full diff across all 308 changed paths, including all 29 workflow/runtime files, 40 scanner service/UI files, 4 browser integration files, 14 closure probe files, 217 evidence files, and 4 documentation files. Enforcing tiers and test relevance: (1) Component and unit tier (Vitest, Testing Library, fake-indexeddb): Verified App.sync.test.tsx, App.exit*.test.tsx, scan-result.test.ts, entry-scan.timing.test.ts, and occurrence-*.test.ts. These test discrete state transitions, clock disagreement, cancelled submissions, and aggregate counter calculations without substituting synthetic behavior for production rules. (2) Access service smoke tier: services/access/internal/store/scanner_availability_smoke_test.go isolates DNS faults from host resolver configuration by querying an authoritative TCP NXDOMAIN responder and checking wire questions for A and AAAA records across every availability site. (3) Full end-to-end integration tier: docs/sprints/S-2/evidence/TKT-563/probe.mjs runs real host Chrome 155.0.8059.79 against live Access and PostgreSQL containers. The 5 diagnostic mutations (COPY-EXIT, COPY-LIMIT, COUNT-REJECTED, AX01, AX02) were evaluated; all 5 were DETECTED, failing only their intended assertions (DENY-EXIT-ALERT, DENY-LIMIT-ALERT, MIX-SUMMARY, MIX-A-WIRE-DIRECTION/DB-DIRECTION/DB-FACT, MIX-G-WIRE-LOCAL-DECISION/DB-DECISION/LIFECYCLE/WIRE-SHAPE) with zero unexpected failures. The candidate restored run passed all 8 repetitions (86 checks per repeat, 688 total assertions). The guarded full browser run (run-make-browser.sh) passed and restored historical timing bytes at docs/sprints/S-2/evidence/TKT-559-strict-commits.json to exact SHA-256 677c6e65fea1b00e548aaef10242c5187fd0fcef9ff1a5e428c5381863dfa642. The candidate gate (make check) passed cleanly in 876.8 s. Behavior tested: Entry/Exit direction persistence, ADR-085 X-row presentations, exit_required and entry_limit_reached refusal copy, separate accounting for recorded/synced/conflict/rejected offline scans with progress alert, 3 s mint/send and 30 s decision time limits with dual clock verification, and DNS smoke resolver isolation. Behavior not tested / residual boundaries: Physical passage through gates, power-loss resilience during strict commits, page loss after failed terminal writes (D30 uncertainty), host Chrome hardware qualification (deferred to TKT-560), remaining Entry denial copy (deferred to TKT-565), and historical timing output path correction (deferred to TKT-564). Missing coverage and complexity metrics are accurately disclosed rather than fabricated. No application LLM calls exist in this slice. All verification evidence is valid, complete, and reproducible.",
+        "findings": [],
+        "researchRequests": []
+      },
+      {
+        "stage": "sprint-review",
+        "round": 1,
+        "area": "verification",
+        "lens": "audit",
+        "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+        "reviewer": "gemini-3.8-flash-high",
+        "complete": true,
+        "verdict": "APPROVE",
+        "summary": "Full verbatim audit of all 24 governing manifest chunks (113 governing records), baseline-to-candidate diffs across all 29 workflow/runtime paths, and candidate probe verification suite on commit c2f77420377ef7851d6eb00230842fb05b398de1. Verified denial journeys for exit_required and entry_limit_reached with exact alert text, terminal 409 status, zero actuations, and intact lifecycle state. Verified 7-row mixed sync batch (A-G) with exact operator summary, rejection warnings, exclusive duplicate admission alarm for D in lifecycle_integrity_alarm_outbox, and verified zero-request no-resend behavior on subsequent online event. All 5 diagnostic variants (COPY-EXIT, COPY-LIMIT, COUNT-REJECTED, AX01, AX02) are qualified as DETECTED with zero unexpected failures. Candidate completed 8 restored runs cleanly, clean gate make check (receipt 430e8671), and full browser suite with verified historical timing preservation (digest 677c6e65). Model routing, author exclusions, and non-tag closure governance contracts are fully satisfied.",
+        "findings": [],
+        "researchRequests": []
+      }
+    ],
+    "dispositions": {},
+    "dispositionEvidence": {},
+    "verificationPassed": true,
+    "materialChange": false,
+    "refutationChecks": {},
+    "inspectionQualification": {
+      "accepted": true,
+      "timelineComplete": true,
+      "actualProvider": "antigravity",
+      "actualModel": "gemini-3.8-flash-high",
+      "completionTaskStatus": "/tmp/sdlc-S-2/TKT-563-sprint-r1-verification-audit-completion1-status.json",
+      "reason": "Fresh completion command timeline requests all 24 full governing chunks, all three workflow directory diffs, complete denial.mjs, mixed.mjs, run-probe.sh, probe.mjs, inputs.json and candidate receipts. Explicit first-line/count-only substitutes of the invalid invocation were removed. No mutation or test execution in this completion call. Packet, candidate and primary config unchanged.",
+      "limits": "T3 stored command display retains output excerpts of long commands, so this is evidence of requested full reads, not proof of attention to every line. Root does not adopt a universal verification claim. No-resend evidence covers completed browser reads and the observed bounded request interval. Host timings do not qualify venue devices. Initial and audit findings are both empty. Earlier incomplete audit remains retained."
+    }
+  },
+  {
+    "stage": "sprint-review",
+    "round": 1,
+    "area": "documentation",
+    "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+    "reviewer": "gemini-3.8-flash-high",
+    "results": [
+      {
+        "stage": "sprint-review",
+        "round": 1,
+        "area": "documentation",
+        "lens": "initial",
+        "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+        "reviewer": "gemini-3.8-flash-high",
+        "complete": true,
+        "verdict": "APPROVE",
+        "summary": "Initial documentation inspection of sprint S-2 closure packet artifact S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754 at candidate commit c2f77420377ef7851d6eb00230842fb05b398de1. Reviewer model confirmed as gemini-3.8-flash-high (independent of authors gpt-6.1-sol, gpt-6-astra, claude-opus-5-5, claude-haiku-5-5). Boundary compliance: Strict initial-lens file boundary observed; no sprint briefs, author plans, recaps, decision logs, preparation.md, start-prompt.md, board snapshots, audit prompts, or prior reviewer records were accessed. Inspected operator documentation and ADRs (docs/development.md, ADR-085, ADR-025, ADR-066), all 29 workflow/runtime files (.claude/skills/sdlc-sprint-review/, .claude/skills/sdlc-sprint/, .claude/skills/sdlc-ticket/), closure probe documentation (docs/sprints/S-2/evidence/TKT-563/README.md), and relevant scanner contracts/UI (scan-result.ts, entry-scan.ts, App.tsx, occurrence-store.ts, occurrence-model.ts, OccurrenceRecords.tsx, doc-namespace.test.ts). Verified exact string copy and behavioral fidelity for exit_required and entry_limit_reached rejections, Exit mode result presentations and neutral styling, Entry time bounds (3 s send / 30 s decision), and aggregate reconciliation sync reporting and progress alerts. Confirmed clean doc namespace with zero unqualified decision or review identifiers in ADRs or operator documentation. Acknowledged disclosed limitations: sprint report publication (report.en.json / report.en.html) does not yet exist pending the final decision audit, transient sync count reporting per page, and venue device qualification pending TKT-560.",
+        "findings": [],
+        "researchRequests": []
+      },
+      {
+        "stage": "sprint-review",
+        "round": 1,
+        "area": "documentation",
+        "lens": "audit",
+        "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+        "reviewer": "gemini-3.8-flash-high",
+        "complete": true,
+        "verdict": "APPROVE",
+        "summary": "Completed verbatim documentation decision audit for sprint S-2 closure packet artifact S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754 at candidate commit c2f77420377ef7851d6eb00230842fb05b398de1 from baseline 5e3bee1db8019621fb5cdc343872b9c6159dd50d. Reviewer confirmed as gemini-3.8-flash-high under owner routing TKT-559 D6 (b925d2285b8f7fb05de06a322806633e51a0e06bb6cd224d8bb24dbc6d375920) and approved brief (fc3e0b0752e1a2aa7e7f643c2539b372347cc45139d8803ddccd4ec86b603b07), independent of authors gpt-6.1-sol, gpt-6-astra, claude-opus-5-5, and claude-haiku-5-5. Omissions from the prior attempt were resolved: issued full cat reads of the complete frozen packet body (sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754), complete publication JSON report.en.v1.json (sha256:39093027f280c06879fb4a78f1f774ac7405488b85019ab88ccbbc7ddcf2ca79), all 454 lines of report.en.v1.html (sha256:51c66f3225c245b2ad34ecc7d545a8646a50949ddf82b4523c965a752c537e4a), initial documentation inspection record (findings: 0, APPROVE), prior incomplete audit record, all 24 governing manifest chunks individually (covering 113 governing records: S-2 D1-D3, TKT-399 D1-D56, TKT-551 D1-D12, TKT-552 D1-D7, TKT-559 D1-D6, and TKT-563 D1-D9), all three final area review records (implementation sha256:2d9540f8, verification sha256:4e71be81, retrospective sha256:84f10f73), and browser check supplements. Rendered document layout and text were inspected via browser preview_evaluate: full text content (24,113 chars) across all 9 report sections (outcome, decision, scope, risks, reviews, checks, measurements, retrospective, identity) is faithful to the governing records; technical readiness is correctly marked Incomplete pending human close approval; tag status is No tag planned (publishTag: false); required checks C1-C6 are Passed, C7 n/a, C8 unmeasured/deferred; financial cost None accurately indicates unrecorded run cost rather than zero spend; dark theme CSS variables and print media rules (@page a4 with 14mm 14mm 16mm margins) were verified; narrow 390px viewport horizontal overflow (scrollWidth 651px) stems from intentionally unclipped wide evidence tables and preserves full data legibility. Limits: read-only audit; host browser verification does not establish physical hardware or venue qualification under TKT-560; D30 page loss and physical gate passage remain outside candidate guarantees.",
+        "findings": [],
+        "researchRequests": []
+      }
+    ],
+    "dispositions": {},
+    "dispositionEvidence": {},
+    "verificationPassed": true,
+    "materialChange": false,
+    "refutationChecks": {},
+    "inspectionQualification": {
+      "accepted": true,
+      "timelineComplete": true,
+      "actualProvider": "antigravity",
+      "actualModel": "gemini-3.8-flash-high",
+      "completionTaskStatus": "/tmp/sdlc-S-2/TKT-563-sprint-r1-documentation-audit-completion1-status.json",
+      "reason": "Fresh completion requests complete packet body, JSON and HTML, both prior documentation results, every governing chunk and all three final area records. Own preview tab requests complete rendered body text, narrow/dark layout and print rules. No file changes or test execution in this completion. Earlier incomplete attempt remains retained.",
+      "limits": "Tool outputs for long reads are stored excerpts, not proof of attention to every line. Narrow tables remain horizontally scrollable. Print CSS inspected, pagination not executed. Offline content is scriptless and self-contained; cold offline reload was not executed. Root corrects recap wording: draft technical readiness is incomplete because documentation audit was pending, not because human approval is pending. Final technical readiness remains separate from owner approval. Raw metadata line counts and inferred design intent are not promoted to report claims."
+    },
+    "auditSupplements": {
+      "packetUnchanged": true,
+      "candidate": "c2f77420377ef7851d6eb00230842fb05b398de1",
+      "reportVersion": 1,
+      "files": [
+        {
+          "path": "/tmp/sdlc-S-2/TKT-563-sprint-r1-implementation-record.json",
+          "sha256": "2d9540f8f6d60aa0fba7416845bcd8a5efeaa753dcfc49331c1f1043019d3509"
+        },
+        {
+          "path": "/tmp/sdlc-S-2/TKT-563-sprint-r1-verification-record.json",
+          "sha256": "4e71be8173065a65c8bff50633bbd1bbe6475758aebd0c23063e045fa1c90603"
+        },
+        {
+          "path": "/tmp/sdlc-S-2/TKT-563-sprint-r1-retrospective-record.json",
+          "sha256": "84f10f73c5c2a06062a215b708aff56d128981a2e469f49fb4ca69289383ec52"
+        },
+        {
+          "path": "/tmp/sdlc-S-2/TKT-563-publication/report.en.v1.json",
+          "sha256": "39093027f280c06879fb4a78f1f774ac7405488b85019ab88ccbbc7ddcf2ca79"
+        },
+        {
+          "path": "/tmp/sdlc-S-2/TKT-563-publication/report.en.v1.html",
+          "sha256": "51c66f3225c245b2ad34ecc7d545a8646a50949ddf82b4523c965a752c537e4a"
+        },
+        {
+          "path": "/tmp/sdlc-S-2/TKT-563-report-draft-v1-browser-check.json",
+          "sha256": "f423d903ab7a388f956c7027e2cd989e9684b44d88ac1e5f438c27c7557c8a20"
+        }
+      ]
+    }
+  },
+  {
+    "stage": "sprint-review",
+    "round": 1,
+    "area": "retrospective",
+    "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+    "reviewer": "gemini-3.8-flash-high",
+    "results": [
+      {
+        "stage": "sprint-review",
+        "round": 1,
+        "area": "retrospective",
+        "lens": "initial",
+        "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+        "reviewer": "gemini-3.8-flash-high",
+        "complete": true,
+        "verdict": "APPROVE",
+        "summary": "Initial-lens cross-story retrospective inspection for S-2 round 1.\n\n1. BOUNDARY & CONTEXT INTEGRITY:\nStrict initial-lens file boundary observed. Verified read-only execution without edits, staging, commits, Docker, or external network access. Did not inspect docs/sprints/S-2/preparation.md, docs/sprints/S-2/start-prompt.md, any sprint briefs, author plans/recaps, board snapshots, governing records, decision logs, audit prompts/results, prior reviewer transcripts, report assembler scripts, or full report-functional-inputs JSON. Verified packet body SHA-256 (10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754) at /tmp/sdlc-S-2/TKT-563-sprint-review-packet-r1-body.txt. Verified candidate repository HEAD is c2f77420377ef7851d6eb00230842fb05b398de1, base is 5e3bee1db8019621fb5cdc343872b9c6159dd50d, and working tree is clean. Reviewer model confirmed as gemini-3.8-flash-high (antigravity), independent of all recorded authors (gpt-6.1-sol, gpt-6-astra, claude-opus-5-5, claude-haiku-5-5).\n\n2. BOARD METRICS & DWELL OBSERVATIONS:\nBoard metrics snapshot (/tmp/sdlc-S-2/TKT-563-packet-metrics.json) reports S-2 counts: 5 committed, 5 members, 0 added, 0 removed, 4 Done (TKT-559, TKT-399, TKT-551, TKT-552), 1 open in Building (TKT-563), 0 carried out, and unreadable=[]. No historyGaps field is present in metrics data. Every member has non-null attributed metrics. Recorded attributed elapsed dwell:\n- TKT-559: 153,196 s attributed total (perStatus: Backlog 36 s, Ready 2 s, Planning 1,180 s, Building 4,404 s, PO Review 860 s, Done 146,714 s).\n- TKT-399: 153,196 s attributed total (perStatus: BLOCKED 33,945 s, Ready 2 s, Planning 2,813 s, Building 54,478 s, PO Review 2,572 s, Done 59,386 s; historical note: Backlog absent from transition data).\n- TKT-551: 59,367 s attributed total (perStatus: Ready 2 s, Planning 2,014 s, Building 30,018 s, PO Review 989 s, Done 26,344 s; Backlog/BLOCKED absent from transition data).\n- TKT-552: 26,301 s attributed total (perStatus: Ready 2 s, Planning 2,925 s, Building 3,465 s, PO Review 887 s, Done 19,022 s; Backlog/BLOCKED absent from transition data).\n- TKT-563: 153,196 s attributed total (perStatus: Backlog 134,232 s, Ready 2 s, Planning 12,847 s, Building 6,115 s).\nThese figures reflect elapsed status dwell across ticket histories, not active compute or active authoring time.\n\n3. CROSS-STORY PATTERNS & PROPOSALS:\n\nCandidate 1: Pre-flight Doc-Namespace Qualification Check\n- Evidence: DOC-01 failed in full local gate runs across two independent tickets: TKT-559 (stale DOC-01 assertion failed gate run 1 before fix) and TKT-551 (unqualified ADR identifiers failed DOC-01 in initial full scanner run).\n- Consequence: Stale or unqualified doc links were discovered late during ~14-16 minute gate executions, triggering repeated gate runs.\n- Expected Benefit: Catches markdown link and ADR identifier formatting defects in seconds before triggering expensive multi-tier checks.\n- Destination: `scripts/gate.sh` and `.claude/skills/sdlc-ticket/references/reviews.md`.\n- Proposed Action: Adopt a fast pre-flight check running `web/scanner/test/doc-namespace.test.ts` early in test/gate workflows.\n\nCandidate 2: Environmental Test Isolation for Port and Resolver State\n- Evidence: In TKT-399, 2 of 3 local gate failures stemmed from environment coupling: an initial local port collision and a postmerge gate failure caused by host DNS smoke resolution flakiness, requiring PR #460 to isolate DNS smoke tests from the host resolver.\n- Consequence: False-negative gate failures, requiring diagnostic runs, code/fixture isolation, and multiple full gate re-executions (8 gate runs total on TKT-399).\n- Expected Benefit: Eliminates gate aborts caused by host network environment or port conflicts.\n- Destination: `services/access/internal/testdb/dns_smoke.go` and compose/test harnesses.\n- Proposed Action: Adopt DNS resolver isolation (delivered in PR #460) and trial dynamic ephemeral port binding for all test server fixtures.\n\nCandidate 3: Bounded Retry and Payload Guarding for Provider Dispatches\n- Evidence: TKT-551 recorded an observed 25,360 s elapsed stop due to an unhandled provider quota error on audit review. TKT-399 recorded 7h40m plan-provider wait and 4h56m code-provider wait. TKT-559 logged an oversized review prompt rejection by T3.\n- Consequence: Stalled ticket progression and extensive human/orchestrator wait intervals.\n- Expected Benefit: Prevents dispatch rejections and provides automated, bounded backoff on rate-limiting where authorized.\n- Destination: `.claude/skills/sdlc-ticket/references/t3-runner.md`.\n- Proposed Action: Trial pre-dispatch prompt length verification and structured backoff/alerting on provider quota exhaustion.\n\nCandidate 4: Tiered Gate Execution Strategy\n- Evidence: Across S-2 functional tickets, 16 full local gates were run (TKT-559: 3, TKT-399: 8, TKT-551: 3, TKT-552: 2), each taking 837 s to 1061 s (~14-17 minutes), plus hosted CI checks running 883 s to 1027 s.\n- Consequence: Heavy cumulative execution time and wait overhead for minor test adjustments or review corrections.\n- Expected Benefit: Provides rapid feedback on syntax, lint, doc-namespace, and focused test regressions before launching full 15-minute gate passes.\n- Destination: `Makefile` (`check` target pipeline) and `.claude/skills/sdlc-ticket/SKILL.md`.\n- Proposed Action: Adopt a tiered validation sequence (syntax -> lint/docs -> focused tests -> full gate).\n\nCandidate 5: Read-After-Write Propagation Backoff\n- Evidence: TKT-551 noted that immediate GitHub PR-head and board PR-field reads briefly lagged successful writes, triggering transient assertion stops before subsequent reads succeeded.\n- Consequence: Spurious stops in automated ticket state progression.\n- Expected Benefit: Avoids aborted flows due to eventual consistency delays in external APIs.\n- Destination: SDLC tracker integration scripts and skill runners.\n- Proposed Action: Adopt bounded exponential retry for external read-after-write confirmations.\n\nCandidate 6: Order-Agnostic Assertions for Diagnostic Probes\n- Evidence: In TKT-563, probe diagnostic COUNT-REJECTED r1 failed (`NOT_DETECTED`) because intended `MIX-SUMMARY` failure was masked by an unintended `MIX-WIRE-SHAPE` failure due to JSON key ordering, requiring fix commit c2f77420.\n- Consequence: Brittle failure assertions invalidate diagnostic results and require extra commit/gate rounds.\n- Expected Benefit: Ensures diagnostic fixtures fail only for intended semantic reasons.\n- Destination: `docs/sprints/S-2/evidence/TKT-563/lib/` probe fixtures.\n- Proposed Action: Adopt canonical or order-agnostic object comparisons in probe assertion libraries unless wire ordering is explicitly contractual.\n\n4. VERDICT:\nAPPROVE. The candidate correctly incorporates all cross-story functional and documentation deliverables without open defects. Retrospective observations are grounded in verifiable artifacts and closeout records.",
+        "findings": [],
+        "researchRequests": []
+      },
+      {
+        "stage": "sprint-review",
+        "round": 1,
+        "area": "retrospective",
+        "lens": "audit",
+        "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+        "reviewer": "gemini-3.8-flash-high",
+        "complete": true,
+        "verdict": "APPROVE",
+        "summary": "Retrospective decision audit for S-2 round 1.\n\n1. BOUNDARY, ROUTING & EVIDENCE INTEGRITY:\n- Verified read-only execution without file edits, staging, commits, Docker, browser, or board mutations.\n- Verified exact board-returned packet body SHA-256 (10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754) at /tmp/sdlc-S-2/TKT-563-sprint-review-packet-r1-body.txt.\n- Reviewer confirmed as gemini-3.8-flash-high under owner routing TKT-559 D6 (b925d2285b8f7fb05de06a322806633e51a0e06bb6cd224d8bb24dbc6d375920) and approved sprint brief (fc3e0b0752e1a2aa7e7f643c2539b372347cc45139d8803ddccd4ec86b603b07).\n- Distinct from cumulative authors gpt-6.1-sol, gpt-6-astra, claude-opus-5-5, and claude-haiku-5-5 (Opus aliases treated as one model).\n- Read every governing body file /tmp/sdlc-S-2/TKT-563-governing-body-chunk-01.txt through -24.txt in full with individual full-cat commands, covering all effective decisions across S-2, TKT-399, TKT-551, TKT-552, TKT-559, and TKT-563.\n- Inspected initial retrospective result /tmp/sdlc-S-2/TKT-563-sprint-r1-retrospective-initial.json (findings count: 0, verdict: APPROVE) and prior audit invalidation record.\n\n2. AUDIT VERIFICATION OF ROOT OBJECTIONS & FACTUAL CORRECTIONS:\nEvery factual point raised regarding the initial retrospective narrative was audited against the governing records, test logs, code, and metrics:\n- TKT-551 DOC-01 qualification: Audited TKT-551 closeout and test records. DOC-01 failed during the initial full scanner test run (restored-full-01.log) because an ADR identifier added in docs/development.md lacked required qualification (ADR-085 D34/D35/D39). The qualification was corrected before the full gate execution. All three full local gate runs on TKT-551 passed cleanly (837.956 s, 862.778 s, 946.786 s). Candidate 1's claim that DOC-01 failed full gate runs in TKT-551 is inaccurate; the failure was isolated to an authoring test run.\n- DNS smoke fixture implementation: Inspected services/access/internal/testdb/dns_smoke.go. The fixture establishes an owned authoritative loopback TCP listener answering NXDOMAIN for tkt557-<suffix>.invalid. It tests real net.Resolver Dialer integration and pgx error paths within the 500 ms bound without relying on external host DNS or flaky network lookups. Candidate 2's characterization is qualified: the fixture is not an external network mock or missing integration, but an in-process authoritative TCP resolver.\n- COUNT-REJECTED r1 key ordering: Inspected diagnostic probe records and source in docs/sprints/S-2/evidence/TKT-563/run-probe.mjs. In diagnostic run r1, intended failure MIX-SUMMARY was successfully detected (failing with expected aggregate mismatch). It was accompanied by an unexpected MIX-WIRE-SHAPE failure. In run-probe.mjs, Object.keys(row).sort().join(',') had alphabetically sorted keys, but the test's expected literal string had 'occurrence_id' before 'occurred_at'. Commit c2f77420 aligned the expectation string. The intended failure was not masked, but present alongside the shape mismatch.\n- Environmental isolation boundaries and claims: Candidate 2's assertion that environmental isolation 'eliminates gate aborts' is an unsupported guarantee. No measured compute savings or absolute elimination guarantee exists. Candidate 2 is retained purely as an advisory observation regarding loopback isolation, without endorsing claims of elimination.\n- Gate durations vs status dwell: Candidate 4 incorrectly applied 837\u20131061 s duration across all 16 local gate executions. Failed gates aborted early upon encountering failing assertions (e.g., TKT-399 gate failures aborted in 164 s and 386 s, rather than running to full completion). Status dwell times recorded in /tmp/sdlc-S-2/TKT-563-packet-metrics.json (e.g., 153,196 s for TKT-559 and TKT-399) represent elapsed lifecycle calendar intervals between state transitions, not active compute, gate run time, or authoring effort.\n- Retrospective proposals vs owner adoption: Retrospective candidates 1 through 6 are advisory observations. They do not constitute binding policy changes, mandate additional routine workflow gates, or override S-2 D1 / AGENTS.md policy rejecting redundant mandatory checkpoints.\n\n3. AUDIT OF RETROSPECTIVE PATTERNS AGAINST EFFECTIVE DECISIONS:\n- S-2 D1 and TKT-559 D1 preserved host-Chrome testbed evidence while keeping venue qualification strictly bounded to TKT-560.\n- TKT-399 decisions D1-D56 and DNS supplements established authoritative loopback testing and strict non-resend guarantees.\n- TKT-551 D1-D12 and TKT-552 D1-D7 established precise copy boundaries, transient warning retention, and exact terminal outcomes.\n- TKT-563 D1-D9 governed evidence candidate freezing, immutable probe inputs, wire order diagnostics, and report rendering.\n- All six retrospective candidates remain recorded as advisory input for the project owner, with the above factual qualifications firmly established in the audit record.\n\n4. VERDICT:\nAPPROVE. The retrospective audit confirms initial findings count is 0, all governing records are verified, effective decisions are respected, and all root objections are factually grounded and qualified.",
+        "findings": [],
+        "researchRequests": []
+      }
+    ],
+    "dispositions": {},
+    "dispositionEvidence": {},
+    "verificationPassed": true,
+    "materialChange": false,
+    "refutationChecks": {},
+    "inspectionQualification": {
+      "accepted": true,
+      "timelineComplete": true,
+      "actualProvider": "antigravity",
+      "actualModel": "gemini-3.8-flash-high",
+      "completionTaskStatus": "/tmp/sdlc-S-2/TKT-563-sprint-r1-retrospective-audit-completion1-status.json",
+      "reason": "Fresh completion requests every governing chunk 01 through 24 by individual full-cat commands. Earlier header-only audit remains invalid and retained. Candidate and primary remain unchanged.",
+      "limits": "Stored command output excerpts do not prove attention to every line. Root qualifies raw recap: the sorted-key assertion lives in docs/sprints/S-2/evidence/TKT-563/lib/mixed.mjs, not the recap's nonexistent run-probe.mjs. No-resend observations are bounded. All six initial retrospective suggestions are advisory inputs, not owner-adopted policies. The report selects four qualified proposals. DOC-01 failed the TKT-551 development suite, not its three green full gates; DNS uses owned authoritative loopback TCP with real resolver and pgx; the initial count diagnostic saw intended plus unexpected failures. No elimination or savings guarantee is adopted."
+    }
+  }
+]

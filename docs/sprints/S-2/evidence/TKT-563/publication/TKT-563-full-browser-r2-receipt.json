@@ -1,0 +1,20 @@
+{
+  "operation": "full-browser-r2",
+  "command": [
+    "docs/sprints/S-2/evidence/TKT-563/run-make-browser.sh",
+    "--historical-backup",
+    "/tmp/sdlc-S-2/pre-closure-inventory/TKT-559-historical-receipt.json",
+    "--receipts",
+    "/tmp/sdlc-S-2/TKT-563-full-browser-r2"
+  ],
+  "cwd": "/home/mathieu/sources/ticketing_system.TKT-563-sprint-report",
+  "start": "2026-10-20T21:16:58.246474+00:00",
+  "end": "2026-10-20T21:19:50.151012+00:00",
+  "elapsedSeconds": 171.61807832401246,
+  "exitCode": 0,
+  "head": "c2f77420377ef7851d6eb00230842fb05b398de1",
+  "tree": "0929e500526cc4cfd34db9ce60346500cca0b74f",
+  "trackedStatusAfter": "",
+  "log": "/tmp/sdlc-S-2/TKT-563-full-browser-r2.log",
+  "logSha256": "c61b78a999be5b8cea3538a0fa3e587c697b35cf5c4688f6fde249fd9020c86e"
+}

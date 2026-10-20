@@ -1,0 +1,49 @@
+{
+  "stage": "sprint-review",
+  "round": 1,
+  "area": "implementation",
+  "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+  "reviewer": "gemini-3.8-flash-high",
+  "results": [
+    {
+      "stage": "sprint-review",
+      "round": 1,
+      "area": "implementation",
+      "lens": "initial",
+      "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+      "reviewer": "gemini-3.8-flash-high",
+      "complete": true,
+      "verdict": "APPROVE",
+      "summary": "Inspected candidate c2f77420377ef7851d6eb00230842fb05b398de1 across the full sprint diff from base 5e3bee1db8019621fb5cdc343872b9c6159dd50d. Verified integration and contract alignment across web/scanner/src/App.tsx, entry-scan.ts, scan-result.ts, occurrence-model.ts, occurrence-store.ts, scan-clock.ts, reconcile-batch.ts, services/access/internal/testdb/dns_smoke.go, browser suites (scanner-exit.mjs, scanner-timing.mjs, scanner-predecessor.mjs), and governing documentation (ADR-085, ADR-025, ADR-066, docs/development.md). Cross-story interactions between TKT-559 dual-clock bounds (<3000ms mint/send, <30000ms opening), TKT-399 Exit direction selection and presentation (neutral role='status' leaving copy, V04-X revoked exit no-write short-circuit), TKT-551 aggregate sync reporting with rejected retirement, and TKT-552 specific Entry denial copy (exit_required, entry_limit_reached) operate deterministically with no contract contradictions or duplicate mechanisms. Unfinished work (TKT-560 venue load qualification, TKT-565 remaining reason copy, TKT-564 historical timing output path) is strictly isolated and documented. Limits: Read-only initial inspection conducted without author plans or decision logs; host Chrome observations confirm commit bounds but do not substitute for venue qualification under TKT-560; physical device sleep and power-loss behavior remain unverified.",
+      "findings": [],
+      "researchRequests": []
+    },
+    {
+      "stage": "sprint-review",
+      "round": 1,
+      "area": "implementation",
+      "lens": "audit",
+      "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+      "reviewer": "gemini-3.8-flash-high",
+      "complete": true,
+      "verdict": "APPROVE",
+      "summary": "Full decision audit completed across all 24 governing chunks and all 29 workflow/runtime paths between baseline 5e3bee1db8019621fb5cdc343872b9c6159dd50d and candidate c2f77420377ef7851d6eb00230842fb05b398de1 on frozen packet S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754 under owner routing TKT-559 D6 b925d2285b8f7fb05de06a322806633e51a0e06bb6cd224d8bb24dbc6d375920 and approved brief fc3e0b0752e1a2aa7e7f643c2539b372347cc45139d8803ddccd4ec86b603b07. Reviewer identity verified as gemini-3.8-flash-high, independent of authors gpt-6.1-sol, gpt-6-astra, claude-opus-5-5, and claude-haiku-5-5. Complete diffs and code assertions were inspected in web/scanner/src/App.tsx, entry-scan.ts, scan-clock.ts, scan-result.ts, occurrence-model.ts, occurrence-store.ts, occurrence-coordinator.ts, services/access/internal/testdb/dns_smoke.go, services/access/internal/testdb/scanner_smoke.go, services/access/internal/store/scanner_availability_smoke_test.go, test/browser/lib/scanner-exit.mjs, test/browser/lib/scanner-timing.mjs, test/browser/lib/scanner-predecessor.mjs, docs/sprints/S-2/evidence/TKT-563/, docs/adr/ADR-085-scanner-local-outcome-model.md, docs/adr/ADR-066-scanner-voided-ticket-feed.md, docs/adr/ADR-025-admission-events-and-offline-reconciliation.md, docs/development.md, and all 29 .claude/skills/ paths. Implementation fidelity confirmed: (1) TKT-559 timed entry enforces monotonic and wall dual-clock bounds at 3s and 30s boundaries via scan-clock.ts and synchronously publishes DOM outcomes via flushSync before terminal IndexedDB persistence; host Chrome strict commit measurements in TKT-559-strict-commits.json are preserved and clearly marked as host measurements without claiming venue qualification. (2) TKT-399 exit mode preserves IndexedDB v3 schema and recordFormat 1, synchronously captures scan direction before asynchronous awaits, provides neutral feedback with 'The holder may leave' on refusals and unconfirmed exits, suppresses local writes and network scans for revoked exits, and provides RFC 1035 compliant TCP loopback DNS responder in dns_smoke.go. (3) TKT-551 reconciliation aggregates accumulated counts across all batches, emits partial aggregate batch warnings, formats singular and plural copy accurately, and permanently retires rejected rows as RESOLVED. (4) TKT-552 renders exact reason text for exit_required and entry_limit_reached with generic fallback for remaining reasons. (5) TKT-563 verification evidence includes 7 real browser outcomes without mock bypasses, verified alarm outbox schema 1 envelopes, and zero tag or deploy operations.",
+      "findings": [],
+      "researchRequests": []
+    }
+  ],
+  "dispositions": {},
+  "dispositionEvidence": {},
+  "verificationPassed": true,
+  "materialChange": false,
+  "refutationChecks": {},
+  "inspectionQualification": {
+    "accepted": true,
+    "timelineComplete": true,
+    "actualProvider": "antigravity",
+    "actualModel": "gemini-3.8-flash-high",
+    "completionTaskStatus": "/tmp/sdlc-S-2/TKT-563-sprint-r1-implementation-audit-completion1-status.json",
+    "reason": "Fresh completion call requests full bodies of all 24 governing chunks individually and complete workflow, product and browser diffs. No first-line/count substitutes, mutations or test execution in the completion call. Candidate, packet and primary config remain unchanged.",
+    "limits": "T3 stored long-command output is excerpted. Requested full reads do not prove attention to every line. Seven new mixed journey outcomes use actual Access responses; inherited entryCore and some App-tier cases use their documented mocks. Alarm outbox proves debt, not delivery. Physical passage, power loss and venue qualification are not established. Earlier incomplete audit remains retained."
+  }
+}

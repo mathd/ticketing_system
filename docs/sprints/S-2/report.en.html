@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex">
+<meta name="generator" content="sdlc-sprint-review report schema 1">
+<title>Sprint 2 | Sprint release report</title>
+<style>
+/* A plain work document: verdict and blockers first, then the evidence, one readable column at a time.
+   All colours, sizes and spacing live here; fragments from the generator only use the class names below. */
+:root {
+  --paper: #ffffff;
+  --surface: #f6f7f9;
+  --ink: #111418;
+  --ink-2: #363c44;
+  --ink-3: #565d66;
+  --rule: #e1e4e8;
+  --rule-2: #c3c8ce;
+  --human: #1f3fae;
+  --human-bg: #f0f4fd;
+  --good: #0f6b39;
+  --good-bg: #e8f4ec;
+  --bad: #b3261e;
+  --bad-bg: #fcecea;
+  --warn: #8a5300;
+  --warn-bg: #fdf2de;
+  --muted: #565d66;
+  --muted-bg: #eef0f2;
+  --select: #c9d4f7;
+  --link-line: rgba(31, 63, 174, .45);
+  --head-bg: rgba(255, 255, 255, .97);
+  --human-rule: #cdd8f6;
+  --row-hover: #fafbfc;
+  --fict-bg: #fbe7a6;
+  --fict-rule: #e3c25c;
+  --fict-ink: #3f2b00;
+  color-scheme: light;
+  --text: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", "Noto Sans", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --radius: 6px;
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 24px; --s-6: 32px; --s-7: 48px; --s-8: 64px;
+  --fs-xs: .8125rem;  /* 13px: captions, table headers */
+  --fs-sm: .9375rem;  /* 15px: tables, fact lists */
+  --fs-md: 1rem;      /* 16px: body */
+  --fs-lg: 1.25rem;   /* 20px: headline */
+  --fs-xl: 1.5rem;    /* 24px: section titles */
+  --measure: 68ch;
+}
+/* Dark palette, chosen on its own (not an inversion). Applies on screen when the reader picks Dark,
+   or picks System / nothing while the OS is dark. Print always uses the light palette above. */
+@media screen and (prefers-color-scheme: dark) {
+  :root:not(:has(#theme-light:checked)) {
+    --paper: #14171b; --surface: #1c2026; --ink: #e6e8eb; --ink-2: #c4c9d0; --ink-3: #a3aab3;
+    --rule: #2d333b; --rule-2: #3d444d; --human: #8fa8ff; --human-bg: #1a2240; --human-rule: #2f3d73;
+    --good: #5cc98a; --good-bg: #12301f; --bad: #ff8a80; --bad-bg: #3a1714; --warn: #f0b75a; --warn-bg: #36260a;
+    --muted: #a3aab3; --muted-bg: #262b32; --select: #2f3d73; --link-line: rgba(143, 168, 255, .5);
+    --head-bg: rgba(20, 23, 27, .96); --row-hover: #191d22; --fict-bg: #3a2f0c; --fict-rule: #6b5714; --fict-ink: #f6e3a6;
+    color-scheme: dark;
+  }
+}
+@media screen {
+  :root:has(#theme-dark:checked) {
+    --paper: #14171b; --surface: #1c2026; --ink: #e6e8eb; --ink-2: #c4c9d0; --ink-3: #a3aab3;
+    --rule: #2d333b; --rule-2: #3d444d; --human: #8fa8ff; --human-bg: #1a2240; --human-rule: #2f3d73;
+    --good: #5cc98a; --good-bg: #12301f; --bad: #ff8a80; --bad-bg: #3a1714; --warn: #f0b75a; --warn-bg: #36260a;
+    --muted: #a3aab3; --muted-bg: #262b32; --select: #2f3d73; --link-line: rgba(143, 168, 255, .5);
+    --head-bg: rgba(20, 23, 27, .96); --row-hover: #191d22; --fict-bg: #3a2f0c; --fict-rule: #6b5714; --fict-ink: #f6e3a6;
+    color-scheme: dark;
+  }
+}
+@page { size: A4; margin: 14mm 14mm 16mm; }
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: 4.5rem; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 400 var(--fs-md)/1.6 var(--text); font-variant-numeric: tabular-nums; }
+::selection { background: var(--select); color: var(--ink); }
+a { color: var(--human); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: .18em; text-decoration-color: var(--link-line); }
+a:hover { text-decoration-color: currentColor; text-decoration-thickness: 2px; }
+a:focus-visible { outline: 2px solid var(--human); outline-offset: 2px; border-radius: 2px; }
+code, .mono { font-family: var(--mono); font-size: .875em; overflow-wrap: anywhere; }
+h1, h2, h3 { margin: 0; color: var(--ink); font-weight: 700; line-height: 1.25; text-wrap: balance; }
+p { margin: 0; }
+.wrap { max-width: 72rem; margin: 0 auto; padding-inline: var(--s-6); }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Fictional notice */
+.fictional { margin: 0; padding: var(--s-2) var(--s-6); background: var(--fict-bg); border-bottom: 1px solid var(--fict-rule); text-align: center; font-size: var(--fs-xs); font-weight: 600; color: var(--fict-ink); }
+.fictional span { padding: 0; background: none; color: inherit; }
+
+/* Running head and contents */
+.runhead { position: sticky; top: 0; z-index: 2; background: var(--head-bg); border-bottom: 1px solid var(--rule); }
+.runhead .wrap { display: flex; align-items: center; justify-content: space-between; gap: var(--s-5); min-height: 48px; }
+.runhead-id { flex: none; max-width: 40%; font-size: var(--fs-xs); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.runhead-id b { color: var(--ink); font-weight: 600; }
+.contents { flex: 1 1 auto; display: flex; justify-content: flex-end; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.contents::-webkit-scrollbar { display: none; }
+.contents ul { display: flex; gap: var(--s-1); margin: 0; padding: 0; list-style: none; font-size: var(--fs-xs); white-space: nowrap; }
+.contents a { display: block; padding: var(--s-3) var(--s-2); color: var(--ink-2); text-decoration: none; border-radius: 4px; }
+.contents a:hover { color: var(--ink); background: var(--surface); }
+
+/* Theme switch: three real radios, no script (the report's CSP forbids scripts). The page reacts through :has(). */
+.theme { position: relative; flex: none; display: flex; gap: 2px; margin: 0; padding: 2px; min-width: 0; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--surface); }
+.theme input { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; pointer-events: none; }
+.theme label { display: block; padding: 4px var(--s-2); border-radius: 4px; font-size: .75rem; font-weight: 600; line-height: 1.5; color: var(--ink-2); white-space: nowrap; cursor: pointer; }
+.theme label:hover { color: var(--ink); }
+.theme input:checked + label { background: var(--paper); color: var(--ink); box-shadow: 0 0 0 1px var(--rule-2); }
+.theme input:focus-visible + label { outline: 2px solid var(--human); outline-offset: 1px; }
+
+/* Masthead: sprint name, goal, one row of identifiers */
+.masthead { padding-top: var(--s-7); padding-bottom: var(--s-6); }
+.kicker { margin-bottom: var(--s-2); font-size: var(--fs-xs); font-weight: 600; color: var(--ink-3); }
+h1 { font-size: clamp(2rem, 4.5vw, 2.75rem); line-height: 1.15; letter-spacing: -.01em; }
+.goal { margin-top: var(--s-3); max-width: var(--measure); font-size: 1.125rem; color: var(--ink-2); }
+.goal b { margin-right: var(--s-2); font-weight: 600; color: var(--ink-3); }
+.titleblock { display: flex; flex-wrap: wrap; gap: var(--s-3) var(--s-6); margin: var(--s-5) 0 0; padding-top: var(--s-4); border-top: 1px solid var(--rule); }
+.titleblock div { min-width: 0; max-width: 100%; }
+.titleblock dt { font-size: var(--fs-xs); color: var(--ink-3); }
+.titleblock dd { margin: 2px 0 0; font-size: var(--fs-sm); font-weight: 600; overflow-wrap: anywhere; }
+.titleblock code { font-size: .8125rem; font-weight: 500; }
+
+/* Overview: verdict beside the three totals, then the four reviews */
+.overview { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); border: 1px solid var(--rule-2); border-radius: var(--radius); overflow: hidden; }
+.verdict-card { display: flex; flex-direction: column; gap: var(--s-1); padding: var(--s-5); background: var(--tone-bg); border-left: 6px solid var(--tone); }
+.verdict-card h3 { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); }
+.verdict { font-size: clamp(2rem, 4vw, 2.5rem); font-weight: 800; line-height: 1.1; color: var(--tone); }
+.verdict-note { margin-top: var(--s-1); font-size: var(--fs-xs); color: var(--ink-2); }
+.gates { display: grid; margin: 0; padding: 0; list-style: none; }
+.gates--totals { grid-template-columns: repeat(3, minmax(0, 1fr)); border-left: 1px solid var(--rule-2); }
+.gates--areas { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: var(--s-3); border: 1px solid var(--rule); border-radius: var(--radius); overflow: hidden; }
+.gate { min-width: 0; border-right: 1px solid var(--rule); }
+.gate:last-child { border-right: 0; }
+.gate a { display: flex; flex-direction: column; gap: 2px; height: 100%; padding: var(--s-5); color: inherit; text-decoration: none; }
+.gates--areas .gate a { padding: var(--s-3) var(--s-4); }
+.gate a:hover { background: var(--surface); }
+.gate a:hover .gate-name { text-decoration: underline; }
+.gate-name { display: block; font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); }
+.gates--totals .gate-value { order: -1; display: block; font-size: 2rem; font-weight: 700; line-height: 1.15; white-space: nowrap; }
+.gates--areas .gate-value { display: block; font-size: var(--fs-sm); }
+.gate-sub { display: block; font-size: var(--fs-xs); color: var(--ink-3); }
+.gate.is-bad .gate-value { color: var(--bad); }
+.ticks { display: flex; flex-wrap: wrap; gap: 3px; margin-top: var(--s-2); }
+
+/* Brief: what happened on the left; what holds it and who signs on the right */
+.brief { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(18rem, 1fr); gap: var(--s-6) var(--s-7); padding-top: var(--s-6); }
+.headline { margin-bottom: var(--s-4); max-width: var(--measure); font-size: var(--fs-lg); line-height: 1.45; font-weight: 600; text-wrap: pretty; }
+.prose p { margin: 0 0 var(--s-3); max-width: var(--measure); text-wrap: pretty; }
+.prose p:last-child { margin-bottom: 0; }
+.brief-side { display: flex; flex-direction: column; gap: var(--s-5); min-width: 0; }
+.holds h3, .human h3 { margin-bottom: var(--s-2); font-size: var(--fs-md); }
+.holds h3 + p { font-size: var(--fs-sm); color: var(--ink-2); }
+.holds ul + h3 { margin-top: var(--s-5); }
+.hold-list { display: grid; grid-template-columns: max-content minmax(0, 1fr) auto; column-gap: var(--s-3); margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--rule); }
+.hold { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; row-gap: var(--s-1); padding: var(--s-2) 0; border-bottom: 1px solid var(--rule); font-size: var(--fs-sm); }
+.hold-id { font-weight: 600; overflow-wrap: anywhere; }
+.hold-meta { display: flex; flex-wrap: wrap; justify-content: end; gap: var(--s-1) var(--s-3); }
+.human { padding: var(--s-4) var(--s-5) var(--s-5); background: var(--human-bg); border: 1px solid var(--human-rule); border-radius: var(--radius); }
+.human h3 { color: var(--human); }
+.sign + .sign { margin-top: var(--s-4); }
+.sign-label { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); }
+.sign-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-1) var(--s-3); margin-top: var(--s-1); padding-bottom: var(--s-2); border-bottom: 1px solid var(--ink-3); font-size: var(--fs-md); }
+.signer { font-weight: 600; color: var(--human); }
+.sign-detail { margin-top: var(--s-2); font-size: var(--fs-xs); color: var(--ink-2); }
+.sign-detail p { margin: 0 0 var(--s-1); }
+.sign-detail .sign-label { margin-top: var(--s-3); }
+.sign-targets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-2) var(--s-4); margin: var(--s-1) 0 0; }
+.sign-targets .wide { grid-column: 1 / -1; }
+.sign-targets dt { font-size: .75rem; color: var(--ink-3); }
+.sign-targets dd { margin: 0; min-width: 0; color: var(--ink); overflow-wrap: anywhere; }
+.sign-targets code { font-size: .75rem; }
+
+/* Status marks: shape and word carry the state, colour repeats it */
+.chip { display: inline-flex; align-items: center; gap: .45em; padding: 1px .55em; border-radius: 4px; background: var(--muted-bg); color: var(--muted); font-size: .875em; font-weight: 600; line-height: 1.5; white-space: nowrap; }
+.chip::before, .tick { content: ""; flex: none; display: inline-block; width: .6em; height: .6em; border: 1.5px solid currentColor; }
+.chip--good { color: var(--good); background: var(--good-bg); }
+.chip--bad { color: var(--bad); background: var(--bad-bg); }
+.chip--warn { color: var(--warn); background: var(--warn-bg); }
+.chip--info, .chip--muted { color: var(--muted); background: var(--muted-bg); }
+.chip--good::before, .tick--good { background: currentColor; }
+.chip--bad::before, .tick--bad { background: currentColor; transform: rotate(45deg) scale(.85); }
+.chip--warn::before, .tick--warn { background: linear-gradient(135deg, currentColor 50%, transparent 50%); }
+.chip--info::before, .tick--info { border-radius: 50%; }
+.chip--muted::before, .tick--muted { border-style: dotted; }
+.tick { width: 10px; height: 10px; }
+.tick--good { color: var(--good); }
+.tick--bad { color: var(--bad); }
+.tick--warn { color: var(--warn); }
+.tick--info, .tick--muted, .tick--open { color: var(--ink-3); }
+
+/* Sections */
+.section { padding-top: var(--s-8); }
+.section-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--s-2) var(--s-6); margin-bottom: var(--s-3); padding-top: var(--s-4); border-top: 2px solid var(--ink); }
+.section-head h2 { font-size: var(--fs-xl); }
+.section-head p { padding: 2px var(--s-2); border-radius: 4px; background: var(--surface); font-size: var(--fs-xs); color: var(--ink-2); }
+.section-intro { margin: 0 0 var(--s-4); max-width: var(--measure); font-size: var(--fs-sm); color: var(--ink-3); }
+.section > .prose { margin-bottom: var(--s-4); }
+.sub-title { margin: var(--s-7) 0 var(--s-3); font-size: var(--fs-lg); }
+.sub { display: block; margin-top: 2px; font-size: var(--fs-xs); color: var(--ink-3); }
+
+/* Tables */
+.table-wrap { margin: var(--s-4) 0 0; }
+table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); line-height: 1.55; }
+th, td { padding: var(--s-3) var(--s-4) var(--s-3) 0; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
+th:first-child, td:first-child { padding-left: var(--s-3); }
+th:last-child, td:last-child { padding-right: var(--s-3); }
+thead th { padding-top: var(--s-2); padding-bottom: var(--s-2); background: var(--surface); border-bottom: 1px solid var(--rule-2); font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); }
+tbody tr:hover > td { background: var(--row-hover); }
+.num { text-align: right; white-space: nowrap; }
+.num .sub { white-space: normal; overflow-wrap: anywhere; }
+tfoot th, tfoot td { border-bottom: 0; border-top: 1px solid var(--rule-2); font-weight: 700; }
+td code { font-size: .8125rem; }
+td p { margin: 0 0 var(--s-1); max-width: 60ch; }
+td p:last-of-type { margin-bottom: 0; }
+.key { white-space: nowrap; font-weight: 600; }
+tr.is-empty td { color: var(--ink-3); }
+tr.is-blocking > td, tbody tr.is-blocking:hover > td { background: var(--bad-bg); }
+tr.is-blocking > td:first-child { box-shadow: inset 4px 0 0 var(--bad); }
+th.human-col, td.human-col { padding-left: var(--s-4); border-left: 2px solid var(--human); background: var(--human-bg); }
+thead th.human-col { width: 11rem; color: var(--human); background: var(--human-bg); }
+.evidence { margin: var(--s-2) 0 0; padding: 0; list-style: none; font-size: var(--fs-xs); }
+.evidence li { padding: 1px 0; overflow-wrap: anywhere; }
+.evidence li::before { content: ""; display: inline-block; width: .55em; margin-right: .45em; border-top: 1px solid var(--ink-3); vertical-align: middle; }
+
+/* Review areas: one card each, two per row */
+.areas { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-4); margin-top: var(--s-4); }
+.area { display: flex; flex-direction: column; gap: var(--s-3); min-width: 0; padding: var(--s-4) var(--s-5) var(--s-5); border: 1px solid var(--rule); border-radius: var(--radius); }
+.area-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-1) var(--s-3); padding-bottom: var(--s-3); border-bottom: 1px solid var(--rule); }
+.area h3 { font-size: 1.125rem; }
+.area-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-2) var(--s-4); align-content: start; margin: 0; font-size: var(--fs-sm); }
+.area-facts .wide { grid-column: 1 / -1; }
+.area-facts dt { font-size: .75rem; color: var(--ink-3); }
+.area-facts dd { margin: 0; overflow-wrap: anywhere; }
+.area .prose p { font-size: var(--fs-sm); }
+.fticks { display: inline-flex; flex-wrap: wrap; gap: 3px; margin-right: var(--s-2); vertical-align: -1px; }
+
+/* Fact lists */
+.facts { display: grid; grid-template-columns: minmax(10rem, 14rem) minmax(0, 1fr); margin: 0; border-top: 1px solid var(--rule-2); }
+.facts div { display: contents; }
+.facts dt, .facts dd { padding: var(--s-2) 0; border-bottom: 1px solid var(--rule); }
+.facts dt { padding-right: var(--s-5); font-size: var(--fs-sm); color: var(--ink-3); }
+.facts dd { margin: 0; min-width: 0; font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.facts dd p { margin: 0 0 var(--s-1); }
+.facts dd p:last-child { margin-bottom: 0; }
+.decision-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; gap: 0 var(--s-7); }
+.decision-grid .facts { border-top: 2px solid var(--human); }
+.digest { font-size: .8125rem; }
+
+/* Follow-ups and colophon */
+.followups { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--rule-2); }
+.followups li { padding: var(--s-2) 0; border-bottom: 1px solid var(--rule); font-size: var(--fs-sm); }
+.followups .key { margin-right: var(--s-3); }
+.colophon { margin-top: var(--s-8); padding-top: var(--s-4); padding-bottom: var(--s-7); border-top: 1px solid var(--rule); font-size: var(--fs-xs); color: var(--ink-3); }
+.colophon p { margin: 0 0 var(--s-1); }
+
+.is-ready { --tone: var(--good); --tone-bg: var(--good-bg); }
+.is-incomplete { --tone: var(--warn); --tone-bg: var(--warn-bg); }
+.is-blocked { --tone: var(--bad); --tone-bg: var(--bad-bg); }
+
+@media (max-width: 64rem) {
+  .runhead { position: static; }
+  .runhead .wrap { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: var(--s-4); padding-top: var(--s-2); }
+  .runhead-id { max-width: none; grid-row: 1; grid-column: 1; }
+  .theme { grid-row: 1; grid-column: 2; }
+  .contents { grid-row: 2; grid-column: 1 / -1; justify-content: flex-start; }
+  .contents a { padding-inline: 0; margin-right: var(--s-4); }
+  .overview { grid-template-columns: minmax(0, 1fr); }
+  .gates--totals { border-left: 0; border-top: 1px solid var(--rule-2); }
+  .gates--areas { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gates--areas .gate:nth-child(2) { border-right: 0; }
+  .gates--areas .gate:nth-child(n+3) { border-top: 1px solid var(--rule); }
+  .brief { grid-template-columns: minmax(0, 1fr); }
+  .decision-grid { grid-template-columns: minmax(0, 1fr); gap: var(--s-5); }
+}
+@media (max-width: 48rem) {
+  .areas { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 40rem) {
+  .theme label { display: flex; align-items: center; min-height: 40px; padding-inline: var(--s-3); font-size: var(--fs-xs); }
+  .wrap { padding-inline: var(--s-4); }
+  .fictional { padding-inline: var(--s-4); text-align: left; }
+  .masthead { padding-top: var(--s-6); }
+  .verdict-card { padding: var(--s-4); }
+  .gates--totals { grid-template-columns: minmax(0, 1fr); }
+  .gates--totals .gate { border-right: 0; border-bottom: 1px solid var(--rule); }
+  .gates--totals .gate:last-child { border-bottom: 0; }
+  .gates--totals .gate a { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--s-4); padding: var(--s-3) var(--s-4); }
+  .gates--totals .gate-value { grid-column: 2; grid-row: 1 / span 3; align-self: center; font-size: 1.5rem; }
+  .gates--areas { grid-template-columns: minmax(0, 1fr); }
+  .gates--areas .gate { border-right: 0; }
+  .gates--areas .gate + .gate { border-top: 1px solid var(--rule); }
+  .human { padding: var(--s-4); }
+  .headline { font-size: 1.125rem; }
+  .area { padding: var(--s-4); }
+  .facts { grid-template-columns: minmax(0, 1fr); }
+  .facts dt { padding-bottom: 0; border-bottom: 0; }
+  .facts dd { padding-top: 2px; }
+  /* Narrow tables become labelled records */
+  .table-wrap thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .table-wrap table, .table-wrap tbody, .table-wrap tfoot, .table-wrap tr, .table-wrap th, .table-wrap td { display: block; }
+  .table-wrap tr { padding: var(--s-3) 0; border-bottom: 1px solid var(--rule); }
+  .table-wrap td, .table-wrap tfoot th, .table-wrap th:first-child, .table-wrap td:first-child, .table-wrap td:last-child { padding: 2px 0; border: 0; text-align: left; background: none; }
+  .table-wrap td[data-label]::before { content: attr(data-label); display: block; margin-top: var(--s-1); font-size: .75rem; color: var(--ink-3); }
+  .table-wrap td:first-child { font-weight: 600; }
+  .table-wrap td:first-child::before { display: none; }
+  .table-wrap tfoot tr { display: flex; justify-content: space-between; border-top: 1px solid var(--rule-2); }
+  tr.is-blocking { padding-inline: var(--s-3); background: var(--bad-bg); box-shadow: inset 4px 0 0 var(--bad); }
+  tr.is-blocking > td, tbody tr.is-blocking:hover > td { background: none; }
+  tr.is-blocking > td:first-child { box-shadow: none; }
+  td.human-col { margin-top: var(--s-2); padding: var(--s-2) var(--s-3) !important; border-left: 2px solid var(--human) !important; background: var(--human-bg) !important; }
+}
+@media print {
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  html { scroll-padding-top: 0; }
+  body { font-size: 10pt; line-height: 1.5; }
+  .wrap { max-width: none; padding-inline: 0; }
+  .fictional { padding: 3pt 6pt; border: 1px solid #e3c25c; }
+  .runhead { position: static; border-bottom: 1px solid var(--rule); }
+  .runhead .wrap { min-height: 0; }
+  .runhead-id { max-width: none; padding: 3pt 0; }
+  .contents, .theme { display: none; }
+  .masthead { padding-top: 12pt; padding-bottom: 10pt; }
+  h1 { font-size: 22pt; }
+  .goal { font-size: 11pt; }
+  .titleblock { margin-top: 10pt; padding-top: 8pt; }
+  .overview { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); break-inside: avoid; }
+  .gates--totals { border-left: 1px solid var(--rule-2); border-top: 0; }
+  .verdict-card { padding: 10pt 12pt; }
+  .verdict { font-size: 24pt; }
+  .gate a { padding: 10pt 12pt; }
+  .gates--totals .gate-value { font-size: 18pt; }
+  .gates--areas { grid-template-columns: repeat(4, minmax(0, 1fr)); break-inside: avoid; }
+  .gates--areas .gate { border-top: 0 !important; border-right: 1px solid var(--rule) !important; }
+  .gates--areas .gate:last-child { border-right: 0 !important; }
+  .gates--areas .gate a { padding: 6pt 8pt; }
+  /* One column: a two-column brief leaves half a page blank when it continues on the next sheet */
+  .brief { grid-template-columns: minmax(0, 1fr); gap: 12pt; padding-top: 14pt; }
+  .headline { font-size: 12pt; }
+  .holds h3, .human { break-inside: avoid; }
+  .hold { break-inside: avoid; }
+  .section { padding-top: 20pt; }
+  .section-head { break-after: avoid; }
+  .section-head h2 { font-size: 15pt; }
+  .section-intro, .sub-title, .section > .prose { break-after: avoid; }
+  .section-head, .section-intro, .sub-title, .section > .prose p { break-inside: avoid; }
+  .section > .table-wrap, .section > .areas, .section > .facts, .followups, .decision-grid { break-before: avoid; }
+  tbody tr:first-child, .area:nth-child(-n+2), .followups li:first-child { break-before: avoid; }
+  .areas { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8pt; }
+  .area { padding: 8pt 10pt; break-inside: avoid; }
+  .decision-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 16pt; }
+  table { font-size: 9pt; }
+  th, td { padding: 5pt 8pt 5pt 0; }
+  tbody tr:hover > td { background: none; }
+  tr, .facts dt, .facts dd, .followups li { break-inside: avoid; }
+  /* A footer group repeats on each page; print the total once, after the last row */
+  tfoot { display: table-row-group; }
+  tbody:has(+ tfoot) tr:last-child { break-after: avoid; }
+  tfoot tr { break-before: avoid; }
+  .facts { grid-template-columns: fit-content(14em) minmax(0, 1fr); }
+  .facts dt, .facts dd { padding: 4pt 0; }
+  .facts dt { padding-right: 12pt; }
+  #identity { break-inside: avoid; }
+  .colophon { break-before: avoid; margin-top: 18pt; padding-bottom: 0; }
+  a { color: inherit; text-decoration: none; }
+  .facts a[href]::after, .evidence a[href]::after, .followups a[href]::after, .sign-detail a[href]::after { content: " <" attr(href) ">"; font-size: .78em; color: var(--ink-3); overflow-wrap: anywhere; }
+}
+</style>
+</head>
+<body class="is-ready">
+
+<header class="runhead">
+  <div class="wrap">
+    <p class="runhead-id"><b>Ticketing System</b> · Sprint release report · S-2-release · v3</p>
+    <nav class="contents" aria-label="Contents">
+      <ul>
+        <li><a href="#outcome">Outcome</a></li>
+        <li><a href="#decision">Human decision</a></li>
+        <li><a href="#scope">Scope</a></li>
+        <li><a href="#risks">Risks and follow-ups</a></li>
+        <li><a href="#reviews">Reviews</a></li>
+        <li><a href="#checks">Checks and costs</a></li>
+        <li><a href="#measurements">Measurements</a></li>
+        <li><a href="#retrospective">Retrospective</a></li>
+        <li><a href="#identity">Sprint and release</a></li>
+      </ul>
+    </nav>
+    <fieldset class="theme">
+      <legend class="visually-hidden">Theme</legend>
+      <input type="radio" name="theme" id="theme-system" value="system" checked><label for="theme-system">System</label>
+      <input type="radio" name="theme" id="theme-light" value="light"><label for="theme-light">Light</label>
+      <input type="radio" name="theme" id="theme-dark" value="dark"><label for="theme-dark">Dark</label>
+    </fieldset>
+  </div>
+</header>
+
+<div class="masthead wrap">
+  <p class="kicker">Sprint release report</p>
+  <h1>Sprint 2</h1>
+  <p class="goal"><b>Goal</b>Scan time contract and pass exit mode on ADR-085 (TKT-559, TKT-399), then the scanner follow-ups (TKT-551, TKT-552).</p>
+  <dl class="titleblock">
+    <div><dt>Dates</dt><dd>2026-10-19 to 2026-11-02</dd></div>
+    <div><dt>Sprint</dt><dd><code>S-2</code> · Active</dd></div>
+    <div><dt>Closure task</dt><dd><code>TKT-563</code></dd></div>
+    <div><dt>Proposed tag</dt><dd><code>No tag planned</code></dd></div>
+    <div><dt>Base</dt><dd><code>5e3bee1db801</code></dd></div>
+    <div><dt>Candidate</dt><dd><a href="https://github.com/mathd/ticketing_system/commit/c2f77420377ef7851d6eb00230842fb05b398de1" rel="noreferrer"><code>c2f77420377ef7851d6eb00230842fb05b398de1</code></a></dd></div>
+    <div><dt>Report</dt><dd>S-2-release · v3</dd></div>
+  </dl>
+</div>
+
+<main class="wrap">
+  <section id="outcome" aria-labelledby="h-outcome">
+    <h2 id="h-outcome" class="visually-hidden">Outcome</h2>
+    <div class="overview">
+      <div class="verdict-card">
+        <h3>Technical readiness</h3>
+        <p class="verdict">Ready</p>
+        <p class="verdict-note">The agents&#x27; assessment. It does not approve the release.</p>
+      </div>
+      <ul class="gates gates--totals"><li class="gate"><a href="#scope"><span class="gate-name">Scope</span><span class="gate-value">4 / 4</span><span class="gate-sub">Items delivered</span><span class="ticks" aria-hidden="true"><i class="tick tick--good"></i><i class="tick tick--good"></i><i class="tick tick--good"></i><i class="tick tick--good"></i></span></a></li><li class="gate"><a href="#checks"><span class="gate-name">Checks and costs</span><span class="gate-value">6 / 6</span><span class="gate-sub">Required checks passed<br>Measured run cost None</span><span class="ticks" aria-hidden="true"><i class="tick tick--good"></i><i class="tick tick--good"></i><i class="tick tick--good"></i><i class="tick tick--good"></i><i class="tick tick--good"></i><i class="tick tick--good"></i></span></a></li><li class="gate"><a href="#risks"><span class="gate-name">Risks and follow-ups</span><span class="gate-value">0</span><span class="gate-sub">Unresolved blocking risks</span></a></li></ul>
+    </div>
+    <ul class="gates gates--areas" aria-label="Reviews"><li class="gate"><a href="#area-implementation"><span class="gate-name">Implementation</span><span class="gate-value"><span class="chip chip--good">Passed</span></span><span class="gate-sub">Round 1</span></a></li><li class="gate"><a href="#area-verification"><span class="gate-name">Verification</span><span class="gate-value"><span class="chip chip--good">Passed</span></span><span class="gate-sub">Round 1</span></a></li><li class="gate"><a href="#area-documentation"><span class="gate-name">Documentation</span><span class="gate-value"><span class="chip chip--good">Passed</span></span><span class="gate-sub">Round 1</span></a></li><li class="gate"><a href="#area-retrospective"><span class="gate-name">Retrospective</span><span class="gate-value"><span class="chip chip--good">Passed</span></span><span class="gate-sub">Round 1</span></a></li></ul>
+    <div class="brief">
+      <div>
+        <p class="headline">Scanner scans now follow the time contract, preserve Entry or Exit direction, report rejected offline results separately and show both approved Entry refusal instructions.</p>
+        <div class="prose"><p>The four functional members are Done. The combined browser and real Access journeys passed on the frozen candidate. All five diagnostics detected their intended defects and eight clean repetitions passed.</p><p>All four independent review areas reached HUMAN_REVIEW. This is technical readiness, not owner approval.</p><p>The full release diff includes prepared workflow maintenance as well as the four functional deliveries. TKT-563 adds report evidence only. Actual contributing models are gpt-6.1-sol, gpt-6-astra, claude-opus-5-5 and claude-haiku-5-5. Gemini 3.8 Flash high reviews every final area and differs from all authors. Copied Opus fixture contributions remain in that set. No code or fixes from the abandoned 24f1c209 implementation or PR 451 were reused.</p><p>S-2 stays active and TKT-563 stays open until the owner approves the exact candidate, committed report, brief and scope targets. Report publication still follows exact-head local, hosted and post-merge checks, with their final receipts on the board. No tag or deployment is planned. Venue qualification remains TKT-560.</p></div>
+      </div>
+      <div class="brief-side">
+        <div class="holds"><h3>Nothing blocks release</h3><p>Every review passed. Every required check passed or does not apply. No unresolved risk blocks the release.</p></div>
+        <div class="human">
+          <h3>Human decision</h3>
+          <div class="sign"><p class="sign-label">Human approval</p><p class="sign-line"><span class="chip chip--warn">Pending</span></p><div class="sign-detail"><p>Exact sprint close approval is pending. The start and priority approvals do not authorize closure.</p><p class="sign-label">A decision must name</p><dl class="sign-targets"><div><dt>Sprint</dt><dd><code>S-2</code></dd></div><div class="wide"><dt>Scope digest</dt><dd><code>475b7c77f414e3205adb736c856fb913675f56cbdd7f58603ca28b46ae061186</code></dd></div><div><dt>Proposed tag</dt><dd>No tag planned</dd></div><div class="wide"><dt>Candidate</dt><dd><code>c2f77420377ef7851d6eb00230842fb05b398de1</code></dd></div><div class="wide"><dt>Report</dt><dd>The HTML digest of one report version</dd></div></dl></div></div><div class="sign"><p class="sign-label">Release tag No tag planned</p><p class="sign-line"><span class="chip chip--muted">No tag planned</span></p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="decision" class="section" aria-labelledby="h-decision">
+    <div class="section-head"><h2 id="h-decision">Human decision</h2></div>
+    <p class="section-intro">Only a named human can approve the release. A decision names the sprint, the scope digest, the exact candidate, the HTML digest of one report version and the tag.</p>
+    <div class="decision-grid">
+      <dl class="facts">
+        <div><dt>Human approval</dt><dd><span class="chip chip--warn">Pending</span></dd></div>
+        <div><dt>Decided by</dt><dd>Not recorded</dd></div>
+        <div><dt>Decided at</dt><dd>Not recorded</dd></div>
+        <div><dt>Reference</dt><dd>Not recorded</dd></div>
+        <div><dt>Note</dt><dd><p>Exact sprint close approval is pending. The start and priority approvals do not authorize closure.</p></dd></div>
+      </dl>
+      <dl class="facts">
+        <div><dt>Sprint in decision</dt><dd>Not recorded</dd></div>
+        <div><dt>Scope digest in decision</dt><dd>Not recorded</dd></div>
+        <div><dt>Candidate in decision</dt><dd>Not recorded</dd></div>
+        <div><dt>Report HTML digest in decision</dt><dd>Not recorded</dd></div>
+        <div><dt>Tag in decision</dt><dd>Not recorded</dd></div>
+        <div><dt>Release tag</dt><dd><span class="chip chip--muted">No tag planned</span> </dd></div>
+        <div><dt>Sprint state</dt><dd><span class="chip chip--info">Active</span></dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section id="scope" class="section" aria-labelledby="h-scope">
+    <div class="section-head"><h2 id="h-scope">Scope</h2><p>Items delivered <b>4 / 4</b></p></div>
+    <div class="prose"><p>Original and current scope contain exactly TKT-399, TKT-551, TKT-552, TKT-559 and closure task TKT-563. No member was added or removed. The owner later permitted justified additions, but none was needed. TKT-560, TKT-564, TKT-565 and TKT-566 remain Backlog outside S-2. Current approved brief SHA-256 fc3e0b0752e1a2aa7e7f643c2539b372347cc45139d8803ddccd4ec86b603b07. The closure task is shown separately from the four functional items.</p></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Item</th><th scope="col">Title</th><th scope="col">Outcome</th><th scope="col">Note</th></tr></thead>
+        <tbody><tr><td data-label="Item"><span class="key">TKT-559</span></td><td data-label="Title">ADR-085 ticket 3: scan time and publication contract, Entry first (TKT-399 D30 limits)<span class="sub">Origin: Planned</span></td><td data-label="Outcome"><span class="chip chip--good">Delivered</span></td><td data-label="Note">Done. Exact scope, checks and residuals are in its closeout.</td></tr><tr><td data-label="Item"><span class="key">TKT-399</span></td><td data-label="Title">TKT-19 S1: Scan pass exits from the gate UI<span class="sub">Origin: Planned</span></td><td data-label="Outcome"><span class="chip chip--good">Delivered</span></td><td data-label="Note">Done. Exact scope, checks and residuals are in its closeout.</td></tr><tr><td data-label="Item"><span class="key">TKT-551</span></td><td data-label="Title">Scanner: a rejected offline scan reads as &#x27;Synced&#x27; — the sync note counts conflicts only (TKT-399 incidental)<span class="sub">Origin: Planned</span></td><td data-label="Outcome"><span class="chip chip--good">Delivered</span></td><td data-label="Note">Done. Exact scope, checks and residuals are in its closeout.</td></tr><tr><td data-label="Item"><span class="key">TKT-552</span></td><td data-label="Title">Scanner Entry mode shows &#x27;Credential is invalid&#x27; for the pass denials exit_required and entry_limit_reached (TKT-399 incidental)<span class="sub">Origin: Planned</span></td><td data-label="Outcome"><span class="chip chip--good">Delivered</span></td><td data-label="Note">Done. Exact scope, checks and residuals are in its closeout.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="risks" class="section" aria-labelledby="h-risks">
+    <div class="section-head"><h2 id="h-risks">Risks and follow-ups</h2><p>Unresolved blocking risks <b>0</b></p></div>
+    <p class="section-intro">An unresolved Critical or High risk blocks readiness, also when it is deferred. An open risk marked blocking also blocks readiness.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">ID</th><th scope="col">Risk</th><th scope="col">Severity</th><th scope="col">Status</th><th scope="col">Resolution</th></tr></thead>
+        <tbody><tr id="risk-0"><td data-label="ID"><span class="key">R1</span></td><td data-label="Risk">Venue qualification remains unmeasured<span class="sub">Area: Verification</span><ul class="evidence"><li>Scope and host evidence <code>S-2 sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754</code></li></ul></td><td data-label="Severity"><span class="chip chip--warn">Medium</span></td><td data-label="Status"><span class="chip chip--muted">Deferred</span></td><td data-label="Resolution">S-2 approves host measurements only. Complete TKT-560 before venue use.<span class="sub"><code>TKT-560</code></span></td></tr><tr id="risk-1"><td data-label="ID"><span class="key">R2</span></td><td data-label="Risk">Page loss and physical passage remain uncertain<span class="sub">Area: Implementation</span><ul class="evidence"><li>TKT-559 closeout <code>TKT-559 sha256:6e0440c7cdd4dd37e56c6920230532feae413263e7591f4567c8d49d930c11a0</code></li><li>TKT-399 closeout <code>TKT-399 sha256:e1c29c911d519090b35bc02b79d2b31483d3ba702f545af8dc089683ed9ebdf4</code></li><li>TKT-551 closeout <code>TKT-551 sha256:099ad019656cb88ecd259c38a6f260366c116224da3c71a7c0e67ebd45a01c71</code></li><li>TKT-552 closeout <code>TKT-552 sha256:e6c165f0490386532b315bd11145275e154e1b4cd79585467e4c7180dbe4114e</code></li></ul></td><td data-label="Severity"><span class="chip chip--warn">Medium</span></td><td data-label="Status"><span class="chip chip--warn">Open</span></td><td data-label="Resolution">Current-page repair and recorded Access facts do not prove physical passage. Keep the page open when storage repair is required and follow the operator instructions.</td></tr><tr id="risk-2"><td data-label="ID"><span class="key">R3</span></td><td data-label="Risk">Sync reporting is transient and some queue counts can be stale<span class="sub">Area: Implementation</span><ul class="evidence"><li>TKT-551 closeout <code>TKT-551 sha256:099ad019656cb88ecd259c38a6f260366c116224da3c71a7c0e67ebd45a01c71</code></li></ul></td><td data-label="Severity"><span class="chip chip--muted">Low</span></td><td data-label="Status"><span class="chip chip--warn">Open</span></td><td data-label="Resolution">Totals include already-applied rows. Warnings describe the latest pass on the current page. No acknowledgement list was added. Partial-failure and replacement semantics remain covered at the App tier.</td></tr><tr id="risk-3"><td data-label="ID"><span class="key">R4</span></td><td data-label="Risk">Broader Entry rejection copy remains separate<span class="sub">Area: Documentation</span><ul class="evidence"><li>TKT-552 closeout <code>TKT-552 sha256:e6c165f0490386532b315bd11145275e154e1b4cd79585467e4c7180dbe4114e</code></li></ul></td><td data-label="Severity"><span class="chip chip--muted">Low</span></td><td data-label="Status"><span class="chip chip--muted">Deferred</span></td><td data-label="Resolution">The two approved reasons are complete. Other readable reasons retain the documented fallback.<span class="sub"><code>TKT-565</code></span></td></tr><tr id="risk-4"><td data-label="ID"><span class="key">R5</span></td><td data-label="Risk">The maintained measurement helper still targets a historical receipt<span class="sub">Area: Verification</span><ul class="evidence"><li>Full-browser archive and restore evidence <code>S-2 sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754</code></li></ul></td><td data-label="Severity"><span class="chip chip--muted">Low</span></td><td data-label="Status"><span class="chip chip--muted">Deferred</span></td><td data-label="Resolution">This run archived new measurements and restored the exact historical bytes. TKT-564 changes the output-path contract later.<span class="sub"><code>TKT-564</code></span></td></tr><tr id="risk-5"><td data-label="ID"><span class="key">R6</span></td><td data-label="Risk">Combined journeys are retained evidence outside the maintained suite<span class="sub">Area: Verification</span><ul class="evidence"><li>Eight restored probe runs and diagnostics <code>S-2 sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754</code></li></ul></td><td data-label="Severity"><span class="chip chip--muted">Low</span></td><td data-label="Status"><span class="chip chip--muted">Deferred</span></td><td data-label="Resolution">The pinned probe is reproducible. TKT-566 owns promotion into maintained browser coverage.<span class="sub"><code>TKT-566</code></span></td></tr></tbody>
+      </table>
+    </div>
+    <h3 class="sub-title">Follow-up work</h3>
+    <ul class="followups"><li><span class="key">TKT-560</span>Load-test the scanner pre-decision 503 bound (TKT-557 D10, 500 ms provisional)<span class="sub">R1 and C8. Mandatory before venue use.</span></li><li><span class="key">TKT-564</span>Preserve historical scanner measurement receipts<span class="sub">R5. Creation only was approved; no implementation or membership.</span></li><li><span class="key">TKT-565</span>Scanner Entry: complete exact reason text for the remaining readable rejections<span class="sub">R4. Broader copy is outside the two approved reasons.</span></li><li><span class="key">TKT-566</span>Scanner: retain combined denial-copy and mixed-sync journeys in the browser suite<span class="sub">R6. Maintained-suite promotion is separate work.</span></li></ul>
+  </section>
+
+  <section id="reviews" class="section" aria-labelledby="h-reviews">
+    <div class="section-head"><h2 id="h-reviews">Reviews</h2></div>
+    <p class="section-intro">Four independent reviews of the same candidate. A review result is not a human approval.</p>
+    <div class="areas"><article class="area" id="area-implementation"><div class="area-head"><h3>Implementation</h3><span class="chip chip--good">Passed</span></div><dl class="area-facts"><div><dt>Decision</dt><dd><code>HUMAN_REVIEW</code></dd></div><div><dt>Round</dt><dd>1</dd></div><div class="wide"><dt>Reviewers</dt><dd>gemini-3.8-flash-high</dd></div><div class="wide"><dt>Findings raised / resolved / deferred</dt><dd>0 / 0 / 0</dd></div></dl><div class="prose"><p>Both Gemini lenses returned no findings. They inspected the combined timing, captured direction, reconcile accounting and refusal-copy changes against the effective plans and decisions. The review includes the prepared workflow changes and all actual contributors. The first audit invocation was incomplete and remains in the history; its fresh completion supplies the accepted audit. No remaining product design defect was identified. Physical passage, page loss and venue behavior remain outside the demonstrated guarantees.</p></div><div><ul class="evidence"><li>Completed area review and verified dispositions <code>S-2 sha256:edd5349c76a37d702fa962568a2d077687a2f6dfd9f9220f5d2ba92e0b3924ea</code></li></ul></div></article><article class="area" id="area-verification"><div class="area-head"><h3>Verification</h3><span class="chip chip--good">Passed</span></div><dl class="area-facts"><div><dt>Decision</dt><dd><code>HUMAN_REVIEW</code></dd></div><div><dt>Round</dt><dd>1</dd></div><div class="wide"><dt>Reviewers</dt><dd>gemini-3.8-flash-high</dd></div><div class="wide"><dt>Findings raised / resolved / deferred</dt><dd>0 / 0 / 0</dd></div></dl><div class="prose"><p>Both Gemini lenses returned no findings. The accepted audit inspected the governing bodies, workflow changes and full denial and mixed-sync probe source. An earlier incomplete audit remains retained. All five diagnostics detected the intended failures without unallowed failures; eight restored repetitions passed. Seven new mixed outcomes use actual Access responses. Existing entryCore and some App-tier cases use documented mocks. No-resend evidence covers completed reads and the observed request interval. Alarm rows prove that an alarm is owed, not delivered. Host timing, coverage and complexity limits remain explicit.</p></div><div><ul class="evidence"><li>Completed area review and verified dispositions <code>S-2 sha256:b5770c6164ab158b9801dad87048d872050077945ec1b5af191c481be4fe671b</code></li></ul></div></article><article class="area" id="area-documentation"><div class="area-head"><h3>Documentation</h3><span class="chip chip--good">Passed</span></div><dl class="area-facts"><div><dt>Decision</dt><dd><code>HUMAN_REVIEW</code></dd></div><div><dt>Round</dt><dd>1</dd></div><div class="wide"><dt>Reviewers</dt><dd>gemini-3.8-flash-high</dd></div><div class="wide"><dt>Findings raised / resolved / deferred</dt><dd>0 / 0 / 0</dd></div></dl><div class="prose"><p>Both Gemini lenses returned no unresolved findings. The initial inspection covered operator documentation, ADRs and implementation claims. Its fresh boundary retry replaced an initial call that read a mirrored brief. The completed audit used the same product packet, all governing bodies, the other three final area records and the complete rendered report draft. Its earlier incomplete invocation remains retained. A bounded final source and page check follows report assembly. Evidence links retain exact board comment digests or full commit IDs. Narrow tables can require horizontal scrolling. Print CSS was inspected, but pagination was not executed. The scriptless page has no external resources; loaded content stayed readable after the server stopped. A cold offline reload was not executed. Technical readiness remains separate from pending owner approval and no-tag publication.</p></div><div><ul class="evidence"><li>Completed area review and verified dispositions <code>S-2 sha256:d6123b49ba4edb9f42ba4be62dc0133e957bcefdade4e3009b501c71e4f09c06</code></li></ul></div></article><article class="area" id="area-retrospective"><div class="area-head"><h3>Retrospective</h3><span class="chip chip--good">Passed</span></div><dl class="area-facts"><div><dt>Decision</dt><dd><code>HUMAN_REVIEW</code></dd></div><div><dt>Round</dt><dd>1</dd></div><div class="wide"><dt>Reviewers</dt><dd>gemini-3.8-flash-high</dd></div><div class="wide"><dt>Findings raised / resolved / deferred</dt><dd>0 / 0 / 0</dd></div></dl><div class="prose"><p>Both Gemini lenses returned no release findings. The audit qualifies the initial suggestions against full closeouts, actual decisions and recorded failures. Status dwell and provider-stop intervals are elapsed observations, not active work. DOC-01 failed in the TKT-551 development scanner suite before its three green gates. The first count diagnostic saw its intended failure plus an unexpected wire-shape failure. Process proposals below remain advisory, with no owner selection or added checkpoint. Incomplete invocations and factual corrections remain in the board history.</p></div><div><ul class="evidence"><li>Completed area review and verified dispositions <code>S-2 sha256:22f1f410e91275d4559c3582f13ada518fae27776538b7d70cefa2ab6b3c827d</code></li></ul></div></article></div>
+  </section>
+
+  <section id="checks" class="section" aria-labelledby="h-checks">
+    <div class="section-head"><h2 id="h-checks">Checks and costs</h2><p>Required checks passed <b>6 / 6</b></p></div>
+    <p class="section-intro">Required: 6 passed, 0 not applicable, 0 failed or not run. Optional: 2.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Check</th><th scope="col">Status</th><th scope="col">Result or reason</th><th scope="col" class="num">Cost</th></tr></thead>
+        <tbody><tr id="check-0"><td data-label="Check"><span class="key">C1</span> Fresh candidate local gate<span class="sub">Local gate · Required</span></td><td data-label="Status"><span class="chip chip--good">Passed</span></td><td data-label="Result or reason"><p>PASS on c2f77420377ef7851d6eb00230842fb05b398de1. Exit 0, verdict and log body agree. Elapsed 876.796 s. The gate fingerprint is checked with scripts/gate.sh --digest and is distinct from the Git tree ID.</p><span class="sub"><code>make check</code></span><ul class="evidence"><li>Frozen candidate packet and run receipts <code>S-2 sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754</code></li></ul></td><td class="num" data-label="Cost">Not recorded</td></tr><tr id="check-1"><td data-label="Check"><span class="key">C2</span> Full host-Chrome browser suite<span class="sub">End-to-end · Required</span></td><td data-label="Status"><span class="chip chip--good">Passed</span></td><td data-label="Result or reason"><p>PASS, 171.618 s including stack and builds. Chrome 155.0.8059.79 submitted the maintained suite. The wrapper archived fresh timing bytes and restored the historical receipt to SHA-256 677c6e65fea1b00e548aaef10242c5187fd0fcef9ff1a5e428c5381863dfa642. No tracked change remained.</p><span class="sub"><code>docs/sprints/S-2/evidence/TKT-563/run-make-browser.sh --historical-backup /tmp/sdlc-S-2/pre-closure-inventory/TKT-559-historical-receipt.json --receipts /tmp/sdlc-S-2/TKT-563-full-browser-r2</code></span><ul class="evidence"><li>Frozen candidate packet and run receipts <code>S-2 sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754</code></li></ul></td><td class="num" data-label="Cost">Not recorded</td></tr><tr id="check-2"><td data-label="Check"><span class="key">C3</span> Combined real denial and mixed-sync journeys<span class="sub">End-to-end · Required</span></td><td data-label="Status"><span class="chip chip--good">Passed</span></td><td data-label="Result or reason"><p>Eight fresh repetitions PASS with 86 named checks in each. Both exact denial instructions, terminal local rows, no successful ACTUATED write for denied scans and unchanged lifecycle facts passed. The real seven-row batch returned four synced, one conflict and two rejected results. Wire identities, directions, times, complete local-row transitions, exact Access facts, one owed conflict alarm and completed no-resend reads passed. Existing entryCore also ran; its existing substituted-response cases remain distinct from the new real-response journeys.</p><span class="sub"><code>docs/sprints/S-2/evidence/TKT-563/run-probe.sh --variant candidate --repeat 8 --output /tmp/sdlc-S-2/TKT-563-probe-candidate-restored-r2</code></span><ul class="evidence"><li>Frozen candidate packet and run receipts <code>S-2 sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754</code></li></ul></td><td class="num" data-label="Cost">Not recorded</td></tr><tr id="check-3"><td data-label="Check"><span class="key">C4</span> Diagnostic discrimination<span class="sub">Integration · Required</span></td><td data-label="Status"><span class="chip chip--good">Passed</span></td><td data-label="Result or reason"><p>The frozen packet retains all five exact diagnostic commands. All five variants DETECTED on the final candidate. Every intended assertion failed, no failure was outside its immutable allowed set, and the mutation reached the system. The first count diagnostic on 3d75a526 returned NOT_DETECTED because the probe expected two sorted-key strings in the wrong order. That failed receipt is retained. The one-line repair changed only key order; all five diagnostics and eight clean runs then passed.</p><ul class="evidence"><li>Frozen candidate packet and run receipts <code>S-2 sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754</code></li></ul></td><td class="num" data-label="Cost">Not recorded</td></tr><tr id="check-4"><td data-label="Check"><span class="key">C5</span> Focused scanner checks and builds<span class="sub">Unit · Required</span></td><td data-label="Status"><span class="chip chip--good">Passed</span></td><td data-label="Result or reason"><p>100 focused tests in four files passed. Frozen dependencies, backend and frontend builds and scanner build passed. These early commands ran on 3d75a526. Product, dependency and runtime inputs are byte-identical on the final candidate; the fresh full candidate gate reran the complete required tests and builds.</p><span class="sub"><code>pnpm --dir web/scanner test src/App.sync.test.tsx src/App.reconcile.test.tsx src/App.entry.test.tsx src/App.exit-reconcile.test.tsx</code></span><ul class="evidence"><li>Frozen candidate packet and run receipts <code>S-2 sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754</code></li></ul></td><td class="num" data-label="Cost">Not recorded</td></tr><tr id="check-5"><td data-label="Check"><span class="key">C6</span> Prepared workflow and renderer verification<span class="sub">Other · Required</span></td><td data-label="Status"><span class="chip chip--good">Passed</span></td><td data-label="Result or reason"><p>Prepared canonical ticket, sprint and report suites passed 184 tests at 2026-10-20T15:30:35Z. Those workflow/runtime bytes remain unchanged. The three committed renderer files match their start pins. This historical workflow evidence is distinct from product integration.</p><span class="sub"><code>python3 -B -m unittest discover -s .claude/skills/sdlc-ticket/tests; python3 -B -m unittest discover -s .claude/skills/sdlc-sprint/tests; python3 -B -m unittest discover -s .claude/skills/sdlc-sprint-review/tests</code></span><ul class="evidence"><li>Frozen candidate packet and run receipts <code>S-2 sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754</code></li></ul></td><td class="num" data-label="Cost">Not recorded</td></tr><tr id="check-6"><td data-label="Check"><span class="key">C7</span> Application LLM evaluation<span class="sub">LLM evaluation · Optional</span></td><td data-label="Status"><span class="chip chip--muted">Not applicable</span></td><td data-label="Result or reason"><p>Not applicable. The delivered scanner slice calls no application LLM. Development and review model calls are workflow operations, not application evaluations.</p><ul class="evidence"><li>Frozen candidate packet and run receipts <code>S-2 sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754</code></li></ul></td><td class="num" data-label="Cost">Not recorded</td></tr><tr id="check-7"><td data-label="Check"><span class="key">C8</span> Venue qualification<span class="sub">Other · Optional</span></td><td data-label="Status"><span class="chip chip--warn">Not run</span></td><td data-label="Result or reason"><p>Not run. TKT-560 remains outside S-2 and is mandatory before venue use. This report measures one host and does not qualify venue hardware, peak load or the provisional 500 ms pre-decision bound.</p><ul class="evidence"><li>Frozen candidate packet and run receipts <code>S-2 sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754</code></li></ul></td><td class="num" data-label="Cost">Not recorded</td></tr></tbody>
+        <tfoot><tr><th scope="row" colspan="3">Total measured cost</th><td class="num">None</td></tr></tfoot>
+      </table>
+    </div>
+  </section>
+
+  <section id="measurements" class="section" aria-labelledby="h-measurements">
+    <div class="section-head"><h2 id="h-measurements">Measurements</h2></div>
+    <p class="section-intro">These values are observations to investigate, not targets. When a value is not recorded, the observation gives the reason.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Metric</th><th scope="col" class="num">Baseline</th><th scope="col" class="num">Candidate</th><th scope="col">Observation</th></tr></thead>
+        <tbody><tr><td data-label="Metric">Strict IndexedDB mint completion<span class="sub">100 production-control multi-entry scans, ten warmups excluded, on one host</span></td><td class="num" data-label="Baseline">n=100; min 0.400, median 0.700, p95 1.300, max 3.100 ms</td><td class="num" data-label="Candidate">n=100; min 0.400, median 0.600, p95 1.900, max 3.300 ms</td><td data-label="Observation">Historical sample 2026-10-19T03:54:24.506Z; fresh sample 2026-10-20T21:19:09.857Z. Linux WSL2 6.18.33.2, x64, Intel i5-12600K, 16 logical CPUs. Each observed maximum is below the 3000 ms send limit. This distribution does not establish a worst-case guarantee, physical paint timing or venue readiness.<span class="sub">Tool: Chrome 155.0.8059.79, Playwright 1.62.1, native Date.now and performance.now</span></td></tr><tr><td data-label="Metric">Strict IndexedDB mark completion<span class="sub">100 production-control multi-entry scans, ten warmups excluded, on one host</span></td><td class="num" data-label="Baseline">n=100; min 0.700, median 1.200, p95 2.300, max 2.800 ms</td><td class="num" data-label="Candidate">n=100; min 0.600, median 0.900, p95 1.700, max 3.500 ms</td><td data-label="Observation">Historical sample 2026-10-19T03:54:24.506Z; fresh sample 2026-10-20T21:19:09.857Z. Linux WSL2 6.18.33.2, x64, Intel i5-12600K, 16 logical CPUs. Each observed maximum is below the 3000 ms send limit. This distribution does not establish a worst-case guarantee, physical paint timing or venue readiness.<span class="sub">Tool: Chrome 155.0.8059.79, Playwright 1.62.1, native Date.now and performance.now</span></td></tr><tr><td data-label="Metric">Coverage delta<span class="sub">Scanner and probe changes from release baseline to candidate</span></td><td class="num" data-label="Baseline">Not recorded</td><td class="num" data-label="Candidate">Not recorded</td><td data-label="Observation">Not measured for closure. No value or global target is claimed. The verification review inspects relevant tests and changed mechanisms directly.<span class="sub">Tool: Not recorded</span></td></tr><tr><td data-label="Metric">Changed-hotspot complexity score<span class="sub">Scanner and probe changes from release baseline to candidate</span></td><td class="num" data-label="Baseline">Not recorded</td><td class="num" data-label="Candidate">Not recorded</td><td data-label="Observation">Not measured for closure. No value or global target is claimed. The verification review inspects relevant tests and changed mechanisms directly.<span class="sub">Tool: Not recorded</span></td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="retrospective" class="section" aria-labelledby="h-retrospective">
+    <div class="section-head"><h2 id="h-retrospective">Retrospective</h2></div>
+    <div class="prose"><p>Observed-data cutoff 2026-10-20T21:34:53.548800+00:00. The packet binds the operation-log snapshot and board metrics. Closure-task work after that cutoff, including final review, report publication, hosted CI, post-merge verification and approval waiting, is excluded from these cost observations.</p><p>Active implementation, pure model compute, exclusive CI wait and unexplained idle are n/a where no observation separates them. Status dwell is elapsed time. Reviews, gates and CI overlap and must not be added as exclusive work. Monetary spend is n/a. No routine work-unit checkpoints were added.</p><p>Functional local gates were TKT-559 3 runs with 1 failure, TKT-399 fresh implementation 8 with 3 failures, TKT-551 3 with 0 failures and TKT-552 2 with 0 failures. The closure candidate gate took 876.796 s. Closure clean probe repetitions took 212.033 s including stack work, and full browser verification took 171.618 s. One probe assertion repair required rerunning all five diagnostics and eight restored repetitions. Earlier failures remain in the evidence.</p><p>TKT-399 retained plan rounds 1 to 3 and code history through round 9. The owner authorized fresh code rounds 8 to 11; no cap was reset. TKT-551 used two plan rounds and one code round. TKT-552 used two plan rounds and one code round. TKT-559 used one of each. Below-threshold corrections and their verification remain disclosed in each closeout. No High or Critical finding was overridden.</p><p>Observed waits dominated some elapsed windows. TKT-399 records provider waits of 7 h 40 m 14 s and 4 h 56 m 56 s, and an owner-decision handoff of 5 h 45 m 39 s. TKT-551 records a 25360.476 s provider-stop-to-owner-resume interval. These are recorded windows, not proof of continuous unavailability or exclusive active work. TKT-552 had no provider or owner stop.</p><p>Observed review windows include dispatch and result handling. TKT-559 code initial and audit were about 228 s and 157 s. TKT-399 plan round 3 initial and audit were 563.264 s and 521.803 s, code round 9 was 156.402 s and 79.028 s, and Astra DNS implementation was 717.480 s. TKT-551 plan initial windows were 315.749 s in round 1 and 362.812 s in round 2; round 2 audit was 460.413 s. Its code initial was 218.295 s, failed quota audit 298.818 s and successful retry 282.343 s. TKT-552 code initial and audit were 187.172 s and 146.860 s. Other exclusive model times are n/a. These observations overlap other work.</p><p>Hosted functional check runtimes remain per-head observations. TKT-559 recorded 951 s. TKT-399 recorded 942, 1027, 994 and 1025 s on successive heads. TKT-551 retained 1020 s for its first head and 883 s for the final head. TKT-552 recorded 972 s. They overlap local work.</p><p>Fixture defects recur across timing tests, host-DNS fault injection, mixed-result assertions and the Entry-copy routed-fetch wrapper. Focused baseline runs, full gates, diagnostics and independent review exposed different gaps. The final review distinguishes those evidence defects from product design defects and from missing venue qualification.</p></div>
+    <p class="section-intro">The agents recommend. The human choice column shows the actual selection.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Observation</th><th scope="col">Proposal</th><th scope="col">Agent recommendation</th><th scope="col" class="human-col">Human choice</th></tr></thead>
+        <tbody><tr><td data-label="Observation"><span class="key">P1</span> TKT-399 host DNS latency crossed a production bound, TKT-552 first used an incomplete fetch wrapper and TKT-563 first compared incorrectly ordered key strings.<ul class="evidence"><li>TKT-559 closeout <code>TKT-559 sha256:6e0440c7cdd4dd37e56c6920230532feae413263e7591f4567c8d49d930c11a0</code></li><li>TKT-399 closeout <code>TKT-399 sha256:e1c29c911d519090b35bc02b79d2b31483d3ba702f545af8dc089683ed9ebdf4</code></li><li>TKT-551 closeout <code>TKT-551 sha256:099ad019656cb88ecd259c38a6f260366c116224da3c71a7c0e67ebd45a01c71</code></li><li>TKT-552 closeout <code>TKT-552 sha256:e6c165f0490386532b315bd11145275e154e1b4cd79585467e4c7180dbe4114e</code></li><li>Closure diagnostic failure and restored results <code>S-2 sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754</code></li></ul></td><td data-label="Proposal">In future scanner test plans, name the controlled fault producer and the exact production boundary each assertion observes. Apply the existing fixture rules to every review-fix batch. Do not add a new approval checkpoint.<span class="sub">Process</span></td><td data-label="Agent recommendation"><span class="chip chip--info">Trial</span></td><td class="human-col" data-label="Human choice"><span class="chip chip--warn">Pending</span></td></tr><tr><td data-label="Observation"><span class="key">P2</span> Later browser runs can overwrite TKT-559 historical timing bytes. TKT-399 and TKT-563 had to archive and restore them.<ul class="evidence"><li>TKT-399 closeout <code>TKT-399 sha256:e1c29c911d519090b35bc02b79d2b31483d3ba702f545af8dc089683ed9ebdf4</code></li><li>Full-browser timing protection <code>S-2 sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754</code></li></ul></td><td data-label="Proposal">Use TKT-564 to give measurement output an explicit or untracked path. Keep historical evidence immutable and archive each new run separately.<span class="sub">Process</span></td><td data-label="Agent recommendation"><span class="chip chip--good">Adopt</span></td><td class="human-col" data-label="Human choice"><span class="chip chip--warn">Pending</span></td></tr><tr><td data-label="Observation"><span class="key">P3</span> Provider failures stopped TKT-399 and TKT-551. TKT-559 also had an oversized prompt rejection before a child task existed.<ul class="evidence"><li>TKT-559 closeout <code>TKT-559 sha256:6e0440c7cdd4dd37e56c6920230532feae413263e7591f4567c8d49d930c11a0</code></li><li>TKT-399 closeout <code>TKT-399 sha256:e1c29c911d519090b35bc02b79d2b31483d3ba702f545af8dc089683ed9ebdf4</code></li><li>TKT-551 closeout <code>TKT-551 sha256:099ad019656cb88ecd259c38a6f260366c116224da3c71a7c0e67ebd45a01c71</code></li><li>TKT-552 closeout <code>TKT-552 sha256:e6c165f0490386532b315bd11145275e154e1b4cd79585467e4c7180dbe4114e</code></li></ul></td><td data-label="Proposal">Trial prompt-size checks and a bounded same-model retry policy in the T3 runner. Measure rejected dispatches and stopped intervals on future tickets. Stop on actual access denials and authorized caps; retries do not authorize a routing change or more review rounds.<span class="sub">Process</span></td><td data-label="Agent recommendation"><span class="chip chip--info">Trial</span></td><td class="human-col" data-label="Human choice"><span class="chip chip--warn">Pending</span></td></tr><tr><td data-label="Observation"><span class="key">P4</span> TKT-559 had a stale documentation assertion fail its first gate. TKT-551 caught unqualified ADR identifiers in its development scanner suite before three passing gates.<ul class="evidence"><li>TKT-559 closeout <code>TKT-559 sha256:6e0440c7cdd4dd37e56c6920230532feae413263e7591f4567c8d49d930c11a0</code></li><li>TKT-551 closeout <code>TKT-551 sha256:099ad019656cb88ecd259c38a6f260366c116224da3c71a7c0e67ebd45a01c71</code></li></ul></td><td data-label="Proposal">Trial the existing doc-namespace test as a focused preflight in future scanner work. Measure whether it reduces later gate failures. Keep the full gate and add no owner checkpoint. Whole-gate restructuring has no demonstrated benefit from this sprint alone.<span class="sub">Process</span></td><td data-label="Agent recommendation"><span class="chip chip--info">Trial</span></td><td class="human-col" data-label="Human choice"><span class="chip chip--warn">Pending</span></td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="identity" class="section" aria-labelledby="h-identity">
+    <div class="section-head"><h2 id="h-identity">Sprint and release</h2></div>
+    <dl class="facts">
+      <div><dt>Vault</dt><dd>sdlc</dd></div>
+      <div><dt>Sprint</dt><dd><code>S-2</code></dd></div>
+      <div><dt>Sprint state</dt><dd><span class="chip chip--info">Active</span></dd></div>
+      <div><dt>Scope digest</dt><dd><code class="digest">475b7c77f414e3205adb736c856fb913675f56cbdd7f58603ca28b46ae061186</code></dd></div>
+      <div><dt>Closure task</dt><dd><code>TKT-563</code></dd></div>
+      <div><dt>Repository</dt><dd><a href="https://github.com/mathd/ticketing_system" rel="noreferrer">https://github.com/mathd/ticketing_system</a></dd></div>
+      <div><dt>Base</dt><dd><code>5e3bee1db8019621fb5cdc343872b9c6159dd50d</code></dd></div>
+      <div><dt>Candidate</dt><dd><a href="https://github.com/mathd/ticketing_system/commit/c2f77420377ef7851d6eb00230842fb05b398de1" rel="noreferrer">c2f77420377ef7851d6eb00230842fb05b398de1</a></dd></div>
+      <div><dt>Proposed tag</dt><dd><code>No tag planned</code></dd></div>
+      <div><dt>Report</dt><dd>S-2-release · v3</dd></div>
+      <div><dt>Review packet SHA-256</dt><dd><code>10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754</code></dd></div>
+      <div><dt>Source data SHA-256</dt><dd><code class="digest">e082a2eb96ce27991bfb44abf6aef5906a04420e110ba08eef946f8267af844a</code></dd></div>
+    </dl>
+  </section>
+</main>
+
+<footer class="colophon wrap">
+  <p>Source data SHA-256 <code>e082a2eb96ce27991bfb44abf6aef5906a04420e110ba08eef946f8267af844a</code>. The HTML digest of this file is recorded outside it, on the sprint note and on the closure task.</p>
+  <p>Generated 2026-10-20T22:04:24.189464+00:00. Schema version 1.</p>
+</footer>
+</body>
+</html>
