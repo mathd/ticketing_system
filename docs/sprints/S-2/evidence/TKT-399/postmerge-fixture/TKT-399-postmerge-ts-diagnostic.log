@@ -1,0 +1,42 @@
+Scope: 3 of 4 workspace projects
+web/backoffice test$ vitest run
+web/scanner test$ vitest run
+web/storefront test$ vitest run
+web/scanner test:  RUN  v4.1.10 /home/mathieu/sources/ticketing_system.S-2-TKT-399-postmerge/web/scanner
+web/backoffice test: 22:19:15 [@astrojs/node] Enabling sessions with filesystem storage
+web/backoffice test:  RUN  v4.1.10 /home/mathieu/sources/ticketing_system.S-2-TKT-399-postmerge/web/backoffice
+web/storefront test: 22:19:16 [@astrojs/node] Enabling sessions with filesystem storage
+web/storefront test:  RUN  v4.1.10 /home/mathieu/sources/ticketing_system.S-2-TKT-399-postmerge/web/storefront
+web/backoffice test:  Test Files  20 passed (20)
+web/backoffice test:       Tests  669 passed (669)
+web/backoffice test:    Start at  22:19:16
+web/backoffice test:    Duration  17.50s (transform 37.74s, setup 0ms, import 23.07s, tests 45.73s, environment 2.26s)
+web/backoffice test: Done
+web/storefront test: (node:3883491) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGHUP listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (Use `node --trace-warnings ...` to show where the warning was created)
+web/storefront test: (node:3883491) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGINT listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3883491) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGTERM listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3883491) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGALRM listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3883491) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGABRT listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3883491) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGVTALRM listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3883491) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGXCPU listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3883491) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGXFSZ listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3883491) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGUSR2 listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3883491) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGTRAP listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3883491) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGSYS listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3883491) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGQUIT listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3883491) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGIOT listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3883491) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGIO listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3883491) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGPOLL listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3883491) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGPWR listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3883491) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGSTKFLT listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test:  Test Files  24 passed (24)
+web/storefront test:       Tests  439 passed (439)
+web/storefront test:    Start at  22:19:16
+web/storefront test:    Duration  24.57s (transform 44.13s, setup 0ms, import 11.58s, tests 68.02s, environment 7.11s)
+web/storefront test: Done
+web/scanner test:  Test Files  43 passed (43)
+web/scanner test:       Tests  1851 passed (1851)
+web/scanner test:    Start at  22:19:14
+web/scanner test:    Duration  36.92s (transform 18.50s, setup 6.66s, import 40.30s, tests 152.84s, environment 94.59s)
+web/scanner test: Done

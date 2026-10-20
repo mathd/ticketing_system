@@ -1,0 +1,24 @@
+[
+  {
+    "case": "default-one-second",
+    "testSourceSha256": "d2bebe5958e57ffa6c3037c014a8ea5d74840c3d2c9f811b483bfc8a0a98826a",
+    "delayMs": 1200,
+    "queryBoundMs": 1000,
+    "exit": 1,
+    "start": "2026-10-20T02:20:45.686736+00:00",
+    "end": "2026-10-20T02:20:48.542752+00:00",
+    "log": "/tmp/sdlc-S-2/TKT-399-query-bound-default-one-second.log",
+    "logSha256": "959951cf839995ad4ad9f6eae1ccdf8fd31f0704b940fce07db646c6f0951562"
+  },
+  {
+    "case": "fixture-two-second",
+    "testSourceSha256": "174e55402d96f5aa68dc47e754930f00e4015219c1a6fa2df7191a805e119f1f",
+    "delayMs": 1200,
+    "queryBoundMs": 2000,
+    "exit": 0,
+    "start": "2026-10-20T02:20:48.543028+00:00",
+    "end": "2026-10-20T02:20:51.740364+00:00",
+    "log": "/tmp/sdlc-S-2/TKT-399-query-bound-fixture-two-second.log",
+    "logSha256": "917380ebdd9b3fdc4bc75bb2fcdefaa02dac6dac3b8cdbac2d8ec88e4c616001"
+  }
+]

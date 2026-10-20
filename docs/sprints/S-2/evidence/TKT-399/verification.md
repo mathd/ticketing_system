@@ -55,3 +55,14 @@ The round 8 scanner suite passes 1,851 tests in 43 files. Six targeted mutations
 The first browser fixture used a full clock mock on the reload page and failed to show recovery. A diagnostic repeat failed the same way. Playwright's Date-only helper also failed. The final fixture overrides Date.now only, preserves native navigation entries, and asserts navigation type reload. Both mutation checks and all restored runs use that final fixture. The first baseline log was overwritten during retry; the diagnostic and later failure logs remain. This is a fixture correction, not a product recovery fix.
 
 The final browser run writes fresh measurements to `review-r8-strict-commits.raw.json`. Its reused raw labels still say TKT-559. This run belongs to TKT-399, and the committed historical TKT-559 receipt is restored byte for byte before the gate. I8-5's separate follow-up requires owner approval and does not change S-2 membership.
+
+
+## Post-merge fixture correction
+
+PR #458 merged as `371e44b3d8f141caa1e41988c4bae29a4c460d1d`. Its first post-merge gate failed the first transport case in `App.exit-reconcile.test.tsx`: the implicit one-second query could not find the sync control. The remaining 1,850 scanner tests passed. The same unchanged file passed in isolation, and a full unchanged workspace test run passed. These passes do not explain the original host scheduling delay.
+
+The App publishes its queue count after repair, recovery and IndexedDB reads. A controlled 1,200 ms first queue read reproduces the missing-control failure at the default 1,000 ms query limit, then passes at the fixture's existing `BOUND_MS=2000`. D51 makes both sync-control queries use that existing bound. No production code or exact payload, row, failure or result assertion changes. The controlled delay demonstrates the deadline mismatch, not the cause of the original delay.
+
+After this fixture correction, forcing a stored Exit to send as Entry fails the exact payload assertion. Eight restored runs pass all 12 mixed reconcile cases. The full scanner suite passes 1,851 tests in 43 files, and TypeScript compilation passes. `postmerge-fixture/manifest.json` pins the failed gate, controlled experiment, mutation and repeated runs. The scripts restore each temporary injection. Their absolute paths record the actual checkout used. This test-only correction is below the review repeat threshold, `materialChange=false`, and has not been independently re-reviewed. The follow-up PR still needs a fresh local gate, required CI and a post-merge gate before PO acceptance.
+
+I8-5 is now deferred to owner-approved TKT-564 in Backlog, outside S-2. Its creation did not authorize implementation or sprint membership.

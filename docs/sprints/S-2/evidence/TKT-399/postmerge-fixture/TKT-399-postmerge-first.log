@@ -1,0 +1,695 @@
+make[1]: Entering directory '/home/mathieu/sources/ticketing_system.S-2-TKT-399-postmerge'
+pnpm install --frozen-lockfile
+Scope: all 4 workspace projects
+Already up to date
+Done in 422ms using pnpm v11.12.0
+./scripts/generate-api.sh
+✨ openapi-typescript 7.13.0
+🚀 services/catalog/api/openapi.yaml → web/storefront/src/lib/api-types.gen.ts [128.9ms]
+✨ openapi-typescript 7.13.0
+🚀 services/catalog/api/openapi.yaml → web/backoffice/src/lib/api-types.gen.ts [132ms]
+✨ openapi-typescript 7.13.0
+🚀 services/commerce/api/openapi.yaml → web/storefront/src/lib/commerce-api-types.gen.ts [98.3ms]
+✨ openapi-typescript 7.13.0
+🚀 services/inventory/api/openapi.yaml → web/backoffice/src/lib/inventory-api-types.gen.ts [99.2ms]
+✨ openapi-typescript 7.13.0
+🚀 services/access/api/openapi.yaml → web/storefront/src/lib/access-api-types.gen.ts [73.7ms]
+✨ openapi-typescript 7.13.0
+🚀 services/access/api/openapi.yaml → web/backoffice/src/lib/access-api-types.gen.ts [52.9ms]
+✨ openapi-typescript 7.13.0
+🚀 services/access/api/openapi.yaml → web/scanner/src/access-api-types.gen.ts [73.7ms]
+go dependency drift: none across 8 module(s)
+go build-list lag: none across 8 module(s)
+security workflow trigger: services/catalog/internal/api/server.go schedules repository-scan
+security workflow trigger: the scan allowlist is wired into pnpm-audit, repository-scan and make check
+security workflow trigger: make check runs the Astro image premise guard (TKT-504)
+▶ valid allowlists pass
+  ✔ an empty allowlist with an empty mirror passes (9.835845ms)
+  ✔ a valid entry passes, with and without the expiry check (6.796901ms)
+  ✔ a Go CVE with no pnpm alias passes with an empty mirror (3.323157ms)
+  ✔ a GHSA id feeds the mirror by itself (5.46358ms)
+  ✔ a lifetime of exactly 30 days passes (1.991256ms)
+  ✔ approval today passes (2.169551ms)
+✔ valid allowlists pass (31.118297ms)
+▶ expiry (the clock-dependent check)
+  ✔ an expired entry fails with the expiry check, even with no scanner result (6.581346ms)
+  ✔ the same entry passes the deterministic check (3.400455ms)
+  ✔ an entry that expires today has expired (expiry is the start of the date, UTC) (2.01338ms)
+  ✔ an entry is refused from one hour before the start of its expiry date (the margin) (5.340859ms)
+✔ expiry (the clock-dependent check) (17.923999ms)
+▶ the verdict of the plain check does not depend on the clock
+  ✔ a valid repository gives the same result at any clock value (5.3842ms)
+  ✔ an approval date in the future passes without the clock checks (1.589071ms)
+✔ the verdict of the plain check does not depend on the clock (7.212673ms)
+▶ lifetime and approval date
+  ✔ 31 days fails (1.839164ms)
+  ✔ zero days fails (3.837769ms)
+  ✔ a negative lifetime fails (1.796092ms)
+  ✔ an approval date in the future fails with the clock checks (2.140346ms)
+✔ lifetime and approval date (9.915731ms)
+▶ required fields
+  ✔ a missing id fails (2.058761ms)
+  ✔ a missing statement fails (2.300475ms)
+  ✔ a missing owner fails (4.465685ms)
+  ✔ a missing approved_at fails (3.441771ms)
+  ✔ a missing expired_at fails (1.898397ms)
+  ✔ a blank statement fails (2.655731ms)
+  ✔ a blank id fails (2.261038ms)
+  ✔ an owner outside the allowed set fails (2.337721ms)
+  ✔ a non-string statement fails (2.255298ms)
+✔ required fields (24.526142ms)
+▶ dates
+  ✔ a quoted expired_at fails (Trivy stops with a fatal error on it) (1.85867ms)
+  ✔ a quoted approved_at fails (2.18199ms)
+  ✔ an impossible calendar date fails (no roll-over to the next month) (2.310301ms)
+  ✔ a non-canonical date fails (2.65448ms)
+  ✔ a timestamp with an offset fails (1.91957ms)
+✔ dates (11.283946ms)
+▶ identifiers and duplicates
+  ✔ a malformed CVE id fails (1.333096ms)
+  ✔ a malformed GHSA alias fails (1.691239ms)
+  ✔ a CVE in pnpm_ids fails (2.700191ms)
+  ✔ pnpm_ids that is not a list fails (1.686426ms)
+  ✔ a duplicate id fails (3.542742ms)
+  ✔ a GHSA mapped by two entries fails (2.452838ms)
+  ✔ a GHSA id repeated in its own pnpm_ids fails (1.765083ms)
+✔ identifiers and duplicates (15.615618ms)
+▶ shape and YAML features
+  ✔ an unsupported entry field fails (paths) (2.54591ms)
+  ✔ an unsupported entry field fails (purls) (1.867772ms)
+  ✔ a "secrets" section fails (2.422355ms)
+  ✔ a "misconfigurations" section fails (2.555031ms)
+  ✔ a "licenses" section fails (1.867302ms)
+  ✔ a "policy" section fails (3.474976ms)
+  ✔ an anchor fails (4.634514ms)
+  ✔ an alias fails (3.214439ms)
+  ✔ an explicit tag fails (2.082753ms)
+  ✔ a second document fails (1.698304ms)
+  ✔ a YAML directive fails (1.204462ms)
+  ✔ a duplicate key fails (3.719526ms)
+  ✔ a merge key fails (2.34008ms)
+  ✔ malformed YAML fails (2.602248ms)
+  ✔ an empty file fails (1.271919ms)
+  ✔ a missing allowlist fails (1.506214ms)
+  ✔ a top level that is not a map fails (1.321849ms)
+  ✔ a list that is not a sequence fails (1.011087ms)
+  ✔ a null list fails (1.488841ms)
+  ✔ an entry that is not a map fails (0.756943ms)
+✔ shape and YAML features (45.405775ms)
+▶ the pnpm mirror
+  ✔ a missing auditConfig fails (1.024847ms)
+  ✔ a mirror with an extra GHSA fails (1.466163ms)
+  ✔ a mirror without the derived GHSA fails (1.628825ms)
+  ✔ a mirror with a different case fails (sync writes the canonical form) (1.223222ms)
+  ✔ an unsorted mirror fails (5.425943ms)
+  ✔ another auditConfig key fails (2.191401ms)
+  ✔ an ignoreGhsas that is not a list fails (2.497244ms)
+  ✔ an anchor in auditConfig fails (3.966936ms)
+✔ the pnpm mirror (20.172946ms)
+▶ other suppression files
+  ✔ a committed trivy.yaml fails (2.531061ms)
+  ✔ a committed trivy.yml fails (1.58408ms)
+  ✔ a committed trivy-secret.yaml fails (1.258246ms)
+  ✔ a committed .trivyignore fails (1.376083ms)
+  ✔ a committed .pnpmfile.cjs fails (1.644029ms)
+  ✔ a committed .pnpmfile.mjs fails (1.591148ms)
+  ✔ a committed .pnpmfile.js fails (2.466829ms)
+  ✔ a committed .npmrc fails (1.510504ms)
+✔ other suppression files (14.429201ms)
+▶ pnpm settings outside the mirror
+  ✔ a top-level "ignore" setting fails (1.075406ms)
+  ✔ a top-level "ignoreUnfixable" setting fails (0.868457ms)
+  ✔ a top-level "ignoreRegistryErrors" setting fails (1.526141ms)
+  ✔ a top-level "registry" setting fails (1.066899ms)
+  ✔ a top-level "auditLevel" setting fails (1.16865ms)
+  ✔ a top-level "pnpmfile" setting fails (1.456882ms)
+  ✔ a top-level "globalPnpmfile" setting fails (2.013801ms)
+  ✔ a top-level "production" setting fails (2.461405ms)
+  ✔ a key that pnpm expands from the environment fails (top level) (1.44284ms)
+  ✔ a key that pnpm expands from the environment fails (nested) (1.57102ms)
+  ✔ an anchor anywhere in pnpm-workspace.yaml fails (2.586061ms)
+  ✔ a pnpm field in the root package.json fails (1.945357ms)
+  ✔ a root package.json without a pnpm field passes (2.385946ms)
+✔ pnpm settings outside the mirror (22.177317ms)
+▶ workflow wiring (structural)
+  ✔ the real workflow passes (8.463345ms)
+  ✔ the wrapper step only as text in a job name fails (6.832397ms)
+  ✔ a quoted "if" key on the wrapper step fails (4.886014ms)
+  ✔ a continue-on-error on the wrapper step fails (4.659667ms)
+  ✔ an env on the wrapper step fails (6.068786ms)
+  ✔ a pnpm-audit job that is always skipped fails (5.153136ms)
+  ✔ a pnpm-audit job with continue-on-error fails (4.382786ms)
+  ✔ the wrapper step missing fails (4.880388ms)
+  ✔ the wrapper replaced by a plain pnpm audit fails (3.048932ms)
+  ✔ a step after the wrapper fails (5.965531ms)
+  ✔ another pnpm audit step before the wrapper fails (4.346345ms)
+  ✔ the wrapper with an extra argument fails (3.603349ms)
+  ✔ a missing timeout-minutes fails (3.327288ms)
+  ✔ a timeout-minutes above the bound fails (6.250987ms)
+  ✔ a timeout-minutes that is an expression fails (3.732739ms)
+  ✔ a pnpm-audit job that needs another job fails (3.123938ms)
+  ✔ a workflow-level env fails (4.154499ms)
+  ✔ a workflow-level defaults fails (5.794802ms)
+  ✔ .trivyignore.yaml missing from the changes filter fails (5.97138ms)
+  ✔ a non-pull-request run that does not set node=true fails (3.199586ms)
+  ✔ a continue-on-error on the Trivy step fails (3.036181ms)
+  ✔ a step-level if on the Trivy step fails (5.214476ms)
+  ✔ exit-code "0" fails (2.149255ms)
+  ✔ a severity change fails (2.671588ms)
+  ✔ a missing trivyignores input fails (2.537815ms)
+  ✔ an extra Trivy input fails (skip-files) (3.53603ms)
+  ✔ a job-level if on repository-scan fails (2.104901ms)
+  ✔ a duplicate key fails (7.334563ms)
+  ✔ a run step in repository-scan fails (4.042769ms)
+  ✔ a second Trivy step fails (3.148627ms)
+  ✔ a Trivy version that is not pinned fails (3.274607ms)
+✔ workflow wiring (structural) (138.427978ms)
+▶ the audit wrapper with a recording pnpm (offline)
+  ✔ runs exactly pnpm audit --audit-level high --ignore-pnpmfile with the registry and the lockfile pinned (10.845291ms)
+  ✔ runs in the repository root (7.905699ms)
+  ✔ passes no npm or pnpm setting and no other caller variable (6.962946ms)
+  ✔ gives pnpm a fresh HOME with no file in it, and XDG directories under it (8.626422ms)
+  ✔ keeps the caller PATH and passes COREPACK_HOME when it exists (8.509002ms)
+  ✔ passes exit status 0 through (9.314421ms)
+  ✔ passes exit status 1 through (7.28802ms)
+  ✔ passes exit status 7 through (7.180046ms)
+  ✔ fails closed when pnpm is killed by a signal (8.354619ms)
+  ✔ fails closed when pnpm runs longer than the timeout (303.775248ms)
+  ✔ fails closed when pnpm cannot start (3.431108ms)
+  ✔ the timeout is shorter than the expiry margin (0.16998ms)
+  ✔ the wrapper refuses an expired entry before pnpm runs (2.038111ms)
+  ✔ the wrapper refuses an approval date in the future before pnpm runs (1.882597ms)
+  ✔ the wrapper refuses a committed-file problem before pnpm runs (1.672513ms)
+  ✔ the wrapper runs pnpm and passes its status through when the allowlist is accepted (8.306242ms)
+✔ the audit wrapper with a recording pnpm (offline) (397.040425ms)
+▶ the audit wrapper with the real pnpm and a local registry
+  ✔ the fixture finding fails both a plain audit and the wrapper (972.70235ms)
+  ✔ the local registry reports nothing under /empty/ (the control for the registry cases) (430.123839ms)
+  ✔ a local .pnpmfile.cjs updateConfig hook is not run (932.4395ms)
+  ✔ a local .pnpmfile.mjs with a named hooks export is not run (1015.820001ms)
+  ✔ a global pnpmfile in the caller configuration is not run (872.6736ms)
+  ✔ a lockfile directory from the caller environment is not used (996.958426ms)
+  ✔ a registry from the caller environment is not used (882.500514ms)
+  ✔ a registry from the caller HOME .npmrc is not used (902.821931ms)
+  ✔ a registry from a local .npmrc is not used (869.25787ms)
+✔ the audit wrapper with the real pnpm and a local registry (7939.360837ms)
+▶ sync
+  ✔ writes the derived mirror, keeps the rest of the file, and is idempotent (6.231118ms)
+  ✔ adds auditConfig to a workspace that has none (1.297126ms)
+  ✔ refuses to write a mirror from an invalid allowlist (0.880226ms)
+✔ sync (8.555381ms)
+▶ command line (real clock)
+  ✔ check exits 0 on a valid repository (58.270747ms)
+  ✔ check --now exits 0 on a live entry (59.170076ms)
+  ✔ check exits 0 on a lapsed entry, and check --now exits 1 and names it (127.594745ms)
+  ✔ check exits 1 on a refused repository (63.774427ms)
+  ✔ audit runs the wrapper and passes the pnpm exit status through (124.732832ms)
+  ✔ audit gives pnpm none of its own process environment: no npm or pnpm setting, no NODE_OPTIONS, a fresh HOME (66.369349ms)
+  ✔ audit with a relative --root gives pnpm the absolute root as its directory and lockfile directory (61.078507ms)
+  ✔ audit refuses a lapsed entry and does not run pnpm (65.799804ms)
+  ✔ an unknown command or option exits 2 (110.606394ms)
+  ✔ sync writes the mirror that check then accepts (124.11401ms)
+✔ command line (real clock) (862.05886ms)
+ℹ tests 155
+ℹ suites 16
+ℹ pass 155
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 9655.764912
+scan allowlist: .trivyignore.yaml and its pnpm mirror accepted
+hermetic workflow trigger: compose.yaml schedules hermetic-smoke
+hermetic workflow trigger: compose.direct-ports.yaml schedules hermetic-smoke
+hermetic workflow trigger: compose.onsale-load.yaml schedules hermetic-smoke
+hermetic workflow trigger: compose.smoke-cadence.yaml schedules hermetic-smoke
+hermetic workflow trigger: deploy/nats/nats-server.conf schedules hermetic-smoke
+hermetic workflow trigger: deploy/nats/consumers/access-ticket-issuer.json schedules hermetic-smoke
+hermetic workflow trigger: deploy/nats/consumers/inventory-catalog-offering.json schedules hermetic-smoke
+hermetic workflow trigger: web/backoffice/Dockerfile schedules hermetic-smoke
+hermetic workflow trigger: web/backoffice/package.json schedules hermetic-smoke
+hermetic workflow trigger: web/storefront/Dockerfile schedules hermetic-smoke
+hermetic workflow trigger: web/storefront/package.json schedules hermetic-smoke
+hermetic workflow trigger: web/scanner/Dockerfile schedules hermetic-smoke
+hermetic workflow trigger: web/scanner/package.json schedules hermetic-smoke
+check workflow trigger: every PR runs `check`, the only job that reports required context `check`
+ADR numbers unique: 84 ADRs in docs/adr
+markdown links resolve: 242 tracked files checked
+-- the gate cannot run without its lock (the Makefile boundary)
+ok: check-all is wired to the lock assertion
+ok: the gate forces serial stages
+ok: stages refused with no token
+ok: stages refused on a foreign lock
+ok: stages allowed for this run token
+-- nothing runs while the gate holds the lock, beyond waiting and reading
+ok: cat the log allowed
+ok: tail the verdict allowed
+ok: grep the log allowed
+ok: git status allowed
+ok: documented wait loop allowed
+ok: until-form wait loop allowed
+ok: reading anything else blocked
+ok: find -delete blocked
+ok: find -exec blocked
+ok: sort -o blocked
+ok: uniq second-arg write blocked
+ok: git diff --output blocked
+ok: git stash push blocked
+ok: sed -i blocked
+ok: redirection blocked
+ok: unknown command blocked
+ok: same command allowed with no lock
+-- the merge must contain the work
+ok: merge with uncommitted tracked change blocked
+ok: merge with untracked source blocked
+ok: merge with no gate verdict blocked
+ok: merge on a revision the gate never saw blocked
+ok: the digest distinguishes those trees
+ok: merge on a tree the gate never saw blocked
+ok: a matching commit and tree reaches the forge check
+-- the merge guard sees the ordinary spellings
+ok: env-prefixed merge seen
+ok: command-prefixed merge seen
+ok: subshelled merge seen
+ok: merge on a second line seen
+ok: merge quoted as an argument allowed
+-- no AI attribution
+ok: attributed commit blocked
+ok: clean commit allowed
+-- the Edit/Write guard
+ok: edit allowed, no gate running
+ok: edit blocked while gate runs
+ok: edit outside a repo allowed
+./scripts/install-golangci-lint.sh v2.14.0 /home/mathieu/sources/ticketing_system.S-2-TKT-399-postmerge/bin golangci-lint-v2.14.0
+golangci-lint v2.14.0 installed to /home/mathieu/sources/ticketing_system.S-2-TKT-399-postmerge/bin/golangci-lint-v2.14.0 (pinned sha256 verified)
+go toolchain: every declared pin, the active Go and the linter's build agree on 1.27
+golangci-lint: shared/go
+0 issues.
+golangci-lint: services/catalog
+0 issues.
+golangci-lint: services/inventory
+0 issues.
+golangci-lint: services/commerce
+0 issues.
+golangci-lint: services/payments
+0 issues.
+golangci-lint: services/access
+0 issues.
+golangci-lint: gateway
+0 issues.
+golangci-lint: smoke
+0 issues.
+pnpm -r lint
+Scope: 3 of 4 workspace projects
+web/backoffice lint$ oxlint --deny-warnings
+web/scanner lint$ oxlint --deny-warnings
+web/storefront lint$ oxlint --deny-warnings
+web/backoffice lint: Done
+web/storefront lint: Done
+web/scanner lint: Done
+▶ clean trees pass
+  ✔ a clean fixture passes (126.41312ms)
+  ✔ the real repository passes (2277.397295ms)
+  ✔ empty image.domains and image.remotePatterns pass (135.731812ms)
+  ✔ a nested integrations array with only allowed names passes (202.708215ms)
+  ✔ a config with no adapter passes (176.434928ms)
+  ✔ a config comment that says image passes (132.277447ms)
+  ✔ a marker in a file that is not source passes (143.331013ms)
+  ✔ a marker under node_modules passes (122.062075ms)
+  ✔ a marker under dist passes (153.689953ms)
+  ✔ a marker under .astro passes (140.301833ms)
+✔ clean trees pass (3611.630853ms)
+▶ configuration rules refuse
+  ✔ a non-empty image.domains refuses (128.471604ms)
+  ✔ a non-empty image.remotePatterns refuses (127.745859ms)
+  ✔ a set image.service refuses (127.928457ms)
+  ✔ an integration outside the allowlist refuses (123.208522ms)
+  ✔ a disallowed integration inside a nested array refuses (128.278255ms)
+  ✔ an adapter outside the allowlist refuses (122.105421ms)
+✔ configuration rules refuse (758.085553ms)
+▶ import marker rules refuse
+  ✔ astro:assets refuses (129.979159ms)
+  ✔ astro/assets refuses, with a subpath (134.252843ms)
+  ✔ virtual:astro:get-image refuses (127.448958ms)
+  ✔ virtual:image-service refuses (130.009986ms)
+  ✔ a direct Image.astro component import refuses (128.578487ms)
+  ✔ a direct ResponsivePicture.astro component import refuses (123.782208ms)
+  ✔ a relative deep import of the remote image loader refuses (121.607482ms)
+  ✔ a bare deep import into astro/dist outside assets refuses (125.229337ms)
+  ✔ a direct http-cache-semantics import refuses (135.615156ms)
+  ✔ a marker in a Markdown file refuses (124.558013ms)
+✔ import marker rules refuse (1281.56573ms)
+▶ the config is evaluated as astro build evaluates it
+  ✔ remote domains set only for production refuse, and the diagnostic names production (151.06737ms)
+  ✔ remote domains set only with NODE_ENV unset refuse, even when the caller sets production (133.604206ms)
+  ✔ a rule that fires in both environments is reported once, naming both (136.032384ms)
+  ✔ the config runs with the app directory as its working directory (143.640127ms)
+  ✔ a non-array image.domains refuses (139.314744ms)
+  ✔ output that the config prints does not change the result (133.746062ms)
+✔ the config is evaluated as astro build evaluates it (837.80412ms)
+▶ the guard fails closed
+  ✔ a missing web/backoffice refuses (76.228885ms)
+  ✔ a missing web/backoffice/astro.config.mjs refuses (126.644528ms)
+  ✔ a missing web/storefront refuses (86.333193ms)
+  ✔ a missing web/storefront/astro.config.mjs refuses (140.298934ms)
+  ✔ a symlink in the source tree refuses, because the scan does not follow it (123.874545ms)
+  ✔ a config that traps SIGTERM and never exits fails closed within the timeout (2086.660706ms)
+  ✔ a malformed result record fails closed (127.364754ms)
+  ✔ a result record with an unexpected shape fails closed (120.581964ms)
+  ✔ two result records fails closed (121.790653ms)
+  ✔ no result record fails closed (115.790541ms)
+  ✔ a config that throws on import refuses (138.295635ms)
+  ✔ a config with no default export object refuses (137.342505ms)
+  ✔ integrations that are not an array refuse (129.981342ms)
+  ✔ an unknown option is a usage error (24.45161ms)
+✔ the guard fails closed (3556.263784ms)
+ℹ tests 46
+ℹ suites 5
+ℹ pass 46
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 10112.36763
+check-astro-image-premise: web/backoffice and web/storefront do not use Astro image optimization (CVE-2026-93748, TKT-504)
+standalone Go module: shared/go
+standalone Go module: services/catalog
+standalone Go module: services/inventory
+standalone Go module: services/commerce
+standalone Go module: services/payments
+standalone Go module: services/access
+standalone Go module: gateway
+standalone Go module: smoke
+go test: shared/go
+ok  	ticketing/shared/cachetier	0.066s
+ok  	ticketing/shared/cmdline	0.003s
+ok  	ticketing/shared/contract	0.069s
+ok  	ticketing/shared/contract/contractlint	0.020s
+ok  	ticketing/shared/domainevent	0.005s
+ok  	ticketing/shared/durableconsumer	0.003s
+?   	ticketing/shared/fakepsp	[no test files]
+ok  	ticketing/shared/httpx	0.006s
+ok  	ticketing/shared/mail	0.005s
+ok  	ticketing/shared/obs	0.096s
+ok  	ticketing/shared/organizerassertion	0.009s
+ok  	ticketing/shared/ratelimit	0.003s
+ok  	ticketing/shared/runtimecfg	0.012s
+go test: services/catalog
+ok  	ticketing/services/catalog/api	0.204s
+ok  	ticketing/services/catalog/cmd/catalog	0.029s
+ok  	ticketing/services/catalog/internal/api	20.622s
+ok  	ticketing/services/catalog/internal/events	0.005s
+ok  	ticketing/services/catalog/internal/store	0.816s
+go test: services/inventory
+ok  	ticketing/services/inventory/api	0.033s
+ok  	ticketing/services/inventory/cmd/inventory	0.013s
+ok  	ticketing/services/inventory/internal/api	1.667s
+ok  	ticketing/services/inventory/internal/availability	0.078s
+ok  	ticketing/services/inventory/internal/consumer	0.106s
+ok  	ticketing/services/inventory/internal/seatoccupancy	0.099s
+ok  	ticketing/services/inventory/internal/store	0.010s
+go test: services/commerce
+ok  	ticketing/services/commerce/api	0.105s
+ok  	ticketing/services/commerce/cmd/commerce	0.025s
+ok  	ticketing/services/commerce/internal/api	3.296s
+ok  	ticketing/services/commerce/internal/bulkrefund	0.015s
+ok  	ticketing/services/commerce/internal/events	0.006s
+?   	ticketing/services/commerce/internal/exchanges	[no test files]
+ok  	ticketing/services/commerce/internal/exchangesweep	0.010s
+ok  	ticketing/services/commerce/internal/exchangeunwind	0.020s
+?   	ticketing/services/commerce/internal/mailer	[no test files]
+ok  	ticketing/services/commerce/internal/outbox	0.019s
+ok  	ticketing/services/commerce/internal/recovery	0.047s
+ok  	ticketing/services/commerce/internal/refunds	0.006s
+ok  	ticketing/services/commerce/internal/reversal	0.009s
+ok  	ticketing/services/commerce/internal/store	0.578s
+ok  	ticketing/services/commerce/internal/worklease	0.004s
+go test: services/payments
+?   	ticketing/services/payments/api	[no test files]
+ok  	ticketing/services/payments/cmd/payments	0.011s
+ok  	ticketing/services/payments/internal/api	0.067s
+ok  	ticketing/services/payments/internal/psp	0.067s
+ok  	ticketing/services/payments/internal/splits	0.018s
+ok  	ticketing/services/payments/internal/store	0.004s
+go test: services/access
+ok  	ticketing/services/access/api	0.056s
+ok  	ticketing/services/access/cmd/access	0.061s
+ok  	ticketing/services/access/internal/api	0.717s
+ok  	ticketing/services/access/internal/catalog	0.719s
+ok  	ticketing/services/access/internal/consumer	0.010s
+?   	ticketing/services/access/internal/delivery	[no test files]
+ok  	ticketing/services/access/internal/lifecycle	0.006s
+ok  	ticketing/services/access/internal/lifecyclejob	0.029s
+ok  	ticketing/services/access/internal/store	0.180s
+ok  	ticketing/services/access/internal/ticket	0.006s
+go test: gateway
+ok  	ticketing/gateway/cmd/gateway	0.023s
+pnpm -r test
+Scope: 3 of 4 workspace projects
+web/backoffice test$ vitest run
+web/scanner test$ vitest run
+web/storefront test$ vitest run
+web/scanner test:  RUN  v4.1.10 /home/mathieu/sources/ticketing_system.S-2-TKT-399-postmerge/web/scanner
+web/storefront test: 22:15:20 [@astrojs/node] Enabling sessions with filesystem storage
+web/backoffice test: 22:15:20 [@astrojs/node] Enabling sessions with filesystem storage
+web/backoffice test:  RUN  v4.1.10 /home/mathieu/sources/ticketing_system.S-2-TKT-399-postmerge/web/backoffice
+web/storefront test:  RUN  v4.1.10 /home/mathieu/sources/ticketing_system.S-2-TKT-399-postmerge/web/storefront
+web/backoffice test:  Test Files  20 passed (20)
+web/backoffice test:       Tests  669 passed (669)
+web/backoffice test:    Start at  22:15:21
+web/backoffice test:    Duration  18.59s (transform 36.89s, setup 0ms, import 20.22s, tests 47.83s, environment 2.41s)
+web/backoffice test: Done
+web/scanner test:  ❯ src/App.exit-reconcile.test.tsx (12 tests | 1 failed) 4136ms
+web/scanner test:    × keeps exact mixed Entry, Exit and refusal rows after transport and retires only the exact valid reply 1746ms
+web/storefront test: (node:3879026) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGHUP listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (Use `node --trace-warnings ...` to show where the warning was created)
+web/storefront test: (node:3879026) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGINT listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3879026) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGTERM listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3879026) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGALRM listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3879026) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGABRT listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3879026) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGVTALRM listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3879026) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGXCPU listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3879026) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGXFSZ listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3879026) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGUSR2 listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3879026) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGTRAP listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3879026) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGSYS listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3879026) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGQUIT listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3879026) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGIOT listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3879026) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGIO listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3879026) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGPOLL listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3879026) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGPWR listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test: (node:3879026) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 SIGSTKFLT listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+web/storefront test:  Test Files  24 passed (24)
+web/storefront test:       Tests  439 passed (439)
+web/storefront test:    Start at  22:15:21
+web/storefront test:    Duration  27.44s (transform 49.31s, setup 0ms, import 12.67s, tests 75.78s, environment 7.51s)
+web/storefront test: Done
+web/scanner test: ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+web/scanner test:  FAIL  src/App.exit-reconcile.test.tsx > keeps exact mixed Entry, Exit and refusal rows after transport and retires only the exact valid reply
+web/scanner test: TestingLibraryElementError: Unable to find role="button" and name "Sync queued scans"
+web/scanner test: Ignored nodes: comments, script, style
+web/scanner test: [36m<body>[39m
+web/scanner test:   [36m<div>[39m
+web/scanner test:     [36m<main[39m
+web/scanner test:       [33mclass[39m=[32m"scanner"[39m
+web/scanner test:     [36m>[39m
+web/scanner test:       [36m<h1>[39m
+web/scanner test:         [0mGate scanner[0m
+web/scanner test:       [36m</h1>[39m
+web/scanner test:       [36m<fieldset[39m
+web/scanner test:         [33mclass[39m=[32m"scan-direction"[39m
+web/scanner test:       [36m>[39m
+web/scanner test:         [36m<legend>[39m
+web/scanner test:           [0mScan direction[0m
+web/scanner test:         [36m</legend>[39m
+web/scanner test:         [36m<label>[39m
+web/scanner test:           [36m<input[39m
+web/scanner test:             [33mchecked[39m=[32m""[39m
+web/scanner test:             [33mname[39m=[32m"direction"[39m
+web/scanner test:             [33mtype[39m=[32m"radio"[39m
+web/scanner test:             [33mvalue[39m=[32m"entry"[39m
+web/scanner test:           [36m/>[39m
+web/scanner test:           [0m Entry[0m
+web/scanner test:         [36m</label>[39m
+web/scanner test:         [36m<label>[39m
+web/scanner test:           [36m<input[39m
+web/scanner test:             [33mname[39m=[32m"direction"[39m
+web/scanner test:             [33mtype[39m=[32m"radio"[39m
+web/scanner test:             [33mvalue[39m=[32m"exit"[39m
+web/scanner test:           [36m/>[39m
+web/scanner test:           [0m Exit[0m
+web/scanner test:         [36m</label>[39m
+web/scanner test:       [36m</fieldset>[39m
+web/scanner test:       [36m<p>[39m
+web/scanner test:         [0mScan a ticket QR code or paste its credential [0m
+web/scanner test:         [0mto validate entry.[0m
+web/scanner test:       [36m</p>[39m
+web/scanner test:       [36m<section[39m
+web/scanner test:         [33maria-label[39m=[32m"Ticket scan input"[39m
+web/scanner test:       [36m>[39m
+web/scanner test:         [36m<form[39m
+web/scanner test:           [33maria-label[39m=[32m"Ticket scan"[39m
+web/scanner test:         [36m>[39m
+web/scanner test:           [36m<label[39m
+web/scanner test:             [33mfor[39m=[32m"qr-payload"[39m
+web/scanner test:           [36m>[39m
+web/scanner test:             [0mTicket credential[0m
+web/scanner test:           [36m</label>[39m
+web/scanner test:           [36m<textarea[39m
+web/scanner test:             [33mid[39m=[32m"qr-payload"[39m
+web/scanner test:             [33mplaceholder[39m=[32m"Paste QR credential"[39m
+web/scanner test:             [33mrows[39m=[32m"4"[39m
+web/scanner test:           [36m/>[39m
+web/scanner test:           [36m<div[39m
+web/scanner test:             [33mclass[39m=[32m"scanner-actions"[39m
+web/scanner test:           [36m>[39m
+web/scanner test:             [36m<button[39m
+web/scanner test:               [33mdisabled[39m=[32m""[39m
+web/scanner test:               [33mtype[39m=[32m"submit"[39m
+web/scanner test:             [36m>[39m
+web/scanner test:               [0mCheck ticket[0m
+web/scanner test:             [36m</button>[39m
+web/scanner test:             [36m<button[39m
+web/scanner test:               [33mtype[39m=[32m"button"[39m
+web/scanner test:             [36m>[39m
+web/scanner test:               [0mUse camera[0m
+web/scanner test:             [36m</button>[39m
+web/scanner test:             [36m<button[39m
+web/scanner test:               [33mtype[39m=[32m"button"[39m
+web/scanner test:             [36m>[39m
+web/scanner test:               [0mRefresh revocation list[0m
+web/scanner test:             [36m</button>[39m
+web/scanner test:           [36m</div>[39m
+web/scanner test:         [36m</form>[39m
+web/scanner test:         [36m<video[39m
+web/scanner test:           [33maria-label[39m=[32m"Camera preview"[39m
+web/scanner test:           [33mhidden[39m=[32m""[39m
+web/scanner test:           [33mplaysinline[39m=[32m""[39m
+web/scanner test:         [36m/>[39m
+web/scanner test:       [36m</section>[39m
+web/scanner test:       [36m<p[39m
+web/scanner test:         [33mclass[39m=[32m"queue-note"[39m
+web/scanner test:         [33mrole[39m=[32m"status"[39m
+web/scanner test:       [36m>[39m
+web/scanner test:         [0mThis device holds no revocation list yet.[0m
+web/scanner test:       [36m</p>[39m
+web/scanner test:       [36m<section[39m
+web/scanner test:         [33maria-label[39m=[32m"Local scanner records"[39m
+web/scanner test:         [33mclass[39m=[32m"local-records"[39m
+web/scanner test:       [36m/>[39m
+web/scanner test:     [36m</main>[39m
+web/scanner test:   [36m</div>[39m
+web/scanner test: [36m</body>[39m
+web/scanner test: Ignored nodes: comments, script, style
+web/scanner test: [36m<body>[39m
+web/scanner test:   [36m<div>[39m
+web/scanner test:     [36m<main[39m
+web/scanner test:       [33mclass[39m=[32m"scanner"[39m
+web/scanner test:     [36m>[39m
+web/scanner test:       [36m<h1>[39m
+web/scanner test:         [0mGate scanner[0m
+web/scanner test:       [36m</h1>[39m
+web/scanner test:       [36m<fieldset[39m
+web/scanner test:         [33mclass[39m=[32m"scan-direction"[39m
+web/scanner test:       [36m>[39m
+web/scanner test:         [36m<legend>[39m
+web/scanner test:           [0mScan direction[0m
+web/scanner test:         [36m</legend>[39m
+web/scanner test:         [36m<label>[39m
+web/scanner test:           [36m<input[39m
+web/scanner test:             [33mchecked[39m=[32m""[39m
+web/scanner test:             [33mname[39m=[32m"direction"[39m
+web/scanner test:             [33mtype[39m=[32m"radio"[39m
+web/scanner test:             [33mvalue[39m=[32m"entry"[39m
+web/scanner test:           [36m/>[39m
+web/scanner test:           [0m Entry[0m
+web/scanner test:         [36m</label>[39m
+web/scanner test:         [36m<label>[39m
+web/scanner test:           [36m<input[39m
+web/scanner test:             [33mname[39m=[32m"direction"[39m
+web/scanner test:             [33mtype[39m=[32m"radio"[39m
+web/scanner test:             [33mvalue[39m=[32m"exit"[39m
+web/scanner test:           [36m/>[39m
+web/scanner test:           [0m Exit[0m
+web/scanner test:         [36m</label>[39m
+web/scanner test:       [36m</fieldset>[39m
+web/scanner test:       [36m<p>[39m
+web/scanner test:         [0mScan a ticket QR code or paste its credential [0m
+web/scanner test:         [0mto validate entry.[0m
+web/scanner test:       [36m</p>[39m
+web/scanner test:       [36m<section[39m
+web/scanner test:         [33maria-label[39m=[32m"Ticket scan input"[39m
+web/scanner test:       [36m>[39m
+web/scanner test:         [36m<form[39m
+web/scanner test:           [33maria-label[39m=[32m"Ticket scan"[39m
+web/scanner test:         [36m>[39m
+web/scanner test:           [36m<label[39m
+web/scanner test:             [33mfor[39m=[32m"qr-payload"[39m
+web/scanner test:           [36m>[39m
+web/scanner test:             [0mTicket credential[0m
+web/scanner test:           [36m</label>[39m
+web/scanner test:           [36m<textarea[39m
+web/scanner test:             [33mid[39m=[32m"qr-payload"[39m
+web/scanner test:             [33mplaceholder[39m=[32m"Paste QR credential"[39m
+web/scanner test:             [33mrows[39m=[32m"4"[39m
+web/scanner test:           [36m/>[39m
+web/scanner test:           [36m<div[39m
+web/scanner test:             [33mclass[39m=[32m"scanner-actions"[39m
+web/scanner test:           [36m>[39m
+web/scanner test:             [36m<button[39m
+web/scanner test:               [33mdisabled[39m=[32m""[39m
+web/scanner test:               [33mtype[39m=[32m"submit"[39m
+web/scanner test:             [36m>[39m
+web/scanner test:               [0mCheck ticket[0m
+web/scanner test:             [36m</button>[39m
+web/scanner test:             [36m<button[39m
+web/scanner test:               [33mtype[39m=[32m"button"[39m
+web/scanner test:             [36m>[39m
+web/scanner test:               [0mUse camera[0m
+web/scanner test:             [36m</button>[39m
+web/scanner test:             [36m<button[39m
+web/scanner test:               [33mtype[39m=[32m"button"[39m
+web/scanner test:             [36m>[39m
+web/scanner test:               [0mRefresh revocation list[0m
+web/scanner test:             [36m</button>[39m
+web/scanner test:           [36m</div>[39m
+web/scanner test:         [36m</form>[39m
+web/scanner test:         [36m<video[39m
+web/scanner test:           [33maria-label[39m=[32m"Camera preview"[39m
+web/scanner test:           [33mhidden[39m=[32m""[39m
+web/scanner test:           [33mplaysinline[39m=[32m""[39m
+web/scanner test:         [36m/>[39m
+web/scanner test:       [36m</section>[39m
+web/scanner test:       [36m<p[39m
+web/scanner test:         [33mclass[39m=[32m"queue-note"[39m
+web/scanner test:         [33mrole[39m=[32m"status"[39m
+web/scanner test:       [36m>[39m
+web/scanner test:         [0mThis device holds no revocation list yet.[0m
+web/scanner test:       [36m</p>[39m
+web/scanner test:       [36m<section[39m
+web/scanner test:         [33maria-label[39m=[32m"Local scanner records"[39m
+web/scanner test:         [33mclass[39m=[32m"local-records"[39m
+web/scanner test:       [36m/>[39m
+web/scanner test:     [36m</main>[39m
+web/scanner test:   [36m</div>[39m
+web/scanner test: [36m</body>[39m
+web/scanner test:  ❯ waitForWrapper ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/wait-for.js:163:27
+web/scanner test:  ❯ ../../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:86:33
+web/scanner test:  ❯ src/App.exit-reconcile.test.tsx:45:32
+web/scanner test:      43|   }))
+web/scanner test:      44|   render(<App />)
+web/scanner test:      45|   fireEvent.click(await screen.findByRole('button', { name: 'Sync queu…
+web/scanner test:        |                                ^
+web/scanner test:      46|   if (failure === '401') await screen.findByLabelText('Pairing token')
+web/scanner test:      47|   else await screen.findByText(/^Sync failed:/)
+web/scanner test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+web/scanner test:  Test Files  1 failed | 42 passed (43)
+web/scanner test:       Tests  1 failed | 1850 passed (1851)
+web/scanner test:    Start at  22:15:19
+web/scanner test:    Duration  41.75s (transform 22.14s, setup 7.59s, import 40.99s, tests 162.09s, environment 112.06s)
+web/scanner test: Failed
+/home/mathieu/sources/ticketing_system.S-2-TKT-399-postmerge/web/scanner:
+[ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL] scanner@0.0.0 test: `vitest run`
+Exit status 1
+make[1]: *** [Makefile:185: test-ts] Error 1
+make[1]: Leaving directory '/home/mathieu/sources/ticketing_system.S-2-TKT-399-postmerge'
