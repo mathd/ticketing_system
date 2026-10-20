@@ -1,0 +1,77 @@
+=== RUN   TestRealConnectLookupDNSAtEverySite
+=== RUN   TestRealConnectLookupDNSAtEverySite/device_lookup
+    scanner_availability_smoke_test.go:193: no-owned-wire-questions: operation did not reach the DNS producer
+=== RUN   TestRealConnectLookupDNSAtEverySite/policy_read
+    scanner_availability_smoke_test.go:193: no-owned-wire-questions: operation did not reach the DNS producer
+=== RUN   TestRealConnectLookupDNSAtEverySite/single_begin
+    scanner_availability_smoke_test.go:193: no-owned-wire-questions: operation did not reach the DNS producer
+=== RUN   TestRealConnectLookupDNSAtEverySite/pass_begin
+    scanner_availability_smoke_test.go:193: no-owned-wire-questions: operation did not reach the DNS producer
+--- FAIL: TestRealConnectLookupDNSAtEverySite (0.72s)
+    --- FAIL: TestRealConnectLookupDNSAtEverySite/device_lookup (0.20s)
+    --- FAIL: TestRealConnectLookupDNSAtEverySite/policy_read (0.18s)
+    --- FAIL: TestRealConnectLookupDNSAtEverySite/single_begin (0.18s)
+    --- FAIL: TestRealConnectLookupDNSAtEverySite/pass_begin (0.16s)
+=== RUN   TestRealConnectAttemptDNSAtEverySite
+=== RUN   TestRealConnectAttemptDNSAtEverySite/device_lookup
+    scanner_availability_smoke_test.go:230: no-owned-wire-questions: operation did not reach the DNS producer
+=== RUN   TestRealConnectAttemptDNSAtEverySite/policy_read
+    scanner_availability_smoke_test.go:230: no-owned-wire-questions: operation did not reach the DNS producer
+=== RUN   TestRealConnectAttemptDNSAtEverySite/single_begin
+    scanner_availability_smoke_test.go:230: no-owned-wire-questions: operation did not reach the DNS producer
+=== RUN   TestRealConnectAttemptDNSAtEverySite/pass_begin
+    scanner_availability_smoke_test.go:230: no-owned-wire-questions: operation did not reach the DNS producer
+--- FAIL: TestRealConnectAttemptDNSAtEverySite (0.76s)
+    --- FAIL: TestRealConnectAttemptDNSAtEverySite/device_lookup (0.22s)
+    --- FAIL: TestRealConnectAttemptDNSAtEverySite/policy_read (0.17s)
+    --- FAIL: TestRealConnectAttemptDNSAtEverySite/single_begin (0.21s)
+    --- FAIL: TestRealConnectAttemptDNSAtEverySite/pass_begin (0.17s)
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/device_lookup
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_supported
+    scanner_availability_smoke_test.go:437: no-owned-wire-questions: operation did not reach the DNS producer
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported
+    scanner_availability_smoke_test.go:437: no-owned-wire-questions: operation did not reach the DNS producer
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported_first
+    scanner_availability_smoke_test.go:437: no-owned-wire-questions: operation did not reach the DNS producer
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/policy_read
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_supported
+    scanner_availability_smoke_test.go:437: no-owned-wire-questions: operation did not reach the DNS producer
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported
+    scanner_availability_smoke_test.go:437: no-owned-wire-questions: operation did not reach the DNS producer
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported_first
+    scanner_availability_smoke_test.go:437: no-owned-wire-questions: operation did not reach the DNS producer
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/single_begin
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_supported
+    scanner_availability_smoke_test.go:437: no-owned-wire-questions: operation did not reach the DNS producer
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported
+    scanner_availability_smoke_test.go:437: no-owned-wire-questions: operation did not reach the DNS producer
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported_first
+    scanner_availability_smoke_test.go:437: no-owned-wire-questions: operation did not reach the DNS producer
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/pass_begin
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_supported
+    scanner_availability_smoke_test.go:437: no-owned-wire-questions: operation did not reach the DNS producer
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported
+    scanner_availability_smoke_test.go:437: no-owned-wire-questions: operation did not reach the DNS producer
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported_first
+    scanner_availability_smoke_test.go:437: no-owned-wire-questions: operation did not reach the DNS producer
+--- FAIL: TestRealMixedConnectLeavesUnderOneConnectError (2.44s)
+    --- FAIL: TestRealMixedConnectLeavesUnderOneConnectError/device_lookup (0.58s)
+        --- FAIL: TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_supported (0.03s)
+        --- FAIL: TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported (0.27s)
+        --- FAIL: TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported_first (0.13s)
+    --- FAIL: TestRealMixedConnectLeavesUnderOneConnectError/policy_read (0.65s)
+        --- FAIL: TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_supported (0.03s)
+        --- FAIL: TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported (0.28s)
+        --- FAIL: TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported_first (0.12s)
+    --- FAIL: TestRealMixedConnectLeavesUnderOneConnectError/single_begin (0.60s)
+        --- FAIL: TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_supported (0.03s)
+        --- FAIL: TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported (0.28s)
+        --- FAIL: TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported_first (0.13s)
+    --- FAIL: TestRealMixedConnectLeavesUnderOneConnectError/pass_begin (0.60s)
+        --- FAIL: TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_supported (0.03s)
+        --- FAIL: TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported (0.28s)
+        --- FAIL: TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported_first (0.13s)
+FAIL
+FAIL	ticketing/services/access/internal/store	3.919s
+FAIL

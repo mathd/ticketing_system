@@ -4,8 +4,9 @@
 // tests (TKT-557, ADR-085 §8 ticket 0).
 //
 // It opens a REAL pgx pool on an isolated schema and adds real connector and
-// transport fault controls: the real resolver on a .invalid name, real dials
-// to a closed or a backlog-full port, a role with CONNECTION LIMIT 0, the
+// transport fault controls: the real Go resolver against an owned authoritative
+// TCP NXDOMAIN responder, real dials to a closed or backlog-full port, a role
+// with CONNECTION LIMIT 0, the
 // recovery-held PostgreSQL that the smoke runner starts, and an owned TCP
 // proxy that can cut or withhold an established socket. No control builds a
 // driver error by hand.
@@ -93,8 +94,8 @@ const (
 	// FaultMixedUnsupported: the recovery-held 57P03 and a lookup-form DNS
 	// failure, beside an independent 100 ms dial timeout (unsupported).
 	FaultMixedUnsupported Fault = "mixed_unsupported"
-	// FaultMixedUnsupportedFirst: the same set with the unsupported attempt
-	// first.
+	// FaultMixedUnsupportedFirst: the same set with the unsupported socket
+	// attempt first. pgx collects DNS lookup errors before socket attempts.
 	FaultMixedUnsupportedFirst Fault = "mixed_unsupported_first"
 	// FaultWrongPassword: the attempt reaches the real server as the real
 	// user with a wrong password (SQLSTATE 28P01 below ConnectError). A
@@ -172,6 +173,7 @@ type Fixture struct {
 	limitUser     string
 	limitPassword string
 	proxy         *proxy
+	dns           *dnsProducer
 }
 
 type hook struct {
@@ -191,7 +193,7 @@ func New(t testing.TB, ctx context.Context, opts Options) *Fixture {
 		t.Skip(AdminDSNEnv + " is not set")
 	}
 	suffix := randomHex(t, 4)
-	f := &Fixture{t: t, Schema: "access_scanner_" + suffix, AppName: "tkt557_" + suffix, invalid: "tkt557-" + suffix + ".invalid"}
+	f := &Fixture{t: t, Schema: "access_scanner_" + suffix, AppName: "tkt557_" + suffix, invalid: "tkt557-" + suffix + ".invalid."}
 
 	adminCfg := disabledConfig(t, adminDSN)
 	adminCfg.RuntimeParams["search_path"] = f.Schema
@@ -225,6 +227,12 @@ func New(t testing.TB, ctx context.Context, opts Options) *Fixture {
 	if opts.Proxy {
 		f.proxy = newProxy(t, f.target)
 	}
+	t.Cleanup(func() {
+		if p := f.dnsProducer(); p != nil {
+			p.Close()
+		}
+		f.RequireNoDNSErrors(t)
+	})
 	f.DB = stdlib.OpenDB(*cfg, stdlib.OptionBeforeConnect(f.beforeConnect), stdlib.OptionResetSession(f.resetSession))
 	t.Cleanup(func() { _ = f.DB.Close() })
 	pool, err := runtimecfg.DatabaseFromEnv()
@@ -295,6 +303,17 @@ func (f *Fixture) ArmAfter(match string, fault Fault) {
 }
 
 func (f *Fixture) prepareLocked(fault Fault) {
+	switch fault {
+	case FaultDNSLookup, FaultDNSAttempt, FaultMixedSupported, FaultMixedUnsupported, FaultMixedUnsupportedFirst:
+		if f.dns == nil {
+			var err error
+			f.dns, err = newDNSProducer(f.invalid)
+			if err != nil {
+				f.t.Fatalf("start DNS producer: %v", err)
+			}
+		}
+	}
+
 	switch fault {
 	case FaultRefused:
 		if f.refusedAddr == "" {
@@ -432,6 +451,10 @@ func (f *Fixture) beforeConnect(_ context.Context, cc *pgx.ConnConfig) error {
 	}
 	refused, blocked, invalid := f.refusedAddr, f.blocked, f.invalid
 	limitUser, limitPassword := f.limitUser, f.limitPassword
+	var resolver *net.Resolver
+	if f.dns != nil {
+		resolver = f.dns.resolver
+	}
 	f.mu.Unlock()
 
 	dialer := &net.Dialer{}
@@ -450,12 +473,14 @@ func (f *Fixture) beforeConnect(_ context.Context, cc *pgx.ConnConfig) error {
 		}
 	case FaultDNSLookup:
 		cc.LookupFunc = func(ctx context.Context, _ string) ([]string, error) {
-			return net.DefaultResolver.LookupHost(ctx, invalid)
+			return resolver.LookupHost(ctx, invalid)
 		}
 		cc.DialFunc = direct
 	case FaultDNSAttempt:
+		faultDialer := &net.Dialer{Resolver: resolver}
 		cc.DialFunc = func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return direct(ctx, network, net.JoinHostPort(invalid, "5432"))
+			f.noteDial()
+			return faultDialer.DialContext(ctx, network, net.JoinHostPort(invalid, "5432"))
 		}
 	case FaultRefused:
 		cc.DialFunc = func(ctx context.Context, network, _ string) (net.Conn, error) {
@@ -492,7 +517,7 @@ func (f *Fixture) beforeConnect(_ context.Context, cc *pgx.ConnConfig) error {
 		recovery := RecoveryConfig(f.t)
 		cc.User, cc.Password, cc.Database = recovery.User, recovery.Password, recovery.Database
 		cc.TLSConfig = nil
-		cc.LookupFunc = net.DefaultResolver.LookupHost
+		cc.LookupFunc = resolver.LookupHost
 		recoveryHop := &pgconn.FallbackConfig{Host: recovery.Host, Port: recovery.Port}
 		lookupHop := &pgconn.FallbackConfig{Host: invalid, Port: 5432}
 		other := refused
@@ -676,6 +701,16 @@ func (f *Fixture) BlockedDials() int64 {
 		return 0
 	}
 	return f.blocked.entered.Load()
+}
+
+// BlockedDialAddress returns the owned backlog-full listener's address.
+func (f *Fixture) BlockedDialAddress() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.blocked == nil {
+		return ""
+	}
+	return f.blocked.addr
 }
 
 // CutOn arms the proxy once: when the client bytes that one connection sends

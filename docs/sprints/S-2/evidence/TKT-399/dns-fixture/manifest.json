@@ -1,0 +1,45 @@
+{
+  "baseHead": "2c8b35bbad7f24a863e7ef7ef8b9c89613931174",
+  "failedGateTree": "3bec9e9116273f948bbf7e5fe9abcd02bcb2122c",
+  "planSha256": "b879ddcb39ca850fc0f968a56c3309b147c7f0e3c6a0b77fd254627a42fe9fc0",
+  "originalArtifacts": [
+    {
+      "source": "/tmp/sdlc-S-2/TKT-399-final-postmerge-first.gate.verdict",
+      "retained": "original-gate.verdict",
+      "sha256": "6cc270f2861e5e268e48103e56b3a181f39828e6ae603350e181ee6d689af340",
+      "bytes": 185
+    },
+    {
+      "source": "/tmp/sdlc-S-2/TKT-399-final-postmerge-first-failure.json",
+      "retained": "original-failure.json",
+      "sha256": "5a5a71f71022c3c66726d91ae1fc3005d2067b9ceb5d89dacd083a9206b36887",
+      "bytes": 631
+    },
+    {
+      "source": "/tmp/sdlc-S-2/TKT-399-host-dns-probe.jsonl",
+      "retained": "original-host-dns-probe.jsonl",
+      "sha256": "1ddc3fcba24eabd841162c430918047723d17da4f1502898205a50d5d07babcc",
+      "bytes": 1405
+    },
+    {
+      "source": "/tmp/sdlc-S-2/TKT-399-dns-diagnosis.json",
+      "retained": "original-diagnosis.json",
+      "sha256": "efbf7e74d6bcbf7ecfa3613c4d9de25a8f0b6dcddcbde15c848bb57c83aae3fb",
+      "bytes": 2472
+    },
+    {
+      "source": "/tmp/sdlc-S-2/TKT-399-final-postmerge-first.gate.log",
+      "sha256": "6d4dcd9a86b2eea59dd182d4cbf1ded9da002aa7293e52624b8d67ba0492bf56",
+      "bytes": 89545,
+      "retainedExcerpt": "original-failing-subtests.log",
+      "excerptLines": [
+        1281,
+        1303
+      ],
+      "excerptSha256": "0c641aad908534a88b9c6dbdfeb3e6c96fb40e0383cff88f942a76e10a88c5bf"
+    }
+  ],
+  "note": "Original files are preserved verbatim. The diagnosis next-step field is historical and superseded by D52. The full gate log stays at its source path; its two failure trees are retained here. Earlier scanner receipts remain unchanged.",
+  "checks": "checks.json",
+  "mutationStatus": "Not run. Parent must inspect and commit the candidate first."
+}

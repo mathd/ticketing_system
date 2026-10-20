@@ -1,0 +1,36 @@
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/device_lookup
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_supported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported_first
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/policy_read
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_supported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported_first
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/single_begin
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_supported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported_first
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/pass_begin
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_supported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported_first
+--- PASS: TestRealMixedConnectLeavesUnderOneConnectError (2.29s)
+    --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/device_lookup (0.53s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_supported (0.01s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported (0.25s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported_first (0.10s)
+    --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/policy_read (0.56s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_supported (0.00s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported (0.25s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported_first (0.10s)
+    --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/single_begin (0.60s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_supported (0.01s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported (0.26s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported_first (0.11s)
+    --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/pass_begin (0.60s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_supported (0.01s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported (0.26s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported_first (0.11s)
+PASS
+ok  	ticketing/services/access/internal/store	2.290s

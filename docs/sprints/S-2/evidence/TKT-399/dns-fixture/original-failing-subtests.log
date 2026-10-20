@@ -1,0 +1,23 @@
+--- FAIL: TestRealConnectLookupDNSAtEverySite (2.12s)
+    --- FAIL: TestRealConnectLookupDNSAtEverySite/device_lookup (0.79s)
+        scanner_availability_smoke_test.go:190: device_lookup: got device_lookup/step_expired, want device_lookup/connect_dns:
+            *store.PreDecisionUnavailable: scanner store unavailable before decision (site=device_lookup class=step_expired): failed to connect to `user=postgres database=postgres`: hostname resolving er…
+              *pgconn.ConnectError: failed to connect to `user=postgres database=postgres`: hostname resolving error: lookup tkt557-20628d7a.invalid on 10.255.255.254:53: no such host
+                *fmt.wrapError: hostname resolving error: lookup tkt557-20628d7a.invalid on 10.255.255.254:53: no such host
+                  *errors.joinError: lookup tkt557-20628d7a.invalid on 10.255.255.254:53: no such host
+                    *net.DNSError: lookup tkt557-20628d7a.invalid on 10.255.255.254:53: no such host
+--- FAIL: TestRealMixedConnectLeavesUnderOneConnectError (5.24s)
+    --- FAIL: TestRealMixedConnectLeavesUnderOneConnectError/device_lookup (1.42s)
+        scanner_availability_smoke_test.go:339: device_lookup: unsupported failure classified as device_lookup/step_expired:
+            *store.PreDecisionUnavailable: scanner store unavailable before decision (site=device_lookup class=step_expired): failed to connect to `user=access database=access`:
+              *pgconn.ConnectError: failed to connect to `user=access database=access`:
+                *errors.joinError: lookup tkt557-a71b2ffa.invalid on 10.255.255.254:53: no such host
+                  *net.DNSError: lookup tkt557-a71b2ffa.invalid on 10.255.255.254:53: no such host
+                  *pgconn.perDialConnectError: 127.0.0.1:52481 (127.0.0.1): dial error: dial tcp 127.0.0.1:52481: operation was canceled
+                    *fmt.wrapError: dial error: dial tcp 127.0.0.1:52481: operation was canceled
+                      *net.OpError: dial tcp 127.0.0.1:52481: operation was canceled
+                        net.canceledError: operation was canceled
+                  *pgconn.perDialConnectError: 127.0.0.1:54079 (127.0.0.1): dial error: dial tcp 127.0.0.1:54079: operation was canceled
+                    *fmt.wrapError: dial error: dial tcp 127.0.0.1:54079: operation was canceled
+                      *net.OpError: dial tcp 127.0.0.1:54079: operation was canceled
+                        net.canceledError: operation was canceled

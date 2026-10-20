@@ -1,0 +1,76 @@
+=== RUN   TestRealConnectLookupDNSAtEverySite
+=== RUN   TestRealConnectLookupDNSAtEverySite/device_lookup
+    scanner_availability_smoke_test.go:216: TKT557-LATENCY site=device_lookup class=connect_dns/lookup ms=0.8
+=== RUN   TestRealConnectLookupDNSAtEverySite/policy_read
+    scanner_availability_smoke_test.go:216: TKT557-LATENCY site=policy_read class=connect_dns/lookup ms=0.4
+=== RUN   TestRealConnectLookupDNSAtEverySite/single_begin
+    scanner_availability_smoke_test.go:216: TKT557-LATENCY site=single_begin class=connect_dns/lookup ms=6.8
+=== RUN   TestRealConnectLookupDNSAtEverySite/pass_begin
+    scanner_availability_smoke_test.go:216: TKT557-LATENCY site=pass_begin class=connect_dns/lookup ms=5.9
+--- PASS: TestRealConnectLookupDNSAtEverySite (0.72s)
+    --- PASS: TestRealConnectLookupDNSAtEverySite/device_lookup (0.18s)
+    --- PASS: TestRealConnectLookupDNSAtEverySite/policy_read (0.14s)
+    --- PASS: TestRealConnectLookupDNSAtEverySite/single_begin (0.18s)
+    --- PASS: TestRealConnectLookupDNSAtEverySite/pass_begin (0.23s)
+=== RUN   TestRealConnectAttemptDNSAtEverySite
+=== RUN   TestRealConnectAttemptDNSAtEverySite/device_lookup
+    scanner_availability_smoke_test.go:242: TKT557-LATENCY site=device_lookup class=connect_dns/attempt ms=0.4
+=== RUN   TestRealConnectAttemptDNSAtEverySite/policy_read
+    scanner_availability_smoke_test.go:242: TKT557-LATENCY site=policy_read class=connect_dns/attempt ms=0.4
+=== RUN   TestRealConnectAttemptDNSAtEverySite/single_begin
+    scanner_availability_smoke_test.go:242: TKT557-LATENCY site=single_begin class=connect_dns/attempt ms=5.4
+=== RUN   TestRealConnectAttemptDNSAtEverySite/pass_begin
+    scanner_availability_smoke_test.go:242: TKT557-LATENCY site=pass_begin class=connect_dns/attempt ms=5.3
+--- PASS: TestRealConnectAttemptDNSAtEverySite (0.61s)
+    --- PASS: TestRealConnectAttemptDNSAtEverySite/device_lookup (0.17s)
+    --- PASS: TestRealConnectAttemptDNSAtEverySite/policy_read (0.15s)
+    --- PASS: TestRealConnectAttemptDNSAtEverySite/single_begin (0.15s)
+    --- PASS: TestRealConnectAttemptDNSAtEverySite/pass_begin (0.14s)
+=== RUN   TestDNSDisarmRestoresSuccessfulHealthyLookup
+=== RUN   TestDNSDisarmRestoresSuccessfulHealthyLookup/dns_lookup
+=== RUN   TestDNSDisarmRestoresSuccessfulHealthyLookup/dns_attempt
+=== RUN   TestDNSDisarmRestoresSuccessfulHealthyLookup/mixed_supported
+=== RUN   TestDNSDisarmRestoresSuccessfulHealthyLookup/mixed_unsupported
+=== RUN   TestDNSDisarmRestoresSuccessfulHealthyLookup/mixed_unsupported_first
+--- PASS: TestDNSDisarmRestoresSuccessfulHealthyLookup (1.29s)
+    --- PASS: TestDNSDisarmRestoresSuccessfulHealthyLookup/dns_lookup (0.14s)
+    --- PASS: TestDNSDisarmRestoresSuccessfulHealthyLookup/dns_attempt (0.14s)
+    --- PASS: TestDNSDisarmRestoresSuccessfulHealthyLookup/mixed_supported (0.19s)
+    --- PASS: TestDNSDisarmRestoresSuccessfulHealthyLookup/mixed_unsupported (0.42s)
+    --- PASS: TestDNSDisarmRestoresSuccessfulHealthyLookup/mixed_unsupported_first (0.40s)
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/device_lookup
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_supported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported_first
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/policy_read
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_supported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported_first
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/single_begin
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_supported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported_first
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/pass_begin
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_supported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported
+=== RUN   TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported_first
+--- PASS: TestRealMixedConnectLeavesUnderOneConnectError (2.13s)
+    --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/device_lookup (0.52s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_supported (0.00s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported (0.25s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/device_lookup/mixed_unsupported_first (0.10s)
+    --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/policy_read (0.51s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_supported (0.00s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported (0.25s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/policy_read/mixed_unsupported_first (0.10s)
+    --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/single_begin (0.53s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_supported (0.01s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported (0.26s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/single_begin/mixed_unsupported_first (0.11s)
+    --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/pass_begin (0.57s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_supported (0.01s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported (0.26s)
+        --- PASS: TestRealMixedConnectLeavesUnderOneConnectError/pass_begin/mixed_unsupported_first (0.11s)
+PASS
+ok  	ticketing/services/access/internal/store	4.755s

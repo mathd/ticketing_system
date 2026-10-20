@@ -1,0 +1,3 @@
+ok  	ticketing/services/access/internal/testdb	2.836s
+ok  	ticketing/services/access/internal/store	83.295s
+ok  	ticketing/services/access/internal/api	29.623s

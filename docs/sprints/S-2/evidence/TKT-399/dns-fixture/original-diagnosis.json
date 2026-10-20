@@ -1,0 +1,60 @@
+{
+  "observedAt": "2026-10-20T03:08:30.075670+00:00",
+  "diagnosis": "Baseline real-DNS fixture requires pre-deadline errors, but host Go resolver exceeds500ms; production expiry precedence is expected. No product classification defect established.",
+  "failedGateHead": "2c8b35bbad7f24a863e7ef7ef8b9c89613931174",
+  "probe": [
+    {
+      "elapsedMs": 549.209,
+      "error": "lookup tkt557-26efcdc0.invalid on 10.255.255.254:53: no such host",
+      "host": "tkt557-26efcdc0.invalid",
+      "startedAt": "2026-10-20T03:06:49.247904549Z"
+    },
+    {
+      "elapsedMs": 241.858,
+      "error": "lookup tkt557-94f5475c.invalid on 10.255.255.254:53: no such host",
+      "host": "tkt557-94f5475c.invalid",
+      "startedAt": "2026-10-20T03:06:49.797316971Z"
+    },
+    {
+      "elapsedMs": 379.871,
+      "error": "lookup tkt557-553bc317.invalid on 10.255.255.254:53: no such host",
+      "host": "tkt557-553bc317.invalid",
+      "startedAt": "2026-10-20T03:06:50.039226138Z"
+    },
+    {
+      "elapsedMs": 334.9,
+      "error": "lookup tkt557-99637bf5.invalid on 10.255.255.254:53: no such host",
+      "host": "tkt557-99637bf5.invalid",
+      "startedAt": "2026-10-20T03:06:50.419177485Z"
+    },
+    {
+      "elapsedMs": 202.092,
+      "error": "lookup tkt557-bfabb4a6.invalid on 10.255.255.254:53: no such host",
+      "host": "tkt557-bfabb4a6.invalid",
+      "startedAt": "2026-10-20T03:06:50.754126336Z"
+    },
+    {
+      "elapsedMs": 286.941,
+      "error": "lookup tkt557-717e4d9a.invalid on 10.255.255.254:53: no such host",
+      "host": "tkt557-717e4d9a.invalid",
+      "startedAt": "2026-10-20T03:06:50.956267414Z"
+    },
+    {
+      "elapsedMs": 216.36,
+      "error": "lookup tkt557-4bb26f61.invalid on 10.255.255.254:53: no such host",
+      "host": "tkt557-4bb26f61.invalid",
+      "startedAt": "2026-10-20T03:06:51.243272541Z"
+    },
+    {
+      "elapsedMs": 327.371,
+      "error": "lookup tkt557-11ea5065.invalid on 10.255.255.254:53: no such host",
+      "host": "tkt557-11ea5065.invalid",
+      "startedAt": "2026-10-20T03:06:51.459724141Z"
+    }
+  ],
+  "probeSha256": "1ddc3fcba24eabd841162c430918047723d17da4f1502898205a50d5d07babcc",
+  "draft": "/tmp/sdlc-S-2/DNS-fixture-correction-draft.md",
+  "draftSha256": "59e8099476dbb5f1214af69c991496c4f7eb62f097025a3ac0057fd032169461",
+  "codeChanges": false,
+  "next": "Owner approval to create correction ticket, then exact sprint scope/priority decision if it becomes a member. No blind retry loop."
+}

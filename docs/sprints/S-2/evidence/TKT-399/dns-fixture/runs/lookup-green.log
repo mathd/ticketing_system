@@ -1,0 +1,16 @@
+=== RUN   TestRealConnectLookupDNSAtEverySite
+=== RUN   TestRealConnectLookupDNSAtEverySite/device_lookup
+    scanner_availability_smoke_test.go:215: TKT557-LATENCY site=device_lookup class=connect_dns/lookup ms=0.7
+=== RUN   TestRealConnectLookupDNSAtEverySite/policy_read
+    scanner_availability_smoke_test.go:215: TKT557-LATENCY site=policy_read class=connect_dns/lookup ms=0.4
+=== RUN   TestRealConnectLookupDNSAtEverySite/single_begin
+    scanner_availability_smoke_test.go:215: TKT557-LATENCY site=single_begin class=connect_dns/lookup ms=6.2
+=== RUN   TestRealConnectLookupDNSAtEverySite/pass_begin
+    scanner_availability_smoke_test.go:215: TKT557-LATENCY site=pass_begin class=connect_dns/lookup ms=6.3
+--- PASS: TestRealConnectLookupDNSAtEverySite (0.58s)
+    --- PASS: TestRealConnectLookupDNSAtEverySite/device_lookup (0.14s)
+    --- PASS: TestRealConnectLookupDNSAtEverySite/policy_read (0.15s)
+    --- PASS: TestRealConnectLookupDNSAtEverySite/single_begin (0.15s)
+    --- PASS: TestRealConnectLookupDNSAtEverySite/pass_begin (0.15s)
+PASS
+ok  	ticketing/services/access/internal/store	0.586s
