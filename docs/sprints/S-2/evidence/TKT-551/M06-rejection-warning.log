@@ -1,0 +1,45 @@
+$ vitest run src/App.sync.test.tsx -t 'counts every result.*false'
+
+ RUN  v4.1.10 /home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner
+
+ ❯ src/App.sync.test.tsx (34 tests | 1 failed | 33 skipped) 235ms
+     × counts every result across real batches, including matching retired rows: false 234ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/App.sync.test.tsx > aggregate reconciliation reporting > counts every result across real batches, including matching retired rows: false
+AssertionError: expected [] to strictly equal [ …(6) ]
+
+- Expected
++ Received
+
+- [
+-   "Reconciliation rejected for 00000000-0551-4000-8000-000000000097. This result is not recorded.",
+-   "Reconciliation rejected for 00000000-0551-4000-8000-000000000098. This result is not recorded.",
+-   "Reconciliation rejected for 00000000-0551-4000-8000-000000000099. This result is not recorded.",
+-   "Reconciliation rejected for 00000000-0551-4000-8000-000000000100. This result is not recorded.",
+-   "Reconciliation rejected for 00000000-0551-4000-8000-000000000104. This result is not recorded.",
+-   "Reconciliation rejected for 00000000-0551-4000-8000-000000000105. This result is not recorded.",
+- ]
++ []
+
+ ❯ expectRejectionWarnings src/App.sync.test.tsx:117:50
+    115|   const ids = fixture.before.slice(0, count).filter(row => fixture.res…
+    116|   const warnings = screen.queryAllByText(/^Reconciliation rejected for…
+    117|   expect(warnings.map(node => node.textContent)).toStrictEqual(ids.map…
+       |                                                  ^
+    118| }
+    119|
+ ❯ src/App.sync.test.tsx:153:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 33 skipped (34)
+   Start at  01:44:23
+   Duration  1.11s (transform 202ms, setup 35ms, import 279ms, tests 235ms, environment 459ms)
+
+/home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner:
+[ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL] scanner@0.0.0 test: `vitest run src/App.sync.test.tsx -t 'counts every result.*false'`
+Exit status 1

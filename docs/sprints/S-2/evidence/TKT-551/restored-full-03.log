@@ -1,0 +1,10 @@
+$ vitest run
+
+ RUN  v4.1.10 /home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner
+
+
+ Test Files  43 passed (43)
+      Tests  1862 passed (1862)
+   Start at  01:45:30
+   Duration  20.53s (transform 3.95s, setup 2.43s, import 8.75s, tests 81.30s, environment 45.98s)
+

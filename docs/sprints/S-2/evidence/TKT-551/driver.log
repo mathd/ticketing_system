@@ -1,0 +1,24 @@
+{"operation": "M01-recorded-counter", "result": 1, "seconds": 3.7244821060448885}
+{"operation": "M02-synced-alternative", "result": 1, "seconds": 3.724495861970354}
+{"operation": "M03-conflict-counter", "result": 1, "seconds": 3.6744436700246297}
+{"operation": "M04-rejected-counter", "result": 1, "seconds": 3.7266664389753714}
+{"operation": "M05-batch-accumulation", "result": 1, "seconds": 3.7762008670251817}
+{"operation": "M06-rejection-warning", "result": 1, "seconds": 1.771441618038807}
+{"operation": "M07-rejected-retirement", "result": 1, "seconds": 3.7255042820470408}
+{"operation": "M08-partial-publication", "result": 1, "seconds": 3.726592974970117}
+{"operation": "M09-partial-removal", "result": 1, "seconds": 1.7685344350175}
+{"operation": "M10-publish-before-apply", "result": 1, "seconds": 1.770368002995383}
+{"operation": "M11-warning-count-source", "result": 1, "seconds": 2.620615598047152}
+{"operation": "M12-partial-after-isolated-422", "result": 1, "seconds": 1.6683015229646116}
+{"operation": "M13-next-pass-reset", "result": 1, "seconds": 3.7248567499918863}
+{"operation": "M14-partial-alert-order", "result": 1, "seconds": 1.718390345980879}
+{"operation": "M15-singular-rejection-copy", "result": 1, "seconds": 3.7249084629584104}
+{"operation": "restored-full-01", "result": 0, "seconds": 20.58992495300481}
+{"operation": "restored-full-02", "result": 0, "seconds": 20.531214122951496}
+{"operation": "restored-full-03", "result": 0, "seconds": 21.18692845996702}
+{"operation": "restored-full-04", "result": 0, "seconds": 21.609220981015824}
+{"operation": "restored-full-05", "result": 0, "seconds": 21.13133501401171}
+{"operation": "restored-full-06", "result": 0, "seconds": 21.175186695996672}
+{"operation": "restored-full-07", "result": 0, "seconds": 21.1697013550438}
+{"operation": "restored-full-08", "result": 0, "seconds": 20.885104313027114}
+PASS: 15 assertion-killed mutations and eight restored full scanner suites; source restored exactly.

@@ -1,0 +1,41 @@
+$ vitest run src/App.sync.test.tsx -t 'counts every result.*false'
+
+ RUN  v4.1.10 /home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner
+
+ ❯ src/App.sync.test.tsx (34 tests | 1 failed | 33 skipped) 193ms
+     × counts every result across real batches, including matching retired rows: false 192ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/App.sync.test.tsx > aggregate reconciliation reporting > counts every result across real batches, including matching retired rows: false
+AssertionError: expected <p role="alert"></p> to be null
+
+- Expected:
+null
+
++ Received:
+<p
+  role="alert"
+>
+  Completed batches: Synced 92 offline scan(s). 7 conflicts flagged for the operator. 6 rejected scans were not recorded.
+</p>
+
+ ❯ src/App.sync.test.tsx:154:55
+    152|     await screen.findByText(mixedSyncNote, {}, { timeout: BOUND_MS })
+    153|     expectRejectionWarnings(fixture, 105)
+    154|     expect(screen.queryByText(/^Completed batches:/)).toBeNull()
+       |                                                       ^
+    155|     await waitFor(async () => expect(await storedRows()).toStrictEqual…
+    156|     await waitFor(() => expect(screen.queryByRole('button', { name: 'S…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 33 skipped (34)
+   Start at  01:44:32
+   Duration  1.08s (transform 193ms, setup 32ms, import 272ms, tests 193ms, environment 462ms)
+
+/home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner:
+[ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL] scanner@0.0.0 test: `vitest run src/App.sync.test.tsx -t 'counts every result.*false'`
+Exit status 1

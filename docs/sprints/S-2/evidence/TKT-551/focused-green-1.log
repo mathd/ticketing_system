@@ -1,0 +1,10 @@
+$ vitest run src/App.sync.test.tsx src/App.reconcile.test.tsx src/App.legacy.test.tsx
+
+ RUN  v4.1.10 /home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner
+
+
+ Test Files  3 passed (3)
+      Tests  53 passed (53)
+   Start at  01:41:50
+   Duration  3.11s (transform 543ms, setup 128ms, import 873ms, tests 3.35s, environment 1.52s)
+
