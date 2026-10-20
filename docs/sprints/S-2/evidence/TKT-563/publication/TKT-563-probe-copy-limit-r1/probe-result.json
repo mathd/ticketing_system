@@ -1,0 +1,788 @@
+{
+  "schema": "tkt-563-probe-result/1",
+  "variant": "COPY-LIMIT",
+  "kind": "presenter",
+  "repeat": 1,
+  "runId": "afb50082-2e78-4423-aeb7-7f906d6f242e",
+  "startedAt": "2026-10-20T21:00:49.194Z",
+  "endedAt": "2026-10-20T21:00:55.653Z",
+  "head": "3d75a526624527e9be3a2f6a8dbd61e978ad394b",
+  "tree": "d27db6892e4a533b9a44eac4755dcbb7fa4cd310",
+  "baseline": "dbee66e17145d316e06a4d4e092d65483dc33db8",
+  "inputsSchema": "tkt-563-probe-inputs/1",
+  "browserVersion": "155.0.8059.79",
+  "playwrightVersion": "1.62.1",
+  "nodeVersion": "v24.11.1",
+  "invocation": {
+    "checks": [
+      {
+        "id": "SERVED-STOCK-INDEX",
+        "ok": true,
+        "detail": "status 200"
+      },
+      {
+        "id": "SERVED-STOCK-ASSETS",
+        "ok": true,
+        "detail": "assets 2"
+      }
+    ],
+    "stockAssets": {
+      "index": {
+        "status": 200,
+        "sha256": "4ae5e5afd55cb9263e721c1d7138d301711cfdd78d22c5cfa2ae517dd6a0eeb1",
+        "distSha256": "4ae5e5afd55cb9263e721c1d7138d301711cfdd78d22c5cfa2ae517dd6a0eeb1"
+      },
+      "assets": [
+        {
+          "path": "/scanner/assets/index-CI6VUCe1.js",
+          "status": 200,
+          "sha256": "90758d121301ce61675843605f6b442751bc4325e88e3c075f27d7174c6133ff",
+          "distSha256": "90758d121301ce61675843605f6b442751bc4325e88e3c075f27d7174c6133ff"
+        },
+        {
+          "path": "/scanner/assets/index-7nOgmnhB.css",
+          "status": 200,
+          "sha256": "134ca2c66ab1b53c8100e6f9b9c832f7f5ca77c2341f8dd22c539c750ff097e0",
+          "distSha256": "134ca2c66ab1b53c8100e6f9b9c832f7f5ca77c2341f8dd22c539c750ff097e0"
+        }
+      ],
+      "indexMatches": true,
+      "assetsMatch": true
+    }
+  },
+  "repetitions": [
+    {
+      "index": 1,
+      "checks": [
+        {
+          "id": "ENTRYCORE-01",
+          "ok": true,
+          "detail": "B1 online Entry submits the rendered form and stores exactly one Entry at the returned time"
+        },
+        {
+          "id": "ENTRYCORE-02",
+          "ok": true,
+          "detail": "B1 offline Entry reconciliation preserves the exact id, type and claimed time with no second instruction"
+        },
+        {
+          "id": "ENTRYCORE-03",
+          "ok": true,
+          "detail": "B1 client 401 stays terminal while its independent queued control reaches Access"
+        },
+        {
+          "id": "ENTRYCORE-04",
+          "ok": true,
+          "detail": "B1 client 500 stays terminal while its independent queued control reaches Access"
+        },
+        {
+          "id": "ENTRYCORE-05",
+          "ok": true,
+          "detail": "B6 Chrome 155.0.8059.79 native offline has the exact selected rejection shape"
+        },
+        {
+          "id": "ENTRYCORE-06",
+          "ok": true,
+          "detail": "B6 Chrome 155.0.8059.79 native route abort has the exact selected rejection shape"
+        },
+        {
+          "id": "ENTRYCORE-07",
+          "ok": true,
+          "detail": "B6 Chrome 155.0.8059.79 native complete POST then socket close has the exact selected rejection shape"
+        },
+        {
+          "id": "ENTRYCORE-COMPLETE",
+          "ok": true
+        },
+        {
+          "id": "ENTRYCORE-HELPERS",
+          "ok": true
+        },
+        {
+          "id": "DENY-EXIT-ACCEPT-ENTRY-1",
+          "ok": true,
+          "detail": "status 200"
+        },
+        {
+          "id": "DENY-EXIT-FACT-ENTRY-1",
+          "ok": true
+        },
+        {
+          "id": "DENY-EXIT-REASON-WIRE",
+          "ok": true,
+          "detail": "status 409 reason exit_required"
+        },
+        {
+          "id": "DENY-EXIT-ALERT",
+          "ok": true,
+          "detail": "shown true text \"RejectedDo not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.Reason: exit_required.\""
+        },
+        {
+          "id": "DENY-EXIT-LOCAL-RESOLVED",
+          "ok": true,
+          "detail": "row {\"occurrenceId\":\"94abb870-9aba-44e8-b23e-29e0eeba8f12\",\"qrPayloadSha256\":\"b537aa2b8a84a62371eb6fcb4907fd84a4ea79b4e83f0585a272d95393d0ce8c\",\"occurredAt\":\"2026-10-20T21:00:54.310Z\",\"createdAt\":\"2026-10-20T21:00:54.310Z\",\"state\":\"RESOLVED\",\"actuated\":false,\"ownerId\":\"cf797e78-d9a1-4c04-bee0-4f7c702303c2\",\"leaseExpiresAt\":1792530084321,\"recordFormat\":1,\"direction\":\"entry\",\"localOutcome\":{\"family\":\"terminal\",\"cause\":\"denied\",\"status\":409,\"latchId\":\"90ff5790-5286-4aea-8131-01788e884316\",\"reason\":\"exit_required\"},\"decidedAt\":\"2026-10-20T21:00:54.335Z\"} actuated writes 0"
+        },
+        {
+          "id": "DENY-EXIT-NO-LIFECYCLE",
+          "ok": true
+        },
+        {
+          "id": "DENY-EXIT-ACCEPT-EXIT",
+          "ok": true,
+          "detail": "status 200"
+        },
+        {
+          "id": "DENY-EXIT-FACT-EXIT",
+          "ok": true
+        },
+        {
+          "id": "DENY-EXIT-SELECTOR-STAYS",
+          "ok": true
+        },
+        {
+          "id": "DENY-EXIT-ACCEPT-ENTRY-2",
+          "ok": true,
+          "detail": "status 200"
+        },
+        {
+          "id": "DENY-EXIT-FACT-ENTRY-2",
+          "ok": true
+        },
+        {
+          "id": "DENY-LIMIT-ACCEPT-1",
+          "ok": true,
+          "detail": "status 200"
+        },
+        {
+          "id": "DENY-LIMIT-FACT-1",
+          "ok": true
+        },
+        {
+          "id": "DENY-LIMIT-REASON-WIRE",
+          "ok": true,
+          "detail": "status 409 reason entry_limit_reached"
+        },
+        {
+          "id": "DENY-LIMIT-ALERT",
+          "ok": false,
+          "detail": "shown true text \"RejectedCredential is invalid or cannot be redeemed.\""
+        },
+        {
+          "id": "DENY-LIMIT-LOCAL-RESOLVED",
+          "ok": true,
+          "detail": "row {\"occurrenceId\":\"98dbe7aa-2ad8-4b80-9417-260972c95fe8\",\"qrPayloadSha256\":\"6ab4c16340a4328b26fc75efcbb899c5149a6432e56955d4376f27d7c3ac93bc\",\"occurredAt\":\"2026-10-20T21:00:55.425Z\",\"createdAt\":\"2026-10-20T21:00:55.425Z\",\"state\":\"RESOLVED\",\"actuated\":false,\"ownerId\":\"cf797e78-d9a1-4c04-bee0-4f7c702303c2\",\"leaseExpiresAt\":1792530085438,\"recordFormat\":1,\"direction\":\"entry\",\"localOutcome\":{\"family\":\"terminal\",\"cause\":\"denied\",\"status\":409,\"latchId\":\"4190eb6f-d563-45af-9b2a-46de9619243c\",\"reason\":\"entry_limit_reached\"},\"decidedAt\":\"2026-10-20T21:00:55.449Z\"} actuated writes 0"
+        },
+        {
+          "id": "DENY-LIMIT-NO-LIFECYCLE",
+          "ok": true
+        },
+        {
+          "id": "BROWSER-PAGEERRORS-NONE",
+          "ok": true,
+          "detail": "[]"
+        },
+        {
+          "id": "DIAG-MUTANT-SERVED",
+          "ok": true,
+          "detail": "{\"requests\":4,\"assets\":2}"
+        }
+      ],
+      "journeys": {
+        "denial": {
+          "exit": {
+            "firstEntry": {
+              "wire": {
+                "status": 200,
+                "body": {
+                  "qr_payload_sha256": "b537aa2b8a84a62371eb6fcb4907fd84a4ea79b4e83f0585a272d95393d0ce8c",
+                  "occurrence_id": "63ef471f-7c62-4067-9e4d-1215732f60df",
+                  "occurred_at": "2026-10-20T21:00:54.042Z",
+                  "direction": "entry"
+                },
+                "json": {
+                  "decision": "accepted",
+                  "scanned_at": "2026-10-20T21:00:54.042Z"
+                }
+              },
+              "result": {
+                "shown": true,
+                "text": "AcceptedEntry accepted. Admit.Entry recorded at 10/20/2026, 5:00:54 PM."
+              },
+              "readback": {
+                "facts": [
+                  {
+                    "occurrence_id": "63ef471f-7c62-4067-9e4d-1215732f60df",
+                    "event_type": "entry",
+                    "occurred_at": "2026-10-20T21:00:54.042Z"
+                  }
+                ],
+                "lifecycle": [
+                  {
+                    "id": "63ef471f-7c62-4067-9e4d-1215732f60df",
+                    "ticket_id": "00bb8b06-9408-4883-a17d-f7c7fa095a69",
+                    "event_type": "entry",
+                    "occurred_at": "2026-10-20T21:00:54.042+00:00"
+                  }
+                ]
+              }
+            },
+            "denied": {
+              "status": 409,
+              "reason": "exit_required",
+              "occurrence": "94abb870-9aba-44e8-b23e-29e0eeba8f12",
+              "wire": {
+                "status": 409,
+                "body": {
+                  "qr_payload_sha256": "b537aa2b8a84a62371eb6fcb4907fd84a4ea79b4e83f0585a272d95393d0ce8c",
+                  "occurrence_id": "94abb870-9aba-44e8-b23e-29e0eeba8f12",
+                  "occurred_at": "2026-10-20T21:00:54.310Z",
+                  "direction": "entry"
+                },
+                "json": {
+                  "decision": "rejected",
+                  "reason": "exit_required"
+                }
+              },
+              "alert": {
+                "shown": true,
+                "text": "RejectedDo not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.Reason: exit_required.",
+                "expected": "RejectedDo not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.Reason: exit_required."
+              },
+              "occurrenceRow": {
+                "occurrenceId": "94abb870-9aba-44e8-b23e-29e0eeba8f12",
+                "qrPayloadSha256": "b537aa2b8a84a62371eb6fcb4907fd84a4ea79b4e83f0585a272d95393d0ce8c",
+                "occurredAt": "2026-10-20T21:00:54.310Z",
+                "createdAt": "2026-10-20T21:00:54.310Z",
+                "state": "RESOLVED",
+                "actuated": false,
+                "ownerId": "cf797e78-d9a1-4c04-bee0-4f7c702303c2",
+                "leaseExpiresAt": 1792530084321,
+                "recordFormat": 1,
+                "direction": "entry",
+                "localOutcome": {
+                  "family": "terminal",
+                  "cause": "denied",
+                  "status": 409,
+                  "latchId": "90ff5790-5286-4aea-8131-01788e884316",
+                  "reason": "exit_required"
+                },
+                "decidedAt": "2026-10-20T21:00:54.335Z"
+              },
+              "rowsObserved": [
+                {
+                  "occurrenceId": "63ef471f-7c62-4067-9e4d-1215732f60df",
+                  "qrPayloadSha256": "b537aa2b8a84a62371eb6fcb4907fd84a4ea79b4e83f0585a272d95393d0ce8c",
+                  "occurredAt": "2026-10-20T21:00:54.042Z",
+                  "createdAt": "2026-10-20T21:00:54.042Z",
+                  "state": "ACTUATED",
+                  "actuated": true,
+                  "ownerId": "cf797e78-d9a1-4c04-bee0-4f7c702303c2",
+                  "leaseExpiresAt": 1792530084054,
+                  "recordFormat": 1,
+                  "direction": "entry",
+                  "localOutcome": {
+                    "family": "actuation",
+                    "cause": "reserved"
+                  },
+                  "decidedAt": "2026-10-20T21:00:54.070Z"
+                },
+                {
+                  "occurrenceId": "94abb870-9aba-44e8-b23e-29e0eeba8f12",
+                  "qrPayloadSha256": "b537aa2b8a84a62371eb6fcb4907fd84a4ea79b4e83f0585a272d95393d0ce8c",
+                  "occurredAt": "2026-10-20T21:00:54.310Z",
+                  "createdAt": "2026-10-20T21:00:54.310Z",
+                  "state": "RESOLVED",
+                  "actuated": false,
+                  "ownerId": "cf797e78-d9a1-4c04-bee0-4f7c702303c2",
+                  "leaseExpiresAt": 1792530084321,
+                  "recordFormat": 1,
+                  "direction": "entry",
+                  "localOutcome": {
+                    "family": "terminal",
+                    "cause": "denied",
+                    "status": 409,
+                    "latchId": "90ff5790-5286-4aea-8131-01788e884316",
+                    "reason": "exit_required"
+                  },
+                  "decidedAt": "2026-10-20T21:00:54.335Z"
+                }
+              ],
+              "writes": [
+                {
+                  "id": "94abb870-9aba-44e8-b23e-29e0eeba8f12",
+                  "state": "PENDING",
+                  "store": "occurrences",
+                  "durability": "strict",
+                  "event": "write-success"
+                },
+                {
+                  "id": "94abb870-9aba-44e8-b23e-29e0eeba8f12",
+                  "state": "PENDING",
+                  "store": "occurrences",
+                  "durability": "strict",
+                  "event": "complete"
+                },
+                {
+                  "id": "94abb870-9aba-44e8-b23e-29e0eeba8f12",
+                  "state": "RESOLVED",
+                  "store": "occurrences",
+                  "durability": "strict",
+                  "event": "write-success"
+                },
+                {
+                  "id": "94abb870-9aba-44e8-b23e-29e0eeba8f12",
+                  "state": "RESOLVED",
+                  "store": "occurrences",
+                  "durability": "strict",
+                  "event": "complete"
+                },
+                {
+                  "id": "94abb870-9aba-44e8-b23e-29e0eeba8f12",
+                  "state": "RESOLVED",
+                  "store": "occurrences",
+                  "durability": "strict",
+                  "event": "write-success"
+                },
+                {
+                  "id": "94abb870-9aba-44e8-b23e-29e0eeba8f12",
+                  "state": "RESOLVED",
+                  "store": "occurrences",
+                  "durability": "strict",
+                  "event": "complete"
+                }
+              ],
+              "actuatedWriteCount": 0,
+              "storageIdle": true,
+              "lifecycleBefore": [
+                {
+                  "id": "63ef471f-7c62-4067-9e4d-1215732f60df",
+                  "ticket_id": "00bb8b06-9408-4883-a17d-f7c7fa095a69",
+                  "event_type": "entry",
+                  "occurred_at": "2026-10-20T21:00:54.042+00:00"
+                }
+              ],
+              "lifecycleAfter": [
+                {
+                  "id": "63ef471f-7c62-4067-9e4d-1215732f60df",
+                  "ticket_id": "00bb8b06-9408-4883-a17d-f7c7fa095a69",
+                  "event_type": "entry",
+                  "occurred_at": "2026-10-20T21:00:54.042+00:00"
+                }
+              ]
+            },
+            "exit": {
+              "selected": true,
+              "wire": {
+                "status": 200,
+                "body": {
+                  "qr_payload_sha256": "b537aa2b8a84a62371eb6fcb4907fd84a4ea79b4e83f0585a272d95393d0ce8c",
+                  "occurrence_id": "5040bb18-64b5-4a83-8108-98954017375a",
+                  "occurred_at": "2026-10-20T21:00:54.507Z",
+                  "direction": "exit"
+                },
+                "json": {
+                  "decision": "accepted",
+                  "scanned_at": "2026-10-20T21:00:54.507Z"
+                }
+              },
+              "result": {
+                "shown": true,
+                "text": "Exit recordedExit recorded. The holder may leave.Exit recorded at 10/20/2026, 5:00:54 PM."
+              },
+              "readback": {
+                "facts": [
+                  {
+                    "occurrence_id": "63ef471f-7c62-4067-9e4d-1215732f60df",
+                    "event_type": "entry",
+                    "occurred_at": "2026-10-20T21:00:54.042Z"
+                  },
+                  {
+                    "occurrence_id": "5040bb18-64b5-4a83-8108-98954017375a",
+                    "event_type": "exit",
+                    "occurred_at": "2026-10-20T21:00:54.507Z"
+                  }
+                ],
+                "lifecycle": [
+                  {
+                    "id": "63ef471f-7c62-4067-9e4d-1215732f60df",
+                    "ticket_id": "00bb8b06-9408-4883-a17d-f7c7fa095a69",
+                    "event_type": "entry",
+                    "occurred_at": "2026-10-20T21:00:54.042+00:00"
+                  },
+                  {
+                    "id": "5040bb18-64b5-4a83-8108-98954017375a",
+                    "ticket_id": "00bb8b06-9408-4883-a17d-f7c7fa095a69",
+                    "event_type": "exit",
+                    "occurred_at": "2026-10-20T21:00:54.507+00:00"
+                  }
+                ]
+              },
+              "selectorStays": true
+            },
+            "reentry": {
+              "wire": {
+                "status": 200,
+                "body": {
+                  "qr_payload_sha256": "b537aa2b8a84a62371eb6fcb4907fd84a4ea79b4e83f0585a272d95393d0ce8c",
+                  "occurrence_id": "9c2fb3a9-a7b7-4bcd-8c2b-186874a82a1f",
+                  "occurred_at": "2026-10-20T21:00:54.791Z",
+                  "direction": "entry"
+                },
+                "json": {
+                  "decision": "accepted",
+                  "scanned_at": "2026-10-20T21:00:54.791Z"
+                }
+              },
+              "result": {
+                "shown": true,
+                "text": "AcceptedEntry accepted. Admit.Entry recorded at 10/20/2026, 5:00:54 PM."
+              },
+              "readback": {
+                "facts": [
+                  {
+                    "occurrence_id": "63ef471f-7c62-4067-9e4d-1215732f60df",
+                    "event_type": "entry",
+                    "occurred_at": "2026-10-20T21:00:54.042Z"
+                  },
+                  {
+                    "occurrence_id": "5040bb18-64b5-4a83-8108-98954017375a",
+                    "event_type": "exit",
+                    "occurred_at": "2026-10-20T21:00:54.507Z"
+                  },
+                  {
+                    "occurrence_id": "9c2fb3a9-a7b7-4bcd-8c2b-186874a82a1f",
+                    "event_type": "entry",
+                    "occurred_at": "2026-10-20T21:00:54.791Z"
+                  }
+                ],
+                "lifecycle": [
+                  {
+                    "id": "63ef471f-7c62-4067-9e4d-1215732f60df",
+                    "ticket_id": "00bb8b06-9408-4883-a17d-f7c7fa095a69",
+                    "event_type": "entry",
+                    "occurred_at": "2026-10-20T21:00:54.042+00:00"
+                  },
+                  {
+                    "id": "5040bb18-64b5-4a83-8108-98954017375a",
+                    "ticket_id": "00bb8b06-9408-4883-a17d-f7c7fa095a69",
+                    "event_type": "exit",
+                    "occurred_at": "2026-10-20T21:00:54.507+00:00"
+                  },
+                  {
+                    "id": "9c2fb3a9-a7b7-4bcd-8c2b-186874a82a1f",
+                    "ticket_id": "00bb8b06-9408-4883-a17d-f7c7fa095a69",
+                    "event_type": "entry",
+                    "occurred_at": "2026-10-20T21:00:54.791+00:00"
+                  }
+                ]
+              }
+            },
+            "entryAfterExit": "9c2fb3a9-a7b7-4bcd-8c2b-186874a82a1f"
+          },
+          "limit": {
+            "firstEntry": {
+              "wire": {
+                "status": 200,
+                "body": {
+                  "qr_payload_sha256": "6ab4c16340a4328b26fc75efcbb899c5149a6432e56955d4376f27d7c3ac93bc",
+                  "occurrence_id": "abe3af03-fabe-4f46-8ab9-673a2de05d52",
+                  "occurred_at": "2026-10-20T21:00:55.159Z",
+                  "direction": "entry"
+                },
+                "json": {
+                  "decision": "accepted",
+                  "scanned_at": "2026-10-20T21:00:55.159Z"
+                }
+              },
+              "result": {
+                "shown": true,
+                "text": "AcceptedEntry accepted. Admit.Entry recorded at 10/20/2026, 5:00:55 PM."
+              },
+              "readback": {
+                "facts": [
+                  {
+                    "occurrence_id": "abe3af03-fabe-4f46-8ab9-673a2de05d52",
+                    "event_type": "entry",
+                    "occurred_at": "2026-10-20T21:00:55.159Z"
+                  }
+                ],
+                "lifecycle": [
+                  {
+                    "id": "abe3af03-fabe-4f46-8ab9-673a2de05d52",
+                    "ticket_id": "cfc448ad-ef81-4785-b85d-b439124ad9e0",
+                    "event_type": "entry",
+                    "occurred_at": "2026-10-20T21:00:55.159+00:00"
+                  }
+                ]
+              }
+            },
+            "denied": {
+              "status": 409,
+              "reason": "entry_limit_reached",
+              "occurrence": "98dbe7aa-2ad8-4b80-9417-260972c95fe8",
+              "wire": {
+                "status": 409,
+                "body": {
+                  "qr_payload_sha256": "6ab4c16340a4328b26fc75efcbb899c5149a6432e56955d4376f27d7c3ac93bc",
+                  "occurrence_id": "98dbe7aa-2ad8-4b80-9417-260972c95fe8",
+                  "occurred_at": "2026-10-20T21:00:55.425Z",
+                  "direction": "entry"
+                },
+                "json": {
+                  "decision": "rejected",
+                  "reason": "entry_limit_reached"
+                }
+              },
+              "alert": {
+                "shown": true,
+                "text": "RejectedCredential is invalid or cannot be redeemed.",
+                "expected": "RejectedDo not admit. No entries remain on this pass.Reason: entry_limit_reached."
+              },
+              "occurrenceRow": {
+                "occurrenceId": "98dbe7aa-2ad8-4b80-9417-260972c95fe8",
+                "qrPayloadSha256": "6ab4c16340a4328b26fc75efcbb899c5149a6432e56955d4376f27d7c3ac93bc",
+                "occurredAt": "2026-10-20T21:00:55.425Z",
+                "createdAt": "2026-10-20T21:00:55.425Z",
+                "state": "RESOLVED",
+                "actuated": false,
+                "ownerId": "cf797e78-d9a1-4c04-bee0-4f7c702303c2",
+                "leaseExpiresAt": 1792530085438,
+                "recordFormat": 1,
+                "direction": "entry",
+                "localOutcome": {
+                  "family": "terminal",
+                  "cause": "denied",
+                  "status": 409,
+                  "latchId": "4190eb6f-d563-45af-9b2a-46de9619243c",
+                  "reason": "entry_limit_reached"
+                },
+                "decidedAt": "2026-10-20T21:00:55.449Z"
+              },
+              "rowsObserved": [
+                {
+                  "occurrenceId": "5040bb18-64b5-4a83-8108-98954017375a",
+                  "qrPayloadSha256": "b537aa2b8a84a62371eb6fcb4907fd84a4ea79b4e83f0585a272d95393d0ce8c",
+                  "occurredAt": "2026-10-20T21:00:54.507Z",
+                  "createdAt": "2026-10-20T21:00:54.507Z",
+                  "state": "ACTUATED",
+                  "actuated": true,
+                  "ownerId": "cf797e78-d9a1-4c04-bee0-4f7c702303c2",
+                  "leaseExpiresAt": 1792530084521,
+                  "recordFormat": 1,
+                  "direction": "exit",
+                  "localOutcome": {
+                    "family": "actuation",
+                    "cause": "reserved"
+                  },
+                  "decidedAt": "2026-10-20T21:00:54.535Z"
+                },
+                {
+                  "occurrenceId": "63ef471f-7c62-4067-9e4d-1215732f60df",
+                  "qrPayloadSha256": "b537aa2b8a84a62371eb6fcb4907fd84a4ea79b4e83f0585a272d95393d0ce8c",
+                  "occurredAt": "2026-10-20T21:00:54.042Z",
+                  "createdAt": "2026-10-20T21:00:54.042Z",
+                  "state": "ACTUATED",
+                  "actuated": true,
+                  "ownerId": "cf797e78-d9a1-4c04-bee0-4f7c702303c2",
+                  "leaseExpiresAt": 1792530084054,
+                  "recordFormat": 1,
+                  "direction": "entry",
+                  "localOutcome": {
+                    "family": "actuation",
+                    "cause": "reserved"
+                  },
+                  "decidedAt": "2026-10-20T21:00:54.070Z"
+                },
+                {
+                  "occurrenceId": "94abb870-9aba-44e8-b23e-29e0eeba8f12",
+                  "qrPayloadSha256": "b537aa2b8a84a62371eb6fcb4907fd84a4ea79b4e83f0585a272d95393d0ce8c",
+                  "occurredAt": "2026-10-20T21:00:54.310Z",
+                  "createdAt": "2026-10-20T21:00:54.310Z",
+                  "state": "RESOLVED",
+                  "actuated": false,
+                  "ownerId": "cf797e78-d9a1-4c04-bee0-4f7c702303c2",
+                  "leaseExpiresAt": 1792530084321,
+                  "recordFormat": 1,
+                  "direction": "entry",
+                  "localOutcome": {
+                    "family": "terminal",
+                    "cause": "denied",
+                    "status": 409,
+                    "latchId": "90ff5790-5286-4aea-8131-01788e884316",
+                    "reason": "exit_required"
+                  },
+                  "decidedAt": "2026-10-20T21:00:54.335Z"
+                },
+                {
+                  "occurrenceId": "98dbe7aa-2ad8-4b80-9417-260972c95fe8",
+                  "qrPayloadSha256": "6ab4c16340a4328b26fc75efcbb899c5149a6432e56955d4376f27d7c3ac93bc",
+                  "occurredAt": "2026-10-20T21:00:55.425Z",
+                  "createdAt": "2026-10-20T21:00:55.425Z",
+                  "state": "RESOLVED",
+                  "actuated": false,
+                  "ownerId": "cf797e78-d9a1-4c04-bee0-4f7c702303c2",
+                  "leaseExpiresAt": 1792530085438,
+                  "recordFormat": 1,
+                  "direction": "entry",
+                  "localOutcome": {
+                    "family": "terminal",
+                    "cause": "denied",
+                    "status": 409,
+                    "latchId": "4190eb6f-d563-45af-9b2a-46de9619243c",
+                    "reason": "entry_limit_reached"
+                  },
+                  "decidedAt": "2026-10-20T21:00:55.449Z"
+                },
+                {
+                  "occurrenceId": "9c2fb3a9-a7b7-4bcd-8c2b-186874a82a1f",
+                  "qrPayloadSha256": "b537aa2b8a84a62371eb6fcb4907fd84a4ea79b4e83f0585a272d95393d0ce8c",
+                  "occurredAt": "2026-10-20T21:00:54.791Z",
+                  "createdAt": "2026-10-20T21:00:54.791Z",
+                  "state": "ACTUATED",
+                  "actuated": true,
+                  "ownerId": "cf797e78-d9a1-4c04-bee0-4f7c702303c2",
+                  "leaseExpiresAt": 1792530084804,
+                  "recordFormat": 1,
+                  "direction": "entry",
+                  "localOutcome": {
+                    "family": "actuation",
+                    "cause": "reserved"
+                  },
+                  "decidedAt": "2026-10-20T21:00:54.819Z"
+                },
+                {
+                  "occurrenceId": "abe3af03-fabe-4f46-8ab9-673a2de05d52",
+                  "qrPayloadSha256": "6ab4c16340a4328b26fc75efcbb899c5149a6432e56955d4376f27d7c3ac93bc",
+                  "occurredAt": "2026-10-20T21:00:55.159Z",
+                  "createdAt": "2026-10-20T21:00:55.159Z",
+                  "state": "ACTUATED",
+                  "actuated": true,
+                  "ownerId": "cf797e78-d9a1-4c04-bee0-4f7c702303c2",
+                  "leaseExpiresAt": 1792530085171,
+                  "recordFormat": 1,
+                  "direction": "entry",
+                  "localOutcome": {
+                    "family": "actuation",
+                    "cause": "reserved"
+                  },
+                  "decidedAt": "2026-10-20T21:00:55.188Z"
+                }
+              ],
+              "writes": [
+                {
+                  "id": "98dbe7aa-2ad8-4b80-9417-260972c95fe8",
+                  "state": "PENDING",
+                  "store": "occurrences",
+                  "durability": "strict",
+                  "event": "write-success"
+                },
+                {
+                  "id": "98dbe7aa-2ad8-4b80-9417-260972c95fe8",
+                  "state": "PENDING",
+                  "store": "occurrences",
+                  "durability": "strict",
+                  "event": "complete"
+                },
+                {
+                  "id": "98dbe7aa-2ad8-4b80-9417-260972c95fe8",
+                  "state": "RESOLVED",
+                  "store": "occurrences",
+                  "durability": "strict",
+                  "event": "write-success"
+                },
+                {
+                  "id": "98dbe7aa-2ad8-4b80-9417-260972c95fe8",
+                  "state": "RESOLVED",
+                  "store": "occurrences",
+                  "durability": "strict",
+                  "event": "complete"
+                },
+                {
+                  "id": "98dbe7aa-2ad8-4b80-9417-260972c95fe8",
+                  "state": "RESOLVED",
+                  "store": "occurrences",
+                  "durability": "strict",
+                  "event": "write-success"
+                },
+                {
+                  "id": "98dbe7aa-2ad8-4b80-9417-260972c95fe8",
+                  "state": "RESOLVED",
+                  "store": "occurrences",
+                  "durability": "strict",
+                  "event": "complete"
+                }
+              ],
+              "actuatedWriteCount": 0,
+              "storageIdle": true,
+              "lifecycleBefore": [
+                {
+                  "id": "abe3af03-fabe-4f46-8ab9-673a2de05d52",
+                  "ticket_id": "cfc448ad-ef81-4785-b85d-b439124ad9e0",
+                  "event_type": "entry",
+                  "occurred_at": "2026-10-20T21:00:55.159+00:00"
+                }
+              ],
+              "lifecycleAfter": [
+                {
+                  "id": "abe3af03-fabe-4f46-8ab9-673a2de05d52",
+                  "ticket_id": "cfc448ad-ef81-4785-b85d-b439124ad9e0",
+                  "event_type": "entry",
+                  "occurred_at": "2026-10-20T21:00:55.159+00:00"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "served": [
+        {
+          "path": "/scanner/",
+          "sha256": "aca27d824faa7eda40ac81181948837b1e6292cd510baf990aee51b77a115b44"
+        },
+        {
+          "path": "/scanner/assets/index-Cup0J78G.js",
+          "sha256": "26cbd116c565beb610c59218f8162cc24db20fee0b18a594bf449e44063be3c5"
+        },
+        {
+          "path": "/scanner/assets/index-7nOgmnhB.css",
+          "sha256": "134ca2c66ab1b53c8100e6f9b9c832f7f5ca77c2341f8dd22c539c750ff097e0"
+        },
+        {
+          "path": "/scanner/favicon.svg",
+          "sha256": "61bc9a161de58248288e6905425d7180f0624c2865007b97d763fdac12043a66"
+        }
+      ],
+      "browserErrors": [
+        {
+          "kind": "console",
+          "text": "Failed to load resource: the server responded with a status of 409 (Conflict)"
+        },
+        {
+          "kind": "console",
+          "text": "Failed to load resource: the server responded with a status of 409 (Conflict)"
+        }
+      ]
+    }
+  ],
+  "diagnostic": {
+    "variant": "COPY-LIMIT",
+    "mutation": "COPY-LIMIT",
+    "layer": "presenter source, disposable build served to the diagnostic context only",
+    "intended": [
+      "DENY-LIMIT-ALERT"
+    ],
+    "allowed": [
+      "DENY-LIMIT-ALERT"
+    ],
+    "intendedFailed": [
+      "DENY-LIMIT-ALERT"
+    ],
+    "unexpectedFailedIds": [],
+    "mutationChecksPassed": true
+  },
+  "setupError": null,
+  "failedIds": [
+    "DENY-LIMIT-ALERT"
+  ],
+  "verdict": "DETECTED",
+  "exitCode": 0
+}

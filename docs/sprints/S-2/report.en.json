@@ -1,0 +1,720 @@
+{
+  "schemaVersion": 1,
+  "report": {
+    "id": "S-2-release",
+    "version": 3,
+    "language": "en",
+    "generatedAt": "2026-10-20T22:04:24.189464+00:00",
+    "preparedBy": "gpt-6.1-sol",
+    "packetDigest": "10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+    "fictional": false
+  },
+  "project": {
+    "key": "ticketing_system",
+    "name": "Ticketing System"
+  },
+  "sprint": {
+    "vault": "sdlc",
+    "key": "S-2",
+    "name": "Sprint 2",
+    "goal": "Scan time contract and pass exit mode on ADR-085 (TKT-559, TKT-399), then the scanner follow-ups (TKT-551, TKT-552).",
+    "state": "active",
+    "startDate": "2026-10-19T09:00:00-04:00",
+    "endDate": "2026-11-02T17:00:00-05:00",
+    "scopeDigest": "475b7c77f414e3205adb736c856fb913675f56cbdd7f58603ca28b46ae061186",
+    "closureTask": "TKT-563"
+  },
+  "release": {
+    "repository": "https://github.com/mathd/ticketing_system",
+    "base": {
+      "ref": null,
+      "sha": "5e3bee1db8019621fb5cdc343872b9c6159dd50d"
+    },
+    "candidate": {
+      "sha": "c2f77420377ef7851d6eb00230842fb05b398de1",
+      "url": "https://github.com/mathd/ticketing_system/commit/c2f77420377ef7851d6eb00230842fb05b398de1"
+    },
+    "publishTag": false,
+    "tag": null
+  },
+  "outcome": {
+    "readiness": "ready",
+    "headline": "Scanner scans now follow the time contract, preserve Entry or Exit direction, report rejected offline results separately and show both approved Entry refusal instructions.",
+    "summary": "The four functional members are Done. The combined browser and real Access journeys passed on the frozen candidate. All five diagnostics detected their intended defects and eight clean repetitions passed.\n\nAll four independent review areas reached HUMAN_REVIEW. This is technical readiness, not owner approval.\n\nThe full release diff includes prepared workflow maintenance as well as the four functional deliveries. TKT-563 adds report evidence only. Actual contributing models are gpt-6.1-sol, gpt-6-astra, claude-opus-5-5 and claude-haiku-5-5. Gemini 3.8 Flash high reviews every final area and differs from all authors. Copied Opus fixture contributions remain in that set. No code or fixes from the abandoned 24f1c209 implementation or PR 451 were reused.\n\nS-2 stays active and TKT-563 stays open until the owner approves the exact candidate, committed report, brief and scope targets. Report publication still follows exact-head local, hosted and post-merge checks, with their final receipts on the board. No tag or deployment is planned. Venue qualification remains TKT-560."
+  },
+  "scope": {
+    "summary": "Original and current scope contain exactly TKT-399, TKT-551, TKT-552, TKT-559 and closure task TKT-563. No member was added or removed. The owner later permitted justified additions, but none was needed. TKT-560, TKT-564, TKT-565 and TKT-566 remain Backlog outside S-2. Current approved brief SHA-256 fc3e0b0752e1a2aa7e7f643c2539b372347cc45139d8803ddccd4ec86b603b07. The closure task is shown separately from the four functional items.",
+    "items": [
+      {
+        "key": "TKT-559",
+        "title": "ADR-085 ticket 3: scan time and publication contract, Entry first (TKT-399 D30 limits)",
+        "origin": "planned",
+        "outcome": "delivered",
+        "destination": null,
+        "note": "Done. Exact scope, checks and residuals are in its closeout."
+      },
+      {
+        "key": "TKT-399",
+        "title": "TKT-19 S1: Scan pass exits from the gate UI",
+        "origin": "planned",
+        "outcome": "delivered",
+        "destination": null,
+        "note": "Done. Exact scope, checks and residuals are in its closeout."
+      },
+      {
+        "key": "TKT-551",
+        "title": "Scanner: a rejected offline scan reads as 'Synced' — the sync note counts conflicts only (TKT-399 incidental)",
+        "origin": "planned",
+        "outcome": "delivered",
+        "destination": null,
+        "note": "Done. Exact scope, checks and residuals are in its closeout."
+      },
+      {
+        "key": "TKT-552",
+        "title": "Scanner Entry mode shows 'Credential is invalid' for the pass denials exit_required and entry_limit_reached (TKT-399 incidental)",
+        "origin": "planned",
+        "outcome": "delivered",
+        "destination": null,
+        "note": "Done. Exact scope, checks and residuals are in its closeout."
+      }
+    ]
+  },
+  "areas": {
+    "implementation": {
+      "status": "passed",
+      "decision": "HUMAN_REVIEW",
+      "round": 1,
+      "reviewers": [
+        "gemini-3.8-flash-high"
+      ],
+      "findings": {
+        "raised": 0,
+        "resolved": 0,
+        "deferred": 0
+      },
+      "summary": "Both Gemini lenses returned no findings. They inspected the combined timing, captured direction, reconcile accounting and refusal-copy changes against the effective plans and decisions. The review includes the prepared workflow changes and all actual contributors. The first audit invocation was incomplete and remains in the history; its fresh completion supplies the accepted audit. No remaining product design defect was identified. Physical passage, page loss and venue behavior remain outside the demonstrated guarantees.",
+      "evidence": [
+        {
+          "label": "Completed area review and verified dispositions",
+          "url": null,
+          "ref": {
+            "key": "S-2",
+            "digest": "edd5349c76a37d702fa962568a2d077687a2f6dfd9f9220f5d2ba92e0b3924ea"
+          }
+        }
+      ]
+    },
+    "verification": {
+      "status": "passed",
+      "decision": "HUMAN_REVIEW",
+      "round": 1,
+      "reviewers": [
+        "gemini-3.8-flash-high"
+      ],
+      "findings": {
+        "raised": 0,
+        "resolved": 0,
+        "deferred": 0
+      },
+      "summary": "Both Gemini lenses returned no findings. The accepted audit inspected the governing bodies, workflow changes and full denial and mixed-sync probe source. An earlier incomplete audit remains retained. All five diagnostics detected the intended failures without unallowed failures; eight restored repetitions passed. Seven new mixed outcomes use actual Access responses. Existing entryCore and some App-tier cases use documented mocks. No-resend evidence covers completed reads and the observed request interval. Alarm rows prove that an alarm is owed, not delivered. Host timing, coverage and complexity limits remain explicit.",
+      "evidence": [
+        {
+          "label": "Completed area review and verified dispositions",
+          "url": null,
+          "ref": {
+            "key": "S-2",
+            "digest": "b5770c6164ab158b9801dad87048d872050077945ec1b5af191c481be4fe671b"
+          }
+        }
+      ]
+    },
+    "documentation": {
+      "status": "passed",
+      "decision": "HUMAN_REVIEW",
+      "round": 1,
+      "reviewers": [
+        "gemini-3.8-flash-high"
+      ],
+      "findings": {
+        "raised": 0,
+        "resolved": 0,
+        "deferred": 0
+      },
+      "summary": "Both Gemini lenses returned no unresolved findings. The initial inspection covered operator documentation, ADRs and implementation claims. Its fresh boundary retry replaced an initial call that read a mirrored brief. The completed audit used the same product packet, all governing bodies, the other three final area records and the complete rendered report draft. Its earlier incomplete invocation remains retained. A bounded final source and page check follows report assembly. Evidence links retain exact board comment digests or full commit IDs. Narrow tables can require horizontal scrolling. Print CSS was inspected, but pagination was not executed. The scriptless page has no external resources; loaded content stayed readable after the server stopped. A cold offline reload was not executed. Technical readiness remains separate from pending owner approval and no-tag publication.",
+      "evidence": [
+        {
+          "label": "Completed area review and verified dispositions",
+          "url": null,
+          "ref": {
+            "key": "S-2",
+            "digest": "d6123b49ba4edb9f42ba4be62dc0133e957bcefdade4e3009b501c71e4f09c06"
+          }
+        }
+      ]
+    },
+    "retrospective": {
+      "status": "passed",
+      "decision": "HUMAN_REVIEW",
+      "round": 1,
+      "reviewers": [
+        "gemini-3.8-flash-high"
+      ],
+      "findings": {
+        "raised": 0,
+        "resolved": 0,
+        "deferred": 0
+      },
+      "summary": "Both Gemini lenses returned no release findings. The audit qualifies the initial suggestions against full closeouts, actual decisions and recorded failures. Status dwell and provider-stop intervals are elapsed observations, not active work. DOC-01 failed in the TKT-551 development scanner suite before its three green gates. The first count diagnostic saw its intended failure plus an unexpected wire-shape failure. Process proposals below remain advisory, with no owner selection or added checkpoint. Incomplete invocations and factual corrections remain in the board history.",
+      "evidence": [
+        {
+          "label": "Completed area review and verified dispositions",
+          "url": null,
+          "ref": {
+            "key": "S-2",
+            "digest": "22f1f410e91275d4559c3582f13ada518fae27776538b7d70cefa2ab6b3c827d"
+          }
+        }
+      ]
+    }
+  },
+  "checks": [
+    {
+      "id": "C1",
+      "name": "Fresh candidate local gate",
+      "kind": "gate",
+      "required": true,
+      "status": "passed",
+      "command": "make check",
+      "detail": "PASS on c2f77420377ef7851d6eb00230842fb05b398de1. Exit 0, verdict and log body agree. Elapsed 876.796 s. The gate fingerprint is checked with scripts/gate.sh --digest and is distinct from the Git tree ID.",
+      "evidence": [
+        {
+          "label": "Frozen candidate packet and run receipts",
+          "url": null,
+          "ref": {
+            "key": "S-2",
+            "digest": "10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754"
+          }
+        }
+      ],
+      "cost": null
+    },
+    {
+      "id": "C2",
+      "name": "Full host-Chrome browser suite",
+      "kind": "e2e",
+      "required": true,
+      "status": "passed",
+      "command": "docs/sprints/S-2/evidence/TKT-563/run-make-browser.sh --historical-backup /tmp/sdlc-S-2/pre-closure-inventory/TKT-559-historical-receipt.json --receipts /tmp/sdlc-S-2/TKT-563-full-browser-r2",
+      "detail": "PASS, 171.618 s including stack and builds. Chrome 155.0.8059.79 submitted the maintained suite. The wrapper archived fresh timing bytes and restored the historical receipt to SHA-256 677c6e65fea1b00e548aaef10242c5187fd0fcef9ff1a5e428c5381863dfa642. No tracked change remained.",
+      "evidence": [
+        {
+          "label": "Frozen candidate packet and run receipts",
+          "url": null,
+          "ref": {
+            "key": "S-2",
+            "digest": "10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754"
+          }
+        }
+      ],
+      "cost": null
+    },
+    {
+      "id": "C3",
+      "name": "Combined real denial and mixed-sync journeys",
+      "kind": "e2e",
+      "required": true,
+      "status": "passed",
+      "command": "docs/sprints/S-2/evidence/TKT-563/run-probe.sh --variant candidate --repeat 8 --output /tmp/sdlc-S-2/TKT-563-probe-candidate-restored-r2",
+      "detail": "Eight fresh repetitions PASS with 86 named checks in each. Both exact denial instructions, terminal local rows, no successful ACTUATED write for denied scans and unchanged lifecycle facts passed. The real seven-row batch returned four synced, one conflict and two rejected results. Wire identities, directions, times, complete local-row transitions, exact Access facts, one owed conflict alarm and completed no-resend reads passed. Existing entryCore also ran; its existing substituted-response cases remain distinct from the new real-response journeys.",
+      "evidence": [
+        {
+          "label": "Frozen candidate packet and run receipts",
+          "url": null,
+          "ref": {
+            "key": "S-2",
+            "digest": "10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754"
+          }
+        }
+      ],
+      "cost": null
+    },
+    {
+      "id": "C4",
+      "name": "Diagnostic discrimination",
+      "kind": "integration",
+      "required": true,
+      "status": "passed",
+      "command": null,
+      "detail": "The frozen packet retains all five exact diagnostic commands. All five variants DETECTED on the final candidate. Every intended assertion failed, no failure was outside its immutable allowed set, and the mutation reached the system. The first count diagnostic on 3d75a526 returned NOT_DETECTED because the probe expected two sorted-key strings in the wrong order. That failed receipt is retained. The one-line repair changed only key order; all five diagnostics and eight clean runs then passed.",
+      "evidence": [
+        {
+          "label": "Frozen candidate packet and run receipts",
+          "url": null,
+          "ref": {
+            "key": "S-2",
+            "digest": "10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754"
+          }
+        }
+      ],
+      "cost": null
+    },
+    {
+      "id": "C5",
+      "name": "Focused scanner checks and builds",
+      "kind": "unit",
+      "required": true,
+      "status": "passed",
+      "command": "pnpm --dir web/scanner test src/App.sync.test.tsx src/App.reconcile.test.tsx src/App.entry.test.tsx src/App.exit-reconcile.test.tsx",
+      "detail": "100 focused tests in four files passed. Frozen dependencies, backend and frontend builds and scanner build passed. These early commands ran on 3d75a526. Product, dependency and runtime inputs are byte-identical on the final candidate; the fresh full candidate gate reran the complete required tests and builds.",
+      "evidence": [
+        {
+          "label": "Frozen candidate packet and run receipts",
+          "url": null,
+          "ref": {
+            "key": "S-2",
+            "digest": "10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754"
+          }
+        }
+      ],
+      "cost": null
+    },
+    {
+      "id": "C6",
+      "name": "Prepared workflow and renderer verification",
+      "kind": "other",
+      "required": true,
+      "status": "passed",
+      "command": "python3 -B -m unittest discover -s .claude/skills/sdlc-ticket/tests; python3 -B -m unittest discover -s .claude/skills/sdlc-sprint/tests; python3 -B -m unittest discover -s .claude/skills/sdlc-sprint-review/tests",
+      "detail": "Prepared canonical ticket, sprint and report suites passed 184 tests at 2026-10-20T15:30:35Z. Those workflow/runtime bytes remain unchanged. The three committed renderer files match their start pins. This historical workflow evidence is distinct from product integration.",
+      "evidence": [
+        {
+          "label": "Frozen candidate packet and run receipts",
+          "url": null,
+          "ref": {
+            "key": "S-2",
+            "digest": "10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754"
+          }
+        }
+      ],
+      "cost": null
+    },
+    {
+      "id": "C7",
+      "name": "Application LLM evaluation",
+      "kind": "llm_eval",
+      "required": false,
+      "status": "not_applicable",
+      "command": null,
+      "detail": "Not applicable. The delivered scanner slice calls no application LLM. Development and review model calls are workflow operations, not application evaluations.",
+      "evidence": [
+        {
+          "label": "Frozen candidate packet and run receipts",
+          "url": null,
+          "ref": {
+            "key": "S-2",
+            "digest": "10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754"
+          }
+        }
+      ],
+      "cost": null
+    },
+    {
+      "id": "C8",
+      "name": "Venue qualification",
+      "kind": "other",
+      "required": false,
+      "status": "not_run",
+      "command": null,
+      "detail": "Not run. TKT-560 remains outside S-2 and is mandatory before venue use. This report measures one host and does not qualify venue hardware, peak load or the provisional 500 ms pre-decision bound.",
+      "evidence": [
+        {
+          "label": "Frozen candidate packet and run receipts",
+          "url": null,
+          "ref": {
+            "key": "S-2",
+            "digest": "10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754"
+          }
+        }
+      ],
+      "cost": null
+    }
+  ],
+  "measurements": [
+    {
+      "metric": "Strict IndexedDB mint completion",
+      "scope": "100 production-control multi-entry scans, ten warmups excluded, on one host",
+      "baseline": "n=100; min 0.400, median 0.700, p95 1.300, max 3.100 ms",
+      "candidate": "n=100; min 0.400, median 0.600, p95 1.900, max 3.300 ms",
+      "tool": "Chrome 155.0.8059.79, Playwright 1.62.1, native Date.now and performance.now",
+      "observation": "Historical sample 2026-10-19T03:54:24.506Z; fresh sample 2026-10-20T21:19:09.857Z. Linux WSL2 6.18.33.2, x64, Intel i5-12600K, 16 logical CPUs. Each observed maximum is below the 3000 ms send limit. This distribution does not establish a worst-case guarantee, physical paint timing or venue readiness."
+    },
+    {
+      "metric": "Strict IndexedDB mark completion",
+      "scope": "100 production-control multi-entry scans, ten warmups excluded, on one host",
+      "baseline": "n=100; min 0.700, median 1.200, p95 2.300, max 2.800 ms",
+      "candidate": "n=100; min 0.600, median 0.900, p95 1.700, max 3.500 ms",
+      "tool": "Chrome 155.0.8059.79, Playwright 1.62.1, native Date.now and performance.now",
+      "observation": "Historical sample 2026-10-19T03:54:24.506Z; fresh sample 2026-10-20T21:19:09.857Z. Linux WSL2 6.18.33.2, x64, Intel i5-12600K, 16 logical CPUs. Each observed maximum is below the 3000 ms send limit. This distribution does not establish a worst-case guarantee, physical paint timing or venue readiness."
+    },
+    {
+      "metric": "Coverage delta",
+      "scope": "Scanner and probe changes from release baseline to candidate",
+      "baseline": null,
+      "candidate": null,
+      "tool": null,
+      "observation": "Not measured for closure. No value or global target is claimed. The verification review inspects relevant tests and changed mechanisms directly."
+    },
+    {
+      "metric": "Changed-hotspot complexity score",
+      "scope": "Scanner and probe changes from release baseline to candidate",
+      "baseline": null,
+      "candidate": null,
+      "tool": null,
+      "observation": "Not measured for closure. No value or global target is claimed. The verification review inspects relevant tests and changed mechanisms directly."
+    }
+  ],
+  "risks": [
+    {
+      "id": "R1",
+      "severity": "Medium",
+      "area": "verification",
+      "title": "Venue qualification remains unmeasured",
+      "status": "deferred",
+      "blocking": false,
+      "resolution": "S-2 approves host measurements only. Complete TKT-560 before venue use.",
+      "followup": "TKT-560",
+      "evidence": [
+        {
+          "label": "Scope and host evidence",
+          "url": null,
+          "ref": {
+            "key": "S-2",
+            "digest": "10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754"
+          }
+        }
+      ]
+    },
+    {
+      "id": "R2",
+      "severity": "Medium",
+      "area": "implementation",
+      "title": "Page loss and physical passage remain uncertain",
+      "status": "open",
+      "blocking": false,
+      "resolution": "Current-page repair and recorded Access facts do not prove physical passage. Keep the page open when storage repair is required and follow the operator instructions.",
+      "followup": null,
+      "evidence": [
+        {
+          "label": "TKT-559 closeout",
+          "url": null,
+          "ref": {
+            "key": "TKT-559",
+            "digest": "6e0440c7cdd4dd37e56c6920230532feae413263e7591f4567c8d49d930c11a0"
+          }
+        },
+        {
+          "label": "TKT-399 closeout",
+          "url": null,
+          "ref": {
+            "key": "TKT-399",
+            "digest": "e1c29c911d519090b35bc02b79d2b31483d3ba702f545af8dc089683ed9ebdf4"
+          }
+        },
+        {
+          "label": "TKT-551 closeout",
+          "url": null,
+          "ref": {
+            "key": "TKT-551",
+            "digest": "099ad019656cb88ecd259c38a6f260366c116224da3c71a7c0e67ebd45a01c71"
+          }
+        },
+        {
+          "label": "TKT-552 closeout",
+          "url": null,
+          "ref": {
+            "key": "TKT-552",
+            "digest": "e6c165f0490386532b315bd11145275e154e1b4cd79585467e4c7180dbe4114e"
+          }
+        }
+      ]
+    },
+    {
+      "id": "R3",
+      "severity": "Low",
+      "area": "implementation",
+      "title": "Sync reporting is transient and some queue counts can be stale",
+      "status": "open",
+      "blocking": false,
+      "resolution": "Totals include already-applied rows. Warnings describe the latest pass on the current page. No acknowledgement list was added. Partial-failure and replacement semantics remain covered at the App tier.",
+      "followup": null,
+      "evidence": [
+        {
+          "label": "TKT-551 closeout",
+          "url": null,
+          "ref": {
+            "key": "TKT-551",
+            "digest": "099ad019656cb88ecd259c38a6f260366c116224da3c71a7c0e67ebd45a01c71"
+          }
+        }
+      ]
+    },
+    {
+      "id": "R4",
+      "severity": "Low",
+      "area": "documentation",
+      "title": "Broader Entry rejection copy remains separate",
+      "status": "deferred",
+      "blocking": false,
+      "resolution": "The two approved reasons are complete. Other readable reasons retain the documented fallback.",
+      "followup": "TKT-565",
+      "evidence": [
+        {
+          "label": "TKT-552 closeout",
+          "url": null,
+          "ref": {
+            "key": "TKT-552",
+            "digest": "e6c165f0490386532b315bd11145275e154e1b4cd79585467e4c7180dbe4114e"
+          }
+        }
+      ]
+    },
+    {
+      "id": "R5",
+      "severity": "Low",
+      "area": "verification",
+      "title": "The maintained measurement helper still targets a historical receipt",
+      "status": "deferred",
+      "blocking": false,
+      "resolution": "This run archived new measurements and restored the exact historical bytes. TKT-564 changes the output-path contract later.",
+      "followup": "TKT-564",
+      "evidence": [
+        {
+          "label": "Full-browser archive and restore evidence",
+          "url": null,
+          "ref": {
+            "key": "S-2",
+            "digest": "10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754"
+          }
+        }
+      ]
+    },
+    {
+      "id": "R6",
+      "severity": "Low",
+      "area": "verification",
+      "title": "Combined journeys are retained evidence outside the maintained suite",
+      "status": "deferred",
+      "blocking": false,
+      "resolution": "The pinned probe is reproducible. TKT-566 owns promotion into maintained browser coverage.",
+      "followup": "TKT-566",
+      "evidence": [
+        {
+          "label": "Eight restored probe runs and diagnostics",
+          "url": null,
+          "ref": {
+            "key": "S-2",
+            "digest": "10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754"
+          }
+        }
+      ]
+    }
+  ],
+  "followups": [
+    {
+      "key": "TKT-560",
+      "title": "Load-test the scanner pre-decision 503 bound (TKT-557 D10, 500 ms provisional)",
+      "reason": "R1 and C8. Mandatory before venue use."
+    },
+    {
+      "key": "TKT-564",
+      "title": "Preserve historical scanner measurement receipts",
+      "reason": "R5. Creation only was approved; no implementation or membership."
+    },
+    {
+      "key": "TKT-565",
+      "title": "Scanner Entry: complete exact reason text for the remaining readable rejections",
+      "reason": "R4. Broader copy is outside the two approved reasons."
+    },
+    {
+      "key": "TKT-566",
+      "title": "Scanner: retain combined denial-copy and mixed-sync journeys in the browser suite",
+      "reason": "R6. Maintained-suite promotion is separate work."
+    }
+  ],
+  "retrospective": {
+    "summary": "Observed-data cutoff 2026-10-20T21:34:53.548800+00:00. The packet binds the operation-log snapshot and board metrics. Closure-task work after that cutoff, including final review, report publication, hosted CI, post-merge verification and approval waiting, is excluded from these cost observations.\n\nActive implementation, pure model compute, exclusive CI wait and unexplained idle are n/a where no observation separates them. Status dwell is elapsed time. Reviews, gates and CI overlap and must not be added as exclusive work. Monetary spend is n/a. No routine work-unit checkpoints were added.\n\nFunctional local gates were TKT-559 3 runs with 1 failure, TKT-399 fresh implementation 8 with 3 failures, TKT-551 3 with 0 failures and TKT-552 2 with 0 failures. The closure candidate gate took 876.796 s. Closure clean probe repetitions took 212.033 s including stack work, and full browser verification took 171.618 s. One probe assertion repair required rerunning all five diagnostics and eight restored repetitions. Earlier failures remain in the evidence.\n\nTKT-399 retained plan rounds 1 to 3 and code history through round 9. The owner authorized fresh code rounds 8 to 11; no cap was reset. TKT-551 used two plan rounds and one code round. TKT-552 used two plan rounds and one code round. TKT-559 used one of each. Below-threshold corrections and their verification remain disclosed in each closeout. No High or Critical finding was overridden.\n\nObserved waits dominated some elapsed windows. TKT-399 records provider waits of 7 h 40 m 14 s and 4 h 56 m 56 s, and an owner-decision handoff of 5 h 45 m 39 s. TKT-551 records a 25360.476 s provider-stop-to-owner-resume interval. These are recorded windows, not proof of continuous unavailability or exclusive active work. TKT-552 had no provider or owner stop.\n\nObserved review windows include dispatch and result handling. TKT-559 code initial and audit were about 228 s and 157 s. TKT-399 plan round 3 initial and audit were 563.264 s and 521.803 s, code round 9 was 156.402 s and 79.028 s, and Astra DNS implementation was 717.480 s. TKT-551 plan initial windows were 315.749 s in round 1 and 362.812 s in round 2; round 2 audit was 460.413 s. Its code initial was 218.295 s, failed quota audit 298.818 s and successful retry 282.343 s. TKT-552 code initial and audit were 187.172 s and 146.860 s. Other exclusive model times are n/a. These observations overlap other work.\n\nHosted functional check runtimes remain per-head observations. TKT-559 recorded 951 s. TKT-399 recorded 942, 1027, 994 and 1025 s on successive heads. TKT-551 retained 1020 s for its first head and 883 s for the final head. TKT-552 recorded 972 s. They overlap local work.\n\nFixture defects recur across timing tests, host-DNS fault injection, mixed-result assertions and the Entry-copy routed-fetch wrapper. Focused baseline runs, full gates, diagnostics and independent review exposed different gaps. The final review distinguishes those evidence defects from product design defects and from missing venue qualification.",
+    "candidates": [
+      {
+        "id": "P1",
+        "type": "process",
+        "observation": "TKT-399 host DNS latency crossed a production bound, TKT-552 first used an incomplete fetch wrapper and TKT-563 first compared incorrectly ordered key strings.",
+        "proposal": "In future scanner test plans, name the controlled fault producer and the exact production boundary each assertion observes. Apply the existing fixture rules to every review-fix batch. Do not add a new approval checkpoint.",
+        "recommendation": "trial",
+        "humanChoice": "pending",
+        "destination": null,
+        "evidence": [
+          {
+            "label": "TKT-559 closeout",
+            "url": null,
+            "ref": {
+              "key": "TKT-559",
+              "digest": "6e0440c7cdd4dd37e56c6920230532feae413263e7591f4567c8d49d930c11a0"
+            }
+          },
+          {
+            "label": "TKT-399 closeout",
+            "url": null,
+            "ref": {
+              "key": "TKT-399",
+              "digest": "e1c29c911d519090b35bc02b79d2b31483d3ba702f545af8dc089683ed9ebdf4"
+            }
+          },
+          {
+            "label": "TKT-551 closeout",
+            "url": null,
+            "ref": {
+              "key": "TKT-551",
+              "digest": "099ad019656cb88ecd259c38a6f260366c116224da3c71a7c0e67ebd45a01c71"
+            }
+          },
+          {
+            "label": "TKT-552 closeout",
+            "url": null,
+            "ref": {
+              "key": "TKT-552",
+              "digest": "e6c165f0490386532b315bd11145275e154e1b4cd79585467e4c7180dbe4114e"
+            }
+          },
+          {
+            "label": "Closure diagnostic failure and restored results",
+            "url": null,
+            "ref": {
+              "key": "S-2",
+              "digest": "10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754"
+            }
+          }
+        ]
+      },
+      {
+        "id": "P2",
+        "type": "process",
+        "observation": "Later browser runs can overwrite TKT-559 historical timing bytes. TKT-399 and TKT-563 had to archive and restore them.",
+        "proposal": "Use TKT-564 to give measurement output an explicit or untracked path. Keep historical evidence immutable and archive each new run separately.",
+        "recommendation": "adopt",
+        "humanChoice": "pending",
+        "destination": null,
+        "evidence": [
+          {
+            "label": "TKT-399 closeout",
+            "url": null,
+            "ref": {
+              "key": "TKT-399",
+              "digest": "e1c29c911d519090b35bc02b79d2b31483d3ba702f545af8dc089683ed9ebdf4"
+            }
+          },
+          {
+            "label": "Full-browser timing protection",
+            "url": null,
+            "ref": {
+              "key": "S-2",
+              "digest": "10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754"
+            }
+          }
+        ]
+      },
+      {
+        "id": "P3",
+        "type": "process",
+        "observation": "Provider failures stopped TKT-399 and TKT-551. TKT-559 also had an oversized prompt rejection before a child task existed.",
+        "proposal": "Trial prompt-size checks and a bounded same-model retry policy in the T3 runner. Measure rejected dispatches and stopped intervals on future tickets. Stop on actual access denials and authorized caps; retries do not authorize a routing change or more review rounds.",
+        "recommendation": "trial",
+        "humanChoice": "pending",
+        "destination": null,
+        "evidence": [
+          {
+            "label": "TKT-559 closeout",
+            "url": null,
+            "ref": {
+              "key": "TKT-559",
+              "digest": "6e0440c7cdd4dd37e56c6920230532feae413263e7591f4567c8d49d930c11a0"
+            }
+          },
+          {
+            "label": "TKT-399 closeout",
+            "url": null,
+            "ref": {
+              "key": "TKT-399",
+              "digest": "e1c29c911d519090b35bc02b79d2b31483d3ba702f545af8dc089683ed9ebdf4"
+            }
+          },
+          {
+            "label": "TKT-551 closeout",
+            "url": null,
+            "ref": {
+              "key": "TKT-551",
+              "digest": "099ad019656cb88ecd259c38a6f260366c116224da3c71a7c0e67ebd45a01c71"
+            }
+          },
+          {
+            "label": "TKT-552 closeout",
+            "url": null,
+            "ref": {
+              "key": "TKT-552",
+              "digest": "e6c165f0490386532b315bd11145275e154e1b4cd79585467e4c7180dbe4114e"
+            }
+          }
+        ]
+      },
+      {
+        "id": "P4",
+        "type": "process",
+        "observation": "TKT-559 had a stale documentation assertion fail its first gate. TKT-551 caught unqualified ADR identifiers in its development scanner suite before three passing gates.",
+        "proposal": "Trial the existing doc-namespace test as a focused preflight in future scanner work. Measure whether it reduces later gate failures. Keep the full gate and add no owner checkpoint. Whole-gate restructuring has no demonstrated benefit from this sprint alone.",
+        "recommendation": "trial",
+        "humanChoice": "pending",
+        "destination": null,
+        "evidence": [
+          {
+            "label": "TKT-559 closeout",
+            "url": null,
+            "ref": {
+              "key": "TKT-559",
+              "digest": "6e0440c7cdd4dd37e56c6920230532feae413263e7591f4567c8d49d930c11a0"
+            }
+          },
+          {
+            "label": "TKT-551 closeout",
+            "url": null,
+            "ref": {
+              "key": "TKT-551",
+              "digest": "099ad019656cb88ecd259c38a6f260366c116224da3c71a7c0e67ebd45a01c71"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "decision": {
+    "approval": {
+      "status": "pending",
+      "approver": null,
+      "decidedAt": null,
+      "ref": null,
+      "sprint": null,
+      "scopeDigest": null,
+      "candidate": null,
+      "reportDigest": null,
+      "reportUrl": null,
+      "tag": null,
+      "note": "Exact sprint close approval is pending. The start and priority approvals do not authorize closure."
+    },
+    "tagPublication": {
+      "status": "not_required",
+      "tag": null,
+      "candidate": null,
+      "object": null,
+      "verifiedAt": null,
+      "evidence": []
+    }
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "candidate": "c2f77420377ef7851d6eb00230842fb05b398de1",
+  "historicalDigest": "677c6e65fea1b00e548aaef10242c5187fd0fcef9ff1a5e428c5381863dfa642",
+  "archivedTimingDigest": "ee341645277a4a1937885488184fdf9a73a80be6164e4c4de0c6812a738f3331",
+  "restoredHistorical": true,
+  "trackedStatusClean": true,
+  "pendingRestore": false,
+  "freshMeasurement": {
+    "measuredAt": "2026-10-20T21:19:09.857Z",
+    "browser": "155.0.8059.79",
+    "host": {
+      "platform": "linux",
+      "release": "6.18.33.2-microsoft-standard-WSL2",
+      "arch": "x64",
+      "cpu": "12th Gen Intel(R) Core(TM) i5-12600K",
+      "logicalCPUs": 16
+    },
+    "measuredScans": 100,
+    "summaries": {
+      "mint": {
+        "count": 100,
+        "minMs": 0.3999999761581421,
+        "medianMs": 0.6000000238418579,
+        "p95Ms": 1.9000000357627869,
+        "maxMs": 3.299999952316284,
+        "maxBelowSendLimit": true
+      },
+      "mark": {
+        "count": 100,
+        "minMs": 0.6000000238418579,
+        "medianMs": 0.9000000357627869,
+        "p95Ms": 1.7000000476837158,
+        "maxMs": 3.5,
+        "maxBelowSendLimit": true
+      }
+    }
+  },
+  "makeBrowserExit": 0
+}

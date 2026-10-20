@@ -1,0 +1,21 @@
+{
+  "stage": "sprint-review",
+  "kind": "report-check",
+  "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+  "documentationRecord": "S-2 sha256:d6123b49ba4edb9f42ba4be62dc0133e957bcefdade4e3009b501c71e4f09c06",
+  "reportVersion": 3,
+  "reviewer": "gemini-3.8-flash-high",
+  "sourceDigest": "e082a2eb96ce27991bfb44abf6aef5906a04420e110ba08eef946f8267af844a",
+  "htmlDigest": "78b6fb33979a9fba4afe844be27c37cd9d82b0d548803e5bfd694bf9e0e6bab9",
+  "complete": true,
+  "verdict": "APPROVE",
+  "summary": "Bounded read-only report check for S-2 v3 release report complete. Verified source JSON (sha256:e082a2eb96ce27991bfb44abf6aef5906a04420e110ba08eef946f8267af844a) and rendered HTML (sha256:78b6fb33979a9fba4afe844be27c37cd9d82b0d548803e5bfd694bf9e0e6bab9) generated from frozen review packet S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754. Documentation area is complete with HUMAN_REVIEW, round 1, reviewer gemini-3.8-flash-high, 0 findings, binding board documentation digest S-2 sha256:d6123b49ba4edb9f42ba4be62dc0133e957bcefdade4e3009b501c71e4f09c06. Technical readiness accurately transitions to ready across all four areas (implementation, verification, documentation, retrospective) at HUMAN_REVIEW with 0 unresolved findings. Human decision remains pending; sprint state remains active; proposed tag remains 'No tag planned'. Delivered scope contains exactly TKT-559, TKT-399, TKT-551, TKT-552, and closure task TKT-563. All 6 required checks passed; optional C7 is not applicable and C8 is not run; unmeasured run costs are None/null rather than zero. Rendered HTML faithfully reflects source data with byte-identical CSS to v1, 0 scripts, default-src 'none' CSP, and unclipped table scrolling on narrow viewports without layout distortion.",
+  "findings": [],
+  "inspectionQualification": {
+    "actualProvider": "antigravity",
+    "actualModel": "gemini-3.8-flash-high",
+    "timelineComplete": true,
+    "scope": "Full final JSON/HTML reads, structured v1-v3 JSON diff, HTML diff and CSS byte comparison, all four area records, candidate packet fields and material receipts. The final check used file inspection and root browser receipts; it did not run a separate browser session.",
+    "limits": "Long outputs are stored excerpts. It does not prove attention to every line. Root retains narrow horizontal scrolling, print pagination and cold offline reload limits. The phrase without layout distortion is not adopted as a universal layout guarantee."
+  }
+}

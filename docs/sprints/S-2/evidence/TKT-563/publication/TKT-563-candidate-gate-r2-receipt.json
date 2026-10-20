@@ -1,0 +1,17 @@
+{
+  "operation": "candidate-gate-r2",
+  "command": [
+    "make",
+    "check"
+  ],
+  "cwd": "/home/mathieu/sources/ticketing_system.TKT-563-sprint-report",
+  "start": "2026-10-20T21:20:08.900935+00:00",
+  "end": "2026-10-20T21:34:47.110597+00:00",
+  "elapsedSeconds": 876.7964180340059,
+  "exitCode": 0,
+  "head": "c2f77420377ef7851d6eb00230842fb05b398de1",
+  "tree": "0929e500526cc4cfd34db9ce60346500cca0b74f",
+  "trackedStatusAfter": "",
+  "log": "/tmp/sdlc-S-2/TKT-563-candidate-gate-r2.log",
+  "logSha256": "430e8671edd4c14f3aa4af81591d947df3e3d5a493e83a13c87428c0d2e78a52"
+}

@@ -1,0 +1,11 @@
+{
+  "operation": "candidate-gate-r2",
+  "status": "PASS",
+  "head": "c2f77420377ef7851d6eb00230842fb05b398de1",
+  "gitTree": "0929e500526cc4cfd34db9ce60346500cca0b74f",
+  "gateTreeFingerprint": "69bbb228147177d8573d1e2aa65e3806465f7297",
+  "fingerprintSemantics": "SHA-1 of HEAD, working diff and nonignored untracked file digests; distinct from the Git tree ID.",
+  "verdictSha256": "f4eefb0987d9c3b2b5ad98f63e3b1792b82bb09f8859b80fd530f725ea44d1b5",
+  "logSha256": "e185470f56b3fa0b05e1e10075d36950201200ca99fe26b0f583f3e75fc19214",
+  "observedAt": "2026-10-20T21:34:48.984364+00:00"
+}

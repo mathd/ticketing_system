@@ -1,0 +1,80 @@
+{
+  "stage": "sprint-review",
+  "round": 1,
+  "area": "documentation",
+  "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+  "reviewer": "gemini-3.8-flash-high",
+  "results": [
+    {
+      "stage": "sprint-review",
+      "round": 1,
+      "area": "documentation",
+      "lens": "initial",
+      "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+      "reviewer": "gemini-3.8-flash-high",
+      "complete": true,
+      "verdict": "APPROVE",
+      "summary": "Initial documentation inspection of sprint S-2 closure packet artifact S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754 at candidate commit c2f77420377ef7851d6eb00230842fb05b398de1. Reviewer model confirmed as gemini-3.8-flash-high (independent of authors gpt-6.1-sol, gpt-6-astra, claude-opus-5-5, claude-haiku-5-5). Boundary compliance: Strict initial-lens file boundary observed; no sprint briefs, author plans, recaps, decision logs, preparation.md, start-prompt.md, board snapshots, audit prompts, or prior reviewer records were accessed. Inspected operator documentation and ADRs (docs/development.md, ADR-085, ADR-025, ADR-066), all 29 workflow/runtime files (.claude/skills/sdlc-sprint-review/, .claude/skills/sdlc-sprint/, .claude/skills/sdlc-ticket/), closure probe documentation (docs/sprints/S-2/evidence/TKT-563/README.md), and relevant scanner contracts/UI (scan-result.ts, entry-scan.ts, App.tsx, occurrence-store.ts, occurrence-model.ts, OccurrenceRecords.tsx, doc-namespace.test.ts). Verified exact string copy and behavioral fidelity for exit_required and entry_limit_reached rejections, Exit mode result presentations and neutral styling, Entry time bounds (3 s send / 30 s decision), and aggregate reconciliation sync reporting and progress alerts. Confirmed clean doc namespace with zero unqualified decision or review identifiers in ADRs or operator documentation. Acknowledged disclosed limitations: sprint report publication (report.en.json / report.en.html) does not yet exist pending the final decision audit, transient sync count reporting per page, and venue device qualification pending TKT-560.",
+      "findings": [],
+      "researchRequests": []
+    },
+    {
+      "stage": "sprint-review",
+      "round": 1,
+      "area": "documentation",
+      "lens": "audit",
+      "artifact": "S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754",
+      "reviewer": "gemini-3.8-flash-high",
+      "complete": true,
+      "verdict": "APPROVE",
+      "summary": "Completed verbatim documentation decision audit for sprint S-2 closure packet artifact S-2:packet:sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754 at candidate commit c2f77420377ef7851d6eb00230842fb05b398de1 from baseline 5e3bee1db8019621fb5cdc343872b9c6159dd50d. Reviewer confirmed as gemini-3.8-flash-high under owner routing TKT-559 D6 (b925d2285b8f7fb05de06a322806633e51a0e06bb6cd224d8bb24dbc6d375920) and approved brief (fc3e0b0752e1a2aa7e7f643c2539b372347cc45139d8803ddccd4ec86b603b07), independent of authors gpt-6.1-sol, gpt-6-astra, claude-opus-5-5, and claude-haiku-5-5. Omissions from the prior attempt were resolved: issued full cat reads of the complete frozen packet body (sha256:10e2d1657709ef4e95535b790c9414f04dba6d08caf2fa494e4b4dfec3208754), complete publication JSON report.en.v1.json (sha256:39093027f280c06879fb4a78f1f774ac7405488b85019ab88ccbbc7ddcf2ca79), all 454 lines of report.en.v1.html (sha256:51c66f3225c245b2ad34ecc7d545a8646a50949ddf82b4523c965a752c537e4a), initial documentation inspection record (findings: 0, APPROVE), prior incomplete audit record, all 24 governing manifest chunks individually (covering 113 governing records: S-2 D1-D3, TKT-399 D1-D56, TKT-551 D1-D12, TKT-552 D1-D7, TKT-559 D1-D6, and TKT-563 D1-D9), all three final area review records (implementation sha256:2d9540f8, verification sha256:4e71be81, retrospective sha256:84f10f73), and browser check supplements. Rendered document layout and text were inspected via browser preview_evaluate: full text content (24,113 chars) across all 9 report sections (outcome, decision, scope, risks, reviews, checks, measurements, retrospective, identity) is faithful to the governing records; technical readiness is correctly marked Incomplete pending human close approval; tag status is No tag planned (publishTag: false); required checks C1-C6 are Passed, C7 n/a, C8 unmeasured/deferred; financial cost None accurately indicates unrecorded run cost rather than zero spend; dark theme CSS variables and print media rules (@page a4 with 14mm 14mm 16mm margins) were verified; narrow 390px viewport horizontal overflow (scrollWidth 651px) stems from intentionally unclipped wide evidence tables and preserves full data legibility. Limits: read-only audit; host browser verification does not establish physical hardware or venue qualification under TKT-560; D30 page loss and physical gate passage remain outside candidate guarantees.",
+      "findings": [],
+      "researchRequests": []
+    }
+  ],
+  "dispositions": {},
+  "dispositionEvidence": {},
+  "verificationPassed": true,
+  "materialChange": false,
+  "refutationChecks": {},
+  "inspectionQualification": {
+    "accepted": true,
+    "timelineComplete": true,
+    "actualProvider": "antigravity",
+    "actualModel": "gemini-3.8-flash-high",
+    "completionTaskStatus": "/tmp/sdlc-S-2/TKT-563-sprint-r1-documentation-audit-completion1-status.json",
+    "reason": "Fresh completion requests complete packet body, JSON and HTML, both prior documentation results, every governing chunk and all three final area records. Own preview tab requests complete rendered body text, narrow/dark layout and print rules. No file changes or test execution in this completion. Earlier incomplete attempt remains retained.",
+    "limits": "Tool outputs for long reads are stored excerpts, not proof of attention to every line. Narrow tables remain horizontally scrollable. Print CSS inspected, pagination not executed. Offline content is scriptless and self-contained; cold offline reload was not executed. Root corrects recap wording: draft technical readiness is incomplete because documentation audit was pending, not because human approval is pending. Final technical readiness remains separate from owner approval. Raw metadata line counts and inferred design intent are not promoted to report claims."
+  },
+  "auditSupplements": {
+    "packetUnchanged": true,
+    "candidate": "c2f77420377ef7851d6eb00230842fb05b398de1",
+    "reportVersion": 1,
+    "files": [
+      {
+        "path": "/tmp/sdlc-S-2/TKT-563-sprint-r1-implementation-record.json",
+        "sha256": "2d9540f8f6d60aa0fba7416845bcd8a5efeaa753dcfc49331c1f1043019d3509"
+      },
+      {
+        "path": "/tmp/sdlc-S-2/TKT-563-sprint-r1-verification-record.json",
+        "sha256": "4e71be8173065a65c8bff50633bbd1bbe6475758aebd0c23063e045fa1c90603"
+      },
+      {
+        "path": "/tmp/sdlc-S-2/TKT-563-sprint-r1-retrospective-record.json",
+        "sha256": "84f10f73c5c2a06062a215b708aff56d128981a2e469f49fb4ca69289383ec52"
+      },
+      {
+        "path": "/tmp/sdlc-S-2/TKT-563-publication/report.en.v1.json",
+        "sha256": "39093027f280c06879fb4a78f1f774ac7405488b85019ab88ccbbc7ddcf2ca79"
+      },
+      {
+        "path": "/tmp/sdlc-S-2/TKT-563-publication/report.en.v1.html",
+        "sha256": "51c66f3225c245b2ad34ecc7d545a8646a50949ddf82b4523c965a752c537e4a"
+      },
+      {
+        "path": "/tmp/sdlc-S-2/TKT-563-report-draft-v1-browser-check.json",
+        "sha256": "f423d903ab7a388f956c7027e2cd989e9684b44d88ac1e5f438c27c7557c8a20"
+      }
+    ]
+  }
+}
