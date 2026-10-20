@@ -387,6 +387,8 @@ The UI must check time and generation at the point it publishes an admission res
 
 Delivery status: Entry codes in ticket 2; the time-dependent codes O-L0, O-LA and O-LU in ticket 3; Exit wording in ticket 4. **Partial delivery:** TKT-558 implements Entry/storage; TKT-559 implements Entry timing and stalled-body deadlines. TKT-399 implements Exit.
 
+TKT-552 delivers Entry copy for two readable denials. `exit_required` shows "Do not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan." followed by `Reason: exit_required.` `entry_limit_reached` shows "Do not admit. No entries remain on this pass." followed by `Reason: entry_limit_reached.` Both keep the Rejected heading and the rejected tone. Every other readable Entry reason, including an unknown value, keeps the generic line "Credential is invalid or cannot be redeemed." with no Reason line. That fallback is open-ended. `already_redeemed` keeps its own text. The broader O-R requirement, an exact reason for each readable Entry denial, remains incomplete, and TKT-565 tracks it. Later sentences that place the remaining work in TKT-552 record the original allocation. So does the owner decision ADR-085 D14-4, which this note does not amend. The `exit_required` confirmation is staff judgement, not a system fact. Access cannot tell a missing Exit from a passback, so this copy does not establish physical presence or departure. If staff accept a claim of departure, record Exit, and then scan Entry, the presenter may be admitted. After a recorded Exit, the scanner page stays on Exit until staff select Entry. These are existing procedure residuals. The copy adds no guard and restores no anti-passback strength.
+
 "Opening" here means the scanner admission instruction after its actuation reservation. No physical gate actuator was verified; M's accepted path is the store mark and result update at `web/scanner/src/App.tsx:338-342`.
 
 Each cell below has the form **durable state; reconciliation; operator code; residual code**. The row supplies the exact direction and reason. A cell has a stable address such as `R04-X/F` for the write-failure column of an Exit `not_inside` rejection. Codes are expanded here so the tables remain readable.
@@ -783,7 +785,7 @@ D24's rationale is amended by D34. Main reaches a DB outage first through device
 
 Direction persistence and version isolation do not logically require an elapsed timer. This design reasoning is **not verified** by implementation here. Owner D13-2 rejects Exit-first delivery because fetch/body/mark can remain late without ticket 3. No alternative Exit-before-time path remains.
 
-Full sync reporting was allocated to TKT-551 and is delivered under I7. Entry reason copy remains in TKT-552. Historical N8 is addressed by TKT-553 on M, `services/access/internal/api/server_test.go:324-400`. Do not reopen it. No domain event payload or Access reconciliation change is proposed. Ticket 0 covers the ADR-085 D34, ADR-085 D35 and ADR-085 D39 amendments: S/R/F device lookup, narrow S availability, bounded read-only pre-decision steps and real-driver classification, Access outer recover, and Access/gateway timeout checks and documentation. Reconciliation event payload and recording semantics do not change.
+Full sync reporting was allocated to TKT-551 and is delivered under I7. Entry reason copy for `exit_required` and `entry_limit_reached` was delivered in TKT-552; the remaining reason copy is tracked by TKT-565 (section 3.2). Historical N8 is addressed by TKT-553 on M, `services/access/internal/api/server_test.go:324-400`. Do not reopen it. No domain event payload or Access reconciliation change is proposed. Ticket 0 covers the ADR-085 D34, ADR-085 D35 and ADR-085 D39 amendments: S/R/F device lookup, narrow S availability, bounded read-only pre-decision steps and real-driver classification, Access outer recover, and Access/gateway timeout checks and documentation. Reconciliation event payload and recording semantics do not change.
 
 ### 9. Rules and decisions this ADR rests on
 
@@ -929,7 +931,7 @@ No earlier proposal remains operative where these decisions supersede it.
 
 - TKT-556 (this spike, decision log D1-D41); TKT-399 (thread, PR #451 closed, branch
   `TKT-399-pass-exit-mode` at `24f1c209`).
-- TKT-551 (sync reporting delivered, see I7), TKT-552 (Entry reason copy), TKT-553 (unknown event-type test), TKT-500
+- TKT-551 (sync reporting delivered, see I7), TKT-552 (two Entry reason instructions, section 3.2), TKT-565 (remaining Entry reason copy), TKT-553 (unknown event-type test), TKT-500
   (revocation freshness ceiling and override).
 - TKT-557 (ticket 0, the Access response-producer contract) and TKT-560 (load qualification of its
   PROVISIONAL bounds; a venue-use precondition after TKT-558, section 8).

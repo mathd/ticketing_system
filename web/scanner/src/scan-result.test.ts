@@ -31,10 +31,17 @@ const cases: Array<[EntryResult, string | undefined, string[]]> = [
 it.each(cases)('renders the complete %j result', (result, heading, lines) => {
   expect(presentResult(result, { direction: 'entry', requestMayHaveBeenSent: true })).toMatchObject({ heading, lines })
 })
-it.each(['entry_limit_reached', 'exit_required', 'not_inside', 'exit_not_applicable', 'invalid_credential',
+it.each(['not_inside', 'exit_not_applicable', 'invalid_credential',
   'revoked', 'refunded', 'exchanged', 'exit_unverified', 'integrity_quarantined', 'integrity_operator_controlled',
   'occurrence_required', 'unknown_future_reason', 'invalid_occurrence', 'occurrence_collision'])('keeps the scoped generic Entry copy for %s', (reason) => {
   expect(presentResult({ kind: 'rejected', reason }, { direction: 'entry', requestMayHaveBeenSent: true })).toMatchObject({ heading: 'Rejected', lines: ['Credential is invalid or cannot be redeemed.'] })
+})
+const ownEntryInstructions: Array<[string, string[]]> = [
+  ['exit_required', ['Do not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.', 'Reason: exit_required.']],
+  ['entry_limit_reached', ['Do not admit. No entries remain on this pass.', 'Reason: entry_limit_reached.']],
+]
+it.each(ownEntryInstructions)('renders the complete Entry instruction for %s with its Reason line', (reason, lines) => {
+  expect(presentResult({ kind: 'rejected', reason }, { direction: 'entry', requestMayHaveBeenSent: true })).toEqual({ heading: 'Rejected', tone: 'rejected', lines })
 })
 it('uses validated server times without replacing them with current device time', () => {
   const scannedAt = '2026-10-18T09:00:01.456Z'

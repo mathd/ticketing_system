@@ -91,7 +91,10 @@ it('publishes an accepted result through the real mark and keeps it stable on re
 it.each(['already_redeemed', 'entry_limit_reached', 'exit_required', 'not_inside', 'exit_not_applicable', 'invalid_credential', 'revoked', 'refunded', 'exchanged', 'exit_unverified', 'integrity_quarantined', 'integrity_operator_controlled', 'occurrence_required', 'unknown_future_reason', 'invalid_occurrence', 'occurrence_collision'])('keeps the exact denial reason %s and the complete current Entry instruction', async (reason) => {
   scanReply = async () => new Response(JSON.stringify({ decision: 'rejected', reason }), { status: 422 })
   render(<App />); await scan()
-  const expected = reason === 'already_redeemed' ? 'RejectedAlready redeemed.' : 'RejectedCredential is invalid or cannot be redeemed.'
+  const expected = reason === 'already_redeemed' ? 'RejectedAlready redeemed.'
+    : reason === 'exit_required' ? 'RejectedDo not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.Reason: exit_required.'
+      : reason === 'entry_limit_reached' ? 'RejectedDo not admit. No entries remain on this pass.Reason: entry_limit_reached.'
+        : 'RejectedCredential is invalid or cannot be redeemed.'
   await waitFor(() => expect(screen.getByRole('alert', { name: 'Scan result' }).textContent).toBe(expected))
   await waitFor(async () => expect(await rawGet(dbName, STORE.occurrences, scans[0].occurrence_id as string)).toMatchObject({ state: 'RESOLVED', localOutcome: { family: 'terminal', cause: 'denied', status: 422, reason } }))
   expect((await page.store().queued()).entries).toEqual([])

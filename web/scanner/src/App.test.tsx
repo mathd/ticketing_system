@@ -5,6 +5,7 @@ import type { StorageController } from './occurrence-readiness'
 import { createTestPage, destroyAllPages, type TestPage } from './test/page-fixture'
 import { rawGetAll } from './test/raw-db'
 import { STORE } from './occurrence-store'
+import { ACCEPT_INSTRUCTION, OFFLINE_INSTRUCTION } from './scan-result'
 const runtime = vi.hoisted(() => ({ storage: null as StorageController | null }))
 vi.mock('./occurrence-readiness', async (load) => {
   const actual = await load<typeof import('./occurrence-readiness')>()
@@ -98,6 +99,38 @@ describe('App', () => {
     render(<App />)
     pasteCredential()
     expect(await screen.findByRole('heading', { name: 'Rejected' })).toBeDefined()
+  })
+
+  // routedFetch passes no Request to its scan callback. These cases delegate every route to it and record the submitted Request body.
+  it.each([
+    {
+      reason: 'exit_required',
+      lines: ['Do not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.', 'Reason: exit_required.'],
+      text: 'RejectedDo not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.Reason: exit_required.',
+    },
+    {
+      reason: 'entry_limit_reached',
+      lines: ['Do not admit. No entries remain on this pass.', 'Reason: entry_limit_reached.'],
+      text: 'RejectedDo not admit. No entries remain on this pass.Reason: entry_limit_reached.',
+    },
+  ])('submits a 409 $reason denial and shows its complete Entry instruction', async ({ reason, lines, text }) => {
+    const sent: Record<string, unknown>[] = []
+    const routed = routedFetch(() => Promise.resolve(new Response(JSON.stringify({ decision: 'rejected', reason }), { status: 409 })))
+    vi.stubGlobal('fetch', vi.fn(async (input: Request | string, init?: RequestInit) => {
+      if (typeof input !== 'string' && !input.url.includes('voided-tickets')) sent.push(await input.clone().json())
+      return routed(input, init)
+    }))
+    render(<App />)
+    pasteCredential('signed-ticket')
+    await screen.findByRole('heading', { name: 'Rejected' })
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({ direction: 'entry', qr_payload: 'signed-ticket' })
+    await waitFor(async () => expect(await rawGetAll(dbName, STORE.occurrences)).toMatchObject([{ state: 'RESOLVED', localOutcome: { family: 'terminal', cause: 'denied', status: 409, reason } }]))
+    const alert = screen.getByRole('alert', { name: 'Scan result' })
+    expect(Array.from(alert.querySelectorAll('p'), (paragraph) => paragraph.textContent)).toEqual(lines)
+    expect(alert.textContent).toBe(text)
+    expect(screen.queryByText(ACCEPT_INSTRUCTION)).toBeNull()
+    expect(screen.queryByText(OFFLINE_INSTRUCTION)).toBeNull()
   })
 
   it('keeps the paste path available when camera detection is unavailable', async () => {

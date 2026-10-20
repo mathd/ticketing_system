@@ -17,14 +17,23 @@ export function presentResult(result: EntryResult, context: ResultContext): Resu
   return presentEntry(result)
 }
 
-/** Core Entry instructions. Ordinary reason-specific copy remains in TKT-552. */
+/**
+ * Core Entry instructions. exit_required and entry_limit_reached have their own copy (TKT-552).
+ * already_redeemed keeps its own text. Every other readable reason, including an unknown one, gets
+ * the generic fallback. The fallback is open-ended; TKT-565 tracks the remaining reason copy.
+ */
 function presentEntry(result: EntryResult): ResultPresentation {
   const refused = (heading: string | undefined, ...lines: string[]): ResultPresentation => ({ heading, lines, tone: 'rejected' })
   switch (result.kind) {
     case 'accepted': return { heading: 'Accepted', tone: 'accepted', lines: [ACCEPT_INSTRUCTION,
       `Entry recorded at ${readableTime(result.scannedAt)}.`,
       ...(result.replay ? ['This scan was previously recorded. Entry counted once.'] : [])] }
-    case 'rejected': return refused('Rejected', result.reason === 'already_redeemed'
+    case 'rejected':
+      if (result.reason === 'exit_required') return refused('Rejected',
+        'Do not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.',
+        'Reason: exit_required.')
+      if (result.reason === 'entry_limit_reached') return refused('Rejected', 'Do not admit. No entries remain on this pass.', 'Reason: entry_limit_reached.')
+      return refused('Rejected', result.reason === 'already_redeemed'
       ? result.originalScanAt ? `Already redeemed at ${readableTime(result.originalScanAt)}.` : 'Already redeemed.'
       : 'Credential is invalid or cannot be redeemed.')
     case 'queued': return { heading: 'Offline decision', tone: 'queued', lines: [
