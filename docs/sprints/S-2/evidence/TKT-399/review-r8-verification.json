@@ -1,0 +1,585 @@
+{
+  "stage": "ai-review",
+  "round": 8,
+  "reviewedHead": "04225125482ce6d50975c102359791cd4714c67a",
+  "verifiedSourceHead": "4eeb34e5a4d0f3253aabfee7e7861f47edef1823",
+  "author": "gpt-6.1-sol",
+  "effort": "high",
+  "materialChange": false,
+  "unitMutationExecutions": 6,
+  "unitRestoredRuns": 8,
+  "browserMutationExecutions": 2,
+  "browserRestoredRunsPerJourney": 8,
+  "scannerTests": 1851,
+  "scannerFiles": 43,
+  "logs": [
+    {
+      "path": "/tmp/sdlc-S-2/TKT-399-r8-results-red.log",
+      "sha256": "173d58b9c390fe6e16eb009d22cd74fd8164ee6e1961c9ea173cfb89cfdc8a1b"
+    },
+    {
+      "path": "/tmp/sdlc-S-2/TKT-399-r8-results-green.log",
+      "sha256": "376b43f9ddf6c3f08a98d0a30b3ba15b05a839832e7e4fdb55cb61964a373936"
+    },
+    {
+      "path": "/tmp/sdlc-S-2/TKT-399-r8-full-scanner.log",
+      "sha256": "2785d9d7386875f0ed863bf99716528ef614a696f055a7a10760dbc990410c49"
+    },
+    {
+      "path": "/tmp/sdlc-S-2/TKT-399-r8-scanner-build.log",
+      "sha256": "d2b6cd73c3e26807cc8a49f5b9de4bd089a9d5895858bfc7bf4605cc1e7056ca"
+    },
+    {
+      "path": "/tmp/sdlc-S-2/TKT-399-r8-browser-full.log",
+      "sha256": "ac75f44266f1acb1c05773f5bc51f64b13765918ba0851fb6858aab06713b31e"
+    }
+  ],
+  "units": [
+    {
+      "mutation": "cancelled-constant-sent",
+      "discriminatingFailure": true,
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.exit-results.test.tsx",
+        "src/scan-result.exit.test.ts"
+      ],
+      "exit": 1,
+      "start": "2026-10-19T19:41:40.261136+00:00",
+      "seconds": 2.175,
+      "log": "TKT-399-r8-mutant-cancelled-constant-sent.log",
+      "sha256": "ee093c72ded11d59812bd0c2b10c368e6e1850a5f7b932ebba090d0b33076898"
+    },
+    {
+      "mutation": "late-exit-no-leave",
+      "discriminatingFailure": true,
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.exit-results.test.tsx",
+        "src/scan-result.exit.test.ts"
+      ],
+      "exit": 1,
+      "start": "2026-10-19T19:41:42.437453+00:00",
+      "seconds": 3.977,
+      "log": "TKT-399-r8-mutant-late-exit-no-leave.log",
+      "sha256": "430ad0cb0966a2c6ce277dc4d28475283bc7ee13661b3fa7fa0304a82190d1a6"
+    },
+    {
+      "mutation": "stopped-exit-unknown",
+      "discriminatingFailure": true,
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.exit-results.test.tsx",
+        "src/scan-result.exit.test.ts"
+      ],
+      "exit": 1,
+      "start": "2026-10-19T19:41:46.415447+00:00",
+      "seconds": 4.025,
+      "log": "TKT-399-r8-mutant-stopped-exit-unknown.log",
+      "sha256": "b4057e1fe2d9980e998f8ec03a35c3c627ee3af6f536a7c337127283725daf49"
+    },
+    {
+      "mutation": "constant-published-sent",
+      "discriminatingFailure": true,
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.exit-results.test.tsx",
+        "src/scan-result.exit.test.ts"
+      ],
+      "exit": 1,
+      "start": "2026-10-19T19:41:50.441184+00:00",
+      "seconds": 3.074,
+      "log": "TKT-399-r8-mutant-constant-published-sent.log",
+      "sha256": "b904bc0b1494d5185fef8b16a53d9e12ce8c5ba938d9e16d54c9a880db45ebcc"
+    },
+    {
+      "mutation": "quarantine-redeemed-time",
+      "discriminatingFailure": true,
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.exit-results.test.tsx",
+        "src/scan-result.exit.test.ts"
+      ],
+      "exit": 1,
+      "start": "2026-10-19T19:41:53.516090+00:00",
+      "seconds": 2.924,
+      "log": "TKT-399-r8-mutant-quarantine-redeemed-time.log",
+      "sha256": "3e8784b89a0ec676ee729b3f56d30edee8fab349ffe9b1b68098cb275fd05cca"
+    },
+    {
+      "mutation": "entry-intro-changed",
+      "discriminatingFailure": true,
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.exit-results.test.tsx",
+        "src/scan-result.exit.test.ts"
+      ],
+      "exit": 1,
+      "start": "2026-10-19T19:41:56.440448+00:00",
+      "seconds": 2.02,
+      "log": "TKT-399-r8-mutant-entry-intro-changed.log",
+      "sha256": "6c18e1e21542eeeff2ae24b8145af98b43b02e266e0ce552a8f5ed09f4a8e18b"
+    },
+    {
+      "restored": 1,
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.exit-results.test.tsx",
+        "src/scan-result.exit.test.ts"
+      ],
+      "exit": 0,
+      "start": "2026-10-19T19:41:58.461238+00:00",
+      "seconds": 2.421,
+      "log": "TKT-399-r8-restored-1.log",
+      "sha256": "adeca3e911a9d88c464d0f5d5512dec3a873504349842d3522261cd8662fde65"
+    },
+    {
+      "restored": 2,
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.exit-results.test.tsx",
+        "src/scan-result.exit.test.ts"
+      ],
+      "exit": 0,
+      "start": "2026-10-19T19:42:00.882390+00:00",
+      "seconds": 2.12,
+      "log": "TKT-399-r8-restored-2.log",
+      "sha256": "f9ee11a81e6a22671f06849d267ddbb467fe19d4d588d545e36cfc49b0888a85"
+    },
+    {
+      "restored": 3,
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.exit-results.test.tsx",
+        "src/scan-result.exit.test.ts"
+      ],
+      "exit": 0,
+      "start": "2026-10-19T19:42:03.002537+00:00",
+      "seconds": 1.97,
+      "log": "TKT-399-r8-restored-3.log",
+      "sha256": "c9739b6c3ce23f021bb812f7db465bd06cd22e2a95c0f20023b5a1fef94ab4a0"
+    },
+    {
+      "restored": 4,
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.exit-results.test.tsx",
+        "src/scan-result.exit.test.ts"
+      ],
+      "exit": 0,
+      "start": "2026-10-19T19:42:04.973010+00:00",
+      "seconds": 2.02,
+      "log": "TKT-399-r8-restored-4.log",
+      "sha256": "407d3f9b986fcb18f8e683cd1e923413e5713fc48eecf9612be1f2dd2a291a61"
+    },
+    {
+      "restored": 5,
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.exit-results.test.tsx",
+        "src/scan-result.exit.test.ts"
+      ],
+      "exit": 0,
+      "start": "2026-10-19T19:42:07.015130+00:00",
+      "seconds": 1.971,
+      "log": "TKT-399-r8-restored-5.log",
+      "sha256": "5c05d0d08270577a0dadd967680b2bf6aee0fffeb2414e83112bf21d6e06b41a"
+    },
+    {
+      "restored": 6,
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.exit-results.test.tsx",
+        "src/scan-result.exit.test.ts"
+      ],
+      "exit": 0,
+      "start": "2026-10-19T19:42:08.986667+00:00",
+      "seconds": 2.071,
+      "log": "TKT-399-r8-restored-6.log",
+      "sha256": "27287afdb6ca32f46f74789f930caeb449f804e8a5fa642a4f890f6c526f869c"
+    },
+    {
+      "restored": 7,
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.exit-results.test.tsx",
+        "src/scan-result.exit.test.ts"
+      ],
+      "exit": 0,
+      "start": "2026-10-19T19:42:11.057527+00:00",
+      "seconds": 2.02,
+      "log": "TKT-399-r8-restored-7.log",
+      "sha256": "2b6935a17e719790244519c5d92f6795b7d7c235a0b46a3212999da62b97a0e8"
+    },
+    {
+      "restored": 8,
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.exit-results.test.tsx",
+        "src/scan-result.exit.test.ts"
+      ],
+      "exit": 0,
+      "start": "2026-10-19T19:42:13.078009+00:00",
+      "seconds": 2.02,
+      "log": "TKT-399-r8-restored-8.log",
+      "sha256": "a9ac6daa19b38c5632c1b2790c1c47f8f7b4560887a9f90d2ce2cf9bf7792b73"
+    }
+  ],
+  "browser": [
+    {
+      "baseline": true,
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+        "run"
+      ],
+      "area": "predecessor",
+      "exit": 0,
+      "start": "2026-10-19T19:46:08.897334+00:00",
+      "seconds": 13.757,
+      "log": "194608-TKT-399-r8-browser-baseline-predecessor.log",
+      "sha256": "73d50051c911feffccf1de3c132ee69620fc2c51389b199494e4f25b899323e2"
+    },
+    {
+      "baseline": true,
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+        "run"
+      ],
+      "area": "policy",
+      "exit": 0,
+      "start": "2026-10-19T19:46:22.655406+00:00",
+      "seconds": 6.534,
+      "log": "194608-TKT-399-r8-browser-baseline-policy.log",
+      "sha256": "bc03b2a50fcde8f0f9585263ed60bfbb760d1b7c4385362458f3314bf21a685f"
+    },
+    {
+      "mutation": "drop-first-exit",
+      "discriminatingFailure": true,
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+        "run"
+      ],
+      "area": "predecessor",
+      "exit": 1,
+      "start": "2026-10-19T19:46:29.892007+00:00",
+      "seconds": 15.163,
+      "log": "194608-TKT-399-r8-browser-mutant-drop-first-exit.log",
+      "sha256": "0fd0377916589406864b998172f5f205c03c4b221254a796fa3fec10f9bceb53"
+    },
+    {
+      "mutation": "requires-exit-seed-disabled",
+      "discriminatingFailure": true,
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+        "run"
+      ],
+      "area": "policy",
+      "exit": 1,
+      "start": "2026-10-19T19:46:45.776470+00:00",
+      "seconds": 12.905,
+      "log": "194608-TKT-399-r8-browser-mutant-requires-exit-seed-disabled.log",
+      "sha256": "34f280b2e3676659012ffda3180ca217b6d047bec10f3f21e1f77a6576d6ff59"
+    },
+    {
+      "restored": 1,
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+        "run"
+      ],
+      "area": "predecessor",
+      "exit": 0,
+      "start": "2026-10-19T19:46:58.681693+00:00",
+      "seconds": 14.411,
+      "log": "194608-TKT-399-r8-browser-restored-predecessor-1.log",
+      "sha256": "73d50051c911feffccf1de3c132ee69620fc2c51389b199494e4f25b899323e2"
+    },
+    {
+      "restored": 1,
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+        "run"
+      ],
+      "area": "policy",
+      "exit": 0,
+      "start": "2026-10-19T19:47:13.112034+00:00",
+      "seconds": 6.482,
+      "log": "194608-TKT-399-r8-browser-restored-policy-1.log",
+      "sha256": "bc03b2a50fcde8f0f9585263ed60bfbb760d1b7c4385362458f3314bf21a685f"
+    },
+    {
+      "restored": 2,
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+        "run"
+      ],
+      "area": "predecessor",
+      "exit": 0,
+      "start": "2026-10-19T19:47:19.594140+00:00",
+      "seconds": 15.52,
+      "log": "194608-TKT-399-r8-browser-restored-predecessor-2.log",
+      "sha256": "73d50051c911feffccf1de3c132ee69620fc2c51389b199494e4f25b899323e2"
+    },
+    {
+      "restored": 2,
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+        "run"
+      ],
+      "area": "policy",
+      "exit": 0,
+      "start": "2026-10-19T19:47:35.114917+00:00",
+      "seconds": 6.582,
+      "log": "194608-TKT-399-r8-browser-restored-policy-2.log",
+      "sha256": "bc03b2a50fcde8f0f9585263ed60bfbb760d1b7c4385362458f3314bf21a685f"
+    },
+    {
+      "restored": 3,
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+        "run"
+      ],
+      "area": "predecessor",
+      "exit": 0,
+      "start": "2026-10-19T19:47:41.715168+00:00",
+      "seconds": 16.27,
+      "log": "194608-TKT-399-r8-browser-restored-predecessor-3.log",
+      "sha256": "73d50051c911feffccf1de3c132ee69620fc2c51389b199494e4f25b899323e2"
+    },
+    {
+      "restored": 3,
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+        "run"
+      ],
+      "area": "policy",
+      "exit": 0,
+      "start": "2026-10-19T19:47:57.985731+00:00",
+      "seconds": 6.683,
+      "log": "194608-TKT-399-r8-browser-restored-policy-3.log",
+      "sha256": "bc03b2a50fcde8f0f9585263ed60bfbb760d1b7c4385362458f3314bf21a685f"
+    },
+    {
+      "restored": 4,
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+        "run"
+      ],
+      "area": "predecessor",
+      "exit": 0,
+      "start": "2026-10-19T19:48:04.669305+00:00",
+      "seconds": 14.062,
+      "log": "194608-TKT-399-r8-browser-restored-predecessor-4.log",
+      "sha256": "73d50051c911feffccf1de3c132ee69620fc2c51389b199494e4f25b899323e2"
+    },
+    {
+      "restored": 4,
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+        "run"
+      ],
+      "area": "policy",
+      "exit": 0,
+      "start": "2026-10-19T19:48:18.749148+00:00",
+      "seconds": 6.582,
+      "log": "194608-TKT-399-r8-browser-restored-policy-4.log",
+      "sha256": "bc03b2a50fcde8f0f9585263ed60bfbb760d1b7c4385362458f3314bf21a685f"
+    },
+    {
+      "restored": 5,
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+        "run"
+      ],
+      "area": "predecessor",
+      "exit": 0,
+      "start": "2026-10-19T19:48:25.331874+00:00",
+      "seconds": 15.965,
+      "log": "194608-TKT-399-r8-browser-restored-predecessor-5.log",
+      "sha256": "73d50051c911feffccf1de3c132ee69620fc2c51389b199494e4f25b899323e2"
+    },
+    {
+      "restored": 5,
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+        "run"
+      ],
+      "area": "policy",
+      "exit": 0,
+      "start": "2026-10-19T19:48:41.300826+00:00",
+      "seconds": 6.635,
+      "log": "194608-TKT-399-r8-browser-restored-policy-5.log",
+      "sha256": "bc03b2a50fcde8f0f9585263ed60bfbb760d1b7c4385362458f3314bf21a685f"
+    },
+    {
+      "restored": 6,
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+        "run"
+      ],
+      "area": "predecessor",
+      "exit": 0,
+      "start": "2026-10-19T19:48:47.935956+00:00",
+      "seconds": 14.456,
+      "log": "194608-TKT-399-r8-browser-restored-predecessor-6.log",
+      "sha256": "73d50051c911feffccf1de3c132ee69620fc2c51389b199494e4f25b899323e2"
+    },
+    {
+      "restored": 6,
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+        "run"
+      ],
+      "area": "policy",
+      "exit": 0,
+      "start": "2026-10-19T19:49:02.392835+00:00",
+      "seconds": 6.433,
+      "log": "194608-TKT-399-r8-browser-restored-policy-6.log",
+      "sha256": "bc03b2a50fcde8f0f9585263ed60bfbb760d1b7c4385362458f3314bf21a685f"
+    },
+    {
+      "restored": 7,
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+        "run"
+      ],
+      "area": "predecessor",
+      "exit": 0,
+      "start": "2026-10-19T19:49:08.844370+00:00",
+      "seconds": 15.511,
+      "log": "194608-TKT-399-r8-browser-restored-predecessor-7.log",
+      "sha256": "73d50051c911feffccf1de3c132ee69620fc2c51389b199494e4f25b899323e2"
+    },
+    {
+      "restored": 7,
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+        "run"
+      ],
+      "area": "policy",
+      "exit": 0,
+      "start": "2026-10-19T19:49:24.356604+00:00",
+      "seconds": 6.432,
+      "log": "194608-TKT-399-r8-browser-restored-policy-7.log",
+      "sha256": "bc03b2a50fcde8f0f9585263ed60bfbb760d1b7c4385362458f3314bf21a685f"
+    },
+    {
+      "restored": 8,
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+        "run"
+      ],
+      "area": "predecessor",
+      "exit": 0,
+      "start": "2026-10-19T19:49:30.788764+00:00",
+      "seconds": 13.556,
+      "log": "194608-TKT-399-r8-browser-restored-predecessor-8.log",
+      "sha256": "73d50051c911feffccf1de3c132ee69620fc2c51389b199494e4f25b899323e2"
+    },
+    {
+      "restored": 8,
+      "command": [
+        "bash",
+        "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+        "run"
+      ],
+      "area": "policy",
+      "exit": 0,
+      "start": "2026-10-19T19:49:44.364061+00:00",
+      "seconds": 6.632,
+      "log": "194608-TKT-399-r8-browser-restored-policy-8.log",
+      "sha256": "bc03b2a50fcde8f0f9585263ed60bfbb760d1b7c4385362458f3314bf21a685f"
+    }
+  ],
+  "failedFixtureAttempts": [
+    {
+      "failure": "First browser baseline failed to show reload recovery notice after full clock installation on the reload page. Diagnostic repeat reproduced the same missing notice. Date-only setFixedTime replaces that clock setup in 0605e3ce; verification pending.",
+      "firstExit": 1,
+      "diagnosticExit": 1,
+      "diagnosticLog": "/tmp/sdlc-S-2/TKT-399-r8-predecessor-debug.log",
+      "diagnosticSha256": "fc10c1aeb02e0ad08cc4f59b827913faab63838c76231d2a4625742b70a4c9e5",
+      "initialLogRetention": "Original baseline log was overwritten by the next baseline invocation; the diagnostic failure log is retained. No successful result is claimed for either failed run."
+    },
+    [
+      {
+        "baseline": true,
+        "command": [
+          "bash",
+          "/tmp/sdlc-S-2/TKT-399-r8-browser.sh",
+          "run"
+        ],
+        "area": "predecessor",
+        "exit": 1,
+        "start": "2026-10-19T19:45:09.828490+00:00",
+        "seconds": 26.101,
+        "log": "TKT-399-r8-browser-baseline-predecessor.log",
+        "sha256": "e24f9398bd9ef33c2a1a017e1dd4108839062884b3cc77fb13cc531a57a9f865"
+      }
+    ]
+  ],
+  "limits": [
+    "The first browser baseline log was overwritten on retry; its diagnostic repeat is retained and hashed.",
+    "Cancellation copy is asserted at the presenter tier because pairing reset clears the transient App region.",
+    "Browser mutation runners reuse the production ticket fixture without running its unrelated Entry journeys, so the new assertions are the failing tier.",
+    "Host Chrome measurements are not venue qualification."
+  ]
+}

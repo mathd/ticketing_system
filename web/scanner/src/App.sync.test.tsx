@@ -167,6 +167,10 @@ async function queueOneScan(value = 'offline-ticket') {
   fireEvent.click(screen.getByRole('button', { name: 'Check ticket' }))
   await screen.findByRole('heading', { name: 'Offline decision' })
   await waitFor(() => expect(screen.getByRole('button', { name: 'Check ticket' }).hasAttribute('disabled')).toBe(false))
+  await waitFor(async () => expect((await storedRows() as Array<{ qrPayload?: string; state?: string }>).some(
+    row => row.qrPayload === value && row.state === 'QUEUED',
+  )).toBe(true))
+  await readsSettled()
 }
 
 // The stored occurrence rows, read straight from IndexedDB — not through the app.

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { StorageController } from './occurrence-readiness'
 import App from './App'
@@ -37,7 +37,8 @@ beforeEach(async () => {
   }))
 })
 afterEach(() => { cleanup(); destroyAllPages(); localStorage.clear(); sessionStorage.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
-async function scan() {
+async function scan(direction: 'entry' | 'exit' = 'entry') {
+  fireEvent.click(screen.getByRole('radio', { name: direction === 'entry' ? 'Entry' : 'Exit' }))
   fireEvent.change(screen.getByLabelText('Ticket credential'), { target: { value: 'credential' } })
   await waitFor(() => expect(screen.getByRole('button', { name: 'Check ticket' }).hasAttribute('disabled')).toBe(false))
   fireEvent.submit(screen.getByRole('form', { name: 'Ticket scan' }))
@@ -49,6 +50,7 @@ async function queueControl() {
   return scan
 }
 
+describe.each(['entry', 'exit'] as const)('%s actuation and replay guards', direction => {
 const cases = ['own ACT', 'foreign ACT', 'foreign PEND', 'missing', 'QUEUED', 'RESOLVED', 'ACT without reservation'] as const
 it.each(cases.flatMap(state => [true, false, undefined].map(replay => ({ state, replay }))))('checks replay=$replay against actual $state before displaying a result', async ({ state, replay }) => {
   let before: unknown
@@ -70,22 +72,24 @@ it.each(cases.flatMap(state => [true, false, undefined].map(replay => ({ state, 
     before = await rawGet(dbName, STORE.occurrences, id)
     return new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-10-18T09:00:01.456Z', ...(replay === undefined ? {} : { replay }) }), { status: 200 })
   }
-  render(<App />); await scan()
+  render(<App />); await scan(direction)
   const duplicate = state === 'own ACT' && replay === true
   await screen.findByRole('heading', { name: duplicate ? 'Already processed' : 'Operator required' })
-  expect(screen.getByRole('alert', { name: 'Scan result' }).textContent).toBe(duplicate
-    ? 'Already processedThis scan was already handled on this device. No second entry.'
-    : 'Operator requiredAccess recorded this scan; the scanner did not open; get an operator.')
+  expect(screen.getByRole(direction === 'entry' ? 'alert' : 'status', { name: 'Scan result' }).textContent).toBe(duplicate
+    ? direction === 'entry' ? 'Already processedThis scan was already handled on this device. No second entry.' : 'Already processedThis scan was already handled on this device. No second Exit action. The holder may leave.'
+    : `Operator requiredAccess recorded this scan; the scanner did not open; get an operator.${direction === 'exit' ? 'The holder may leave.' : ''}`)
   await act(async () => { await page.coordinator.repairAll() })
   expect(await rawGet(dbName, STORE.occurrences, scans[0].occurrence_id as string)).toStrictEqual(before)
 })
 
 it.each([true, false, undefined])('admits a fresh durable reservation with replay=%s', async replay => {
   scanReply = async () => new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-10-18T09:00:01.456Z', ...(replay === undefined ? {} : { replay }) }), { status: 200 })
-  render(<App />); await scan()
-  await screen.findByRole('heading', { name: 'Accepted' })
+  render(<App />); await scan(direction)
+  await screen.findByRole('heading', { name: direction === 'entry' ? 'Accepted' : 'Exit recorded' })
   const row = await rawGet(dbName, STORE.occurrences, scans[0].occurrence_id as string)
-  expect(row).toMatchObject({ state: 'ACTUATED', actuated: true, ownerId: page.coordinator.ownerId, direction: 'entry', localOutcome: { family: 'actuation', cause: 'reserved' } })
+  expect(row).toMatchObject({ state: 'ACTUATED', actuated: true, ownerId: page.coordinator.ownerId, direction, localOutcome: { family: 'actuation', cause: 'reserved' } })
+})
+
 })
 
 import { instrumentTransactions } from './test/idb-instrument'

@@ -87,7 +87,7 @@ describe('dead-owner recovery', () => {
     expect(await rawGet(dbName, STORE.occurrences, refusal.occurrenceId)).toStrictEqual(recovered(refusal, 'owner-a'))
     const notices = (await b.store().readNotices()).sort((x, y) => x.occurrenceId.localeCompare(y.occurrenceId))
     expect(notices).toEqual([
-      { occurrenceId: normal.occurrenceId, occurredAt: normal.occurredAt, type: 'normal', cause: 'uncertain_recovery', syncState: 'QUEUED' },
+      { occurrenceId: normal.occurrenceId, occurredAt: normal.occurredAt, type: 'normal', direction: 'entry', cause: 'uncertain_recovery', syncState: 'QUEUED' },
       { occurrenceId: refusal.occurrenceId, occurredAt: refusal.occurredAt, type: 'refusal', cause: 'uncertain_recovery', syncState: 'QUEUED' },
     ].sort((x, y) => x.occurrenceId.localeCompare(y.occurrenceId)))
     expect(await rawGet(dbName, STORE.recoveryNotices, normal.occurrenceId)).toStrictEqual({
@@ -176,7 +176,7 @@ describe('recovery notices', () => {
     expect(await b.store().applyReconcileResults([scan.occurrenceId], [{ occurrence_id: scan.occurrenceId, result: 'recorded' }]))
       .toEqual({ status: 'applied', retired: 1, alreadyApplied: 0 })
     expect(await b.store().readNotices()).toEqual([
-      { occurrenceId: scan.occurrenceId, occurredAt: scan.occurredAt, type: 'normal', cause: 'uncertain_recovery', syncState: 'SYNCED' },
+      { occurrenceId: scan.occurrenceId, occurredAt: scan.occurredAt, type: 'normal', direction: 'entry', cause: 'uncertain_recovery', syncState: 'SYNCED' },
     ])
     const c = page('owner-c')
     await c.ready()

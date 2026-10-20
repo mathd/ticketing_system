@@ -29,20 +29,20 @@ const cases: Array<[EntryResult, string | undefined, string[]]> = [
   [{ kind: 'rejected', reason: 'already_redeemed' }, 'Rejected', ['Already redeemed.']],
 ]
 it.each(cases)('renders the complete %j result', (result, heading, lines) => {
-  expect(presentResult(result)).toMatchObject({ heading, lines })
+  expect(presentResult(result, { direction: 'entry', requestMayHaveBeenSent: true })).toMatchObject({ heading, lines })
 })
 it.each(['entry_limit_reached', 'exit_required', 'not_inside', 'exit_not_applicable', 'invalid_credential',
   'revoked', 'refunded', 'exchanged', 'exit_unverified', 'integrity_quarantined', 'integrity_operator_controlled',
   'occurrence_required', 'unknown_future_reason', 'invalid_occurrence', 'occurrence_collision'])('keeps the scoped generic Entry copy for %s', (reason) => {
-  expect(presentResult({ kind: 'rejected', reason })).toMatchObject({ heading: 'Rejected', lines: ['Credential is invalid or cannot be redeemed.'] })
+  expect(presentResult({ kind: 'rejected', reason }, { direction: 'entry', requestMayHaveBeenSent: true })).toMatchObject({ heading: 'Rejected', lines: ['Credential is invalid or cannot be redeemed.'] })
 })
 it('uses validated server times without replacing them with current device time', () => {
   const scannedAt = '2026-10-18T09:00:01.456Z'
   const localized = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' }).format(new Date(scannedAt))
-  expect(presentResult({ kind: 'accepted', scannedAt, replay: true })).toMatchObject({ heading: 'Accepted', lines: [
+  expect(presentResult({ kind: 'accepted', scannedAt, replay: true }, { direction: 'entry', requestMayHaveBeenSent: true })).toMatchObject({ heading: 'Accepted', lines: [
     'Entry accepted. Admit.', `Entry recorded at ${localized}.`, 'This scan was previously recorded. Entry counted once.',
   ] })
-  expect(presentResult({ kind: 'rejected', reason: 'already_redeemed', originalScanAt: scannedAt })).toMatchObject({
+  expect(presentResult({ kind: 'rejected', reason: 'already_redeemed', originalScanAt: scannedAt }, { direction: 'entry', requestMayHaveBeenSent: true })).toMatchObject({
     heading: 'Rejected', lines: [`Already redeemed at ${localized}.`],
   })
 })

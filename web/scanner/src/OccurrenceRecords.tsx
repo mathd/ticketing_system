@@ -118,7 +118,7 @@ export function OccurrenceRecords({ storage, refresh }: { storage: StorageContro
     {message && <p role="status">{message}</p>}
     {notices.map((notice) => <section key={notice.occurrenceId} aria-label={`Recovered scan ${notice.occurrenceId}`}>
       <h2>Recovered scan</h2>
-      <p>Scan {notice.occurrenceId} at {notice.occurredAt ?? 'unknown'}. Type: {notice.type === 'normal' ? 'entry' : notice.type ?? 'unknown'}. Recovery cause: uncertain_recovery. Sync state: {notice.syncState}.</p>
+      <p>Scan {notice.occurrenceId} at {notice.occurredAt ?? 'unknown'}. Type: {notice.type === 'normal' ? notice.direction : notice.type ?? 'unknown'}. Recovery cause: uncertain_recovery. Sync state: {notice.syncState}.</p>
       <p>The prior result and physical passage are unknown. Do not admit from this notice.</p>
       <form onSubmit={(event) => { event.preventDefault(); void acknowledgeNotice(notice.occurrenceId) }}>
         <button type="submit" disabled={!ready}>Acknowledge recovery notice</button>

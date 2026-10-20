@@ -1,0 +1,462 @@
+{
+  "ticket": "TKT-399",
+  "observedAt": "2026-10-19T13:57:22.090385+00:00",
+  "testedCodeHead": "eefd1e9987d74f38c760e3dddf10d41189faacd6",
+  "base": "3752a96a16a2ed6e7fe267206c3dbd05bf5271bf",
+  "unit": {
+    "command": "pnpm --filter scanner exec vitest run",
+    "passed": 1840,
+    "files": 41
+  },
+  "browser": {
+    "command": "make browser",
+    "exit": 0,
+    "browser": "155.0.8059.79",
+    "scannerAndRemainingSpecs": "passed"
+  },
+  "gate": {
+    "initial": "FAILED: unrelated TKT-504 stack already bound product worktree smoke port 15440",
+    "final": "pending on final evidence commit; publish actual verdict on board and PR",
+    "validationWorktree": "/home/mathieu/sources/ticketing_system.S-2-TKT-399-gate",
+    "smokeSlot": 21
+  },
+  "logs": [
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-exit-red-corrected.log",
+      "sha256": "829cf6002630fd2d6745aa259a674fdeb3005e93dbfaac2d4047d380185c1cb3",
+      "bytes": 45605,
+      "testSummary": [
+        "Test Files  2 failed (2)",
+        "Tests  30 failed | 1 passed (31)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-mutant-clear-pairing-retains-mode.log",
+      "sha256": "12cff3fcd7076dfc7b97fbc7a7ffb432937be3f177861e3f3e4bc039f725a624",
+      "bytes": 13877,
+      "testSummary": [
+        "Test Files  1 failed (1)",
+        "Tests  3 failed | 31 passed (34)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-mutant-clock-inclusive-boundary.log",
+      "sha256": "bc4bc0b6474c3c154e21cb5c9a1bd03fc892417fd6973b01be7e3081e24f8e94",
+      "bytes": 20132,
+      "testSummary": [
+        "Test Files  1 failed (1)",
+        "Tests  41 failed | 36 passed (77)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-mutant-corrupt-direction-default.log",
+      "sha256": "42dc98825feb80ca94d9ab5a8596228e215c9a8e4d70dfb37551064578fd9854",
+      "bytes": 9473,
+      "testSummary": [
+        "Test Files  2 failed (2)",
+        "Tests  7 failed | 36 passed (43)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-mutant-hide-corrupt-warning.log",
+      "sha256": "5cb3b3a2f22ff9cca6677cd4d918c2eb27cd53f96076ae68fb10261bc327caae",
+      "bytes": 7684,
+      "testSummary": [
+        "Test Files  1 failed (1)",
+        "Tests  1 failed | 33 passed (34)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-mutant-mint-entry.log",
+      "sha256": "3c2d66aab8423660e8a739fe0f1ad48c41cf2da9899e513e7c91e44574b506c1",
+      "bytes": 89761,
+      "testSummary": [
+        "Test Files  2 failed (2)",
+        "Tests  22 failed | 21 passed (43)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-mutant-notice-entry.log",
+      "sha256": "0207da7cc792527cb252a9d4dcb8c38b04d5d122d3116bdd7193a9d09ae3a05f",
+      "bytes": 6717,
+      "testSummary": [
+        "Test Files  1 failed (1)",
+        "Tests  1 failed | 33 passed (34)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-mutant-recover-entry.log",
+      "sha256": "e9e362d53ca438fed2a5b0142028101fd439bc1e178b93eacbd24b79874bc3db",
+      "bytes": 7962,
+      "testSummary": [
+        "Test Files  2 failed (2)",
+        "Tests  2 failed | 41 passed (43)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-mutant-reject-exit.log",
+      "sha256": "42ee0b9387b0acf6e53af9c9f5765742eade478d2f25bc2419c784d901dd6f9c",
+      "bytes": 10924,
+      "testSummary": [
+        "Test Files  1 failed (1)",
+        "Tests  8 failed | 1 passed (9)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-mutant-revoked-exit-mints.log",
+      "sha256": "c3067bdd94119848d48bb6c3e8d91322a50929e133bda1d9e854a04db08a0d4b",
+      "bytes": 1516,
+      "testSummary": [
+        "Test Files  1 failed (1)",
+        "Tests  1 failed | 33 passed (34)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-mutant-sent-context-lost.log",
+      "sha256": "5f1c6041192dc2fbea8b9374e3bb1e1155b45f63023577a4309f3755a38114a3",
+      "bytes": 14388,
+      "testSummary": [
+        "Test Files  1 failed (1)",
+        "Tests  8 failed | 224 skipped (232)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-mutant-server500-offline.log",
+      "sha256": "4f9b053c2d82c8606b8c035ce34d2321ac700c89488f781a88b907bb9946fd07",
+      "bytes": 46404,
+      "testSummary": [
+        "Test Files  1 failed (1)",
+        "Tests  8 failed | 224 skipped (232)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-mutant-stale-camera.log",
+      "sha256": "92c25d06da76a23867f1f5b4e297343956ee35f3301fc7bad00a11ee43ea0201",
+      "bytes": 6912,
+      "testSummary": [
+        "Test Files  1 failed (1)",
+        "Tests  5 failed | 29 passed (34)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-mutant-storage-late-mark-clobbered.log",
+      "sha256": "3cae676532b8e017c0a8addfa72603b4ba3611c2c3917ea12620ad3792aed76d",
+      "bytes": 1547,
+      "testSummary": [
+        "Test Files  1 failed (1)",
+        "Tests  1 failed | 85 passed (86)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-mutant-storage-mint-entry.log",
+      "sha256": "c9f75f2d9f47cf47eace57383e1269f2d5134e32627fc3b9b4a846d1f9e6829b",
+      "bytes": 30663,
+      "testSummary": [
+        "Test Files  1 failed (1)",
+        "Tests  26 failed | 60 passed (86)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-mutant-storage-recover-entry.log",
+      "sha256": "d1eb860fe8168373025d6bda2e410f47882af6effe35cfa1839d8642faf851d2",
+      "bytes": 7472,
+      "testSummary": [
+        "Test Files  1 failed (1)",
+        "Tests  10 failed | 76 passed (86)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-mutant-storage-terminal-became-queue.log",
+      "sha256": "f6e3537e6274ea194c499ea43aa7d184e3d03c1961c07bc7e438b12dc86c7ea1",
+      "bytes": 44642,
+      "testSummary": [
+        "Test Files  1 failed (1)",
+        "Tests  42 failed | 44 passed (86)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-mutant-storage-wire-entry.log",
+      "sha256": "8e204b7c6f5a70a598e6f477c8b4252b6796b8a2423fc4e0a3dbe6d9382f7b83",
+      "bytes": 35370,
+      "testSummary": [
+        "Test Files  1 failed (1)",
+        "Tests  26 failed | 60 passed (86)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-mutant-sync-failure-silent.log",
+      "sha256": "c897f2690440ddd9649fb8813cbea9da16777ca03e9b974ccbeb937b658d2b7f",
+      "bytes": 74702,
+      "testSummary": [
+        "Test Files  1 failed (1)",
+        "Tests  18 failed | 6 passed (24)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-mutant-typeerror-is-network.log",
+      "sha256": "2a03084fdd428cb685ebca73f8d76f9cb37d79494ce98f0b62fc83b420e88f34",
+      "bytes": 7813,
+      "testSummary": [
+        "Test Files  1 failed (1)",
+        "Tests  8 failed | 224 skipped (232)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-mutant-wire-entry.log",
+      "sha256": "3e02da3519d2752737ea3fd3541b6682fb1f47db1c81e81df6cc5e6042dbafa7",
+      "bytes": 16856,
+      "testSummary": [
+        "Test Files  2 failed (2)",
+        "Tests  14 failed | 7 passed (21)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-restored-fixed-1.log",
+      "sha256": "558ddc520185f4b7305bfa9803aaaecb40778ebe3d4953c2d4799e658f22f5be",
+      "bytes": 269,
+      "testSummary": [
+        "Test Files  40 passed (40)",
+        "Tests  1754 passed (1754)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-restored-fixed-2.log",
+      "sha256": "f424f8027943782d591f8f02e692b37d1acc865fd748e12a151ff5144b8331c6",
+      "bytes": 270,
+      "testSummary": [
+        "Test Files  40 passed (40)",
+        "Tests  1754 passed (1754)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-restored-fixed-3.log",
+      "sha256": "6b5ce80b01070710d27e8929e232279cc714689362a81209db34c4502154f046",
+      "bytes": 271,
+      "testSummary": [
+        "Test Files  40 passed (40)",
+        "Tests  1754 passed (1754)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-restored-fixed-4.log",
+      "sha256": "fc071ecedfdf708ba051ac84d9fbf9101ad38b98fd638939c1bb27e3e3339586",
+      "bytes": 270,
+      "testSummary": [
+        "Test Files  40 passed (40)",
+        "Tests  1754 passed (1754)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-restored-fixed-5.log",
+      "sha256": "738c056a53cdb8195188b85d05b4b1d33a230dd669f22b86ef20250a734af8fa",
+      "bytes": 270,
+      "testSummary": [
+        "Test Files  40 passed (40)",
+        "Tests  1754 passed (1754)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-restored-fixed-6.log",
+      "sha256": "b07c04ef442f071ba801a682c79b58535efd381b592641d06d3c0ce4cad00d97",
+      "bytes": 271,
+      "testSummary": [
+        "Test Files  40 passed (40)",
+        "Tests  1754 passed (1754)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-restored-fixed-7.log",
+      "sha256": "40e1c5360bc1b089ab35f150573ac6d0485b0309f973bc748464033539e0089f",
+      "bytes": 270,
+      "testSummary": [
+        "Test Files  40 passed (40)",
+        "Tests  1754 passed (1754)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-restored-fixed-8.log",
+      "sha256": "19263376797633381aef3a19a19a0e9b87ab78481aa32d105a74fc9758e5e083",
+      "bytes": 271,
+      "testSummary": [
+        "Test Files  40 passed (40)",
+        "Tests  1754 passed (1754)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-storage-restored-1.log",
+      "sha256": "d952ab419ad64ea81202ce4526377204d8ae4677c02be75eff94b7202833118a",
+      "bytes": 259,
+      "testSummary": [
+        "Test Files  1 passed (1)",
+        "Tests  86 passed (86)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-storage-restored-2.log",
+      "sha256": "e87cf35126b2e5cc57e4fe22da4ac3dedd7224f9e4be316050ea86786a2cdb45",
+      "bytes": 259,
+      "testSummary": [
+        "Test Files  1 passed (1)",
+        "Tests  86 passed (86)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-storage-restored-3.log",
+      "sha256": "7532ed79982f09a382a396d7621a5dba6b4308ef9911ec8034c06ac4c37c04db",
+      "bytes": 259,
+      "testSummary": [
+        "Test Files  1 passed (1)",
+        "Tests  86 passed (86)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-storage-restored-4.log",
+      "sha256": "bb4d38f7759ba44469a85d1922bbcdd2d942c024450963a7b88c7030fb66525f",
+      "bytes": 259,
+      "testSummary": [
+        "Test Files  1 passed (1)",
+        "Tests  86 passed (86)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-storage-restored-5.log",
+      "sha256": "03e69bedbc518aefdcafc809be0731ebc46e0a97985b4110f2b16c13d9bdfb5a",
+      "bytes": 259,
+      "testSummary": [
+        "Test Files  1 passed (1)",
+        "Tests  86 passed (86)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-storage-restored-6.log",
+      "sha256": "61eeb6aa6e4982a3c34ec10b720fbdff5ebff1dbfbd7033cdea27878e906e756",
+      "bytes": 259,
+      "testSummary": [
+        "Test Files  1 passed (1)",
+        "Tests  86 passed (86)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-storage-restored-7.log",
+      "sha256": "8ceac1aa102a606b57a12f38e8008a95d56dfe205713c9bf025cfc9a39c163a8",
+      "bytes": 259,
+      "testSummary": [
+        "Test Files  1 passed (1)",
+        "Tests  86 passed (86)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-storage-restored-8.log",
+      "sha256": "3c8bbf1067e13d5b053a630c449e5899b013f718b7380539d371ffb207408e11",
+      "bytes": 259,
+      "testSummary": [
+        "Test Files  1 passed (1)",
+        "Tests  86 passed (86)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-chrome-restored-1.log",
+      "sha256": "1123ffe5893af411ea8cf7ce8f7d484ce15750b0c25f4c6d79f4b5b9f846c9e5",
+      "bytes": 14216,
+      "testSummary": []
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-chrome-restored-2.log",
+      "sha256": "1123ffe5893af411ea8cf7ce8f7d484ce15750b0c25f4c6d79f4b5b9f846c9e5",
+      "bytes": 14216,
+      "testSummary": []
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-chrome-restored-3.log",
+      "sha256": "1123ffe5893af411ea8cf7ce8f7d484ce15750b0c25f4c6d79f4b5b9f846c9e5",
+      "bytes": 14216,
+      "testSummary": []
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-chrome-restored-4.log",
+      "sha256": "1123ffe5893af411ea8cf7ce8f7d484ce15750b0c25f4c6d79f4b5b9f846c9e5",
+      "bytes": 14216,
+      "testSummary": []
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-chrome-restored-5.log",
+      "sha256": "1123ffe5893af411ea8cf7ce8f7d484ce15750b0c25f4c6d79f4b5b9f846c9e5",
+      "bytes": 14216,
+      "testSummary": []
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-chrome-restored-6.log",
+      "sha256": "1123ffe5893af411ea8cf7ce8f7d484ce15750b0c25f4c6d79f4b5b9f846c9e5",
+      "bytes": 14216,
+      "testSummary": []
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-chrome-restored-7.log",
+      "sha256": "1123ffe5893af411ea8cf7ce8f7d484ce15750b0c25f4c6d79f4b5b9f846c9e5",
+      "bytes": 14216,
+      "testSummary": []
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-chrome-restored-8.log",
+      "sha256": "1123ffe5893af411ea8cf7ce8f7d484ce15750b0c25f4c6d79f4b5b9f846c9e5",
+      "bytes": 14216,
+      "testSummary": []
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-unit-final-before-review.log",
+      "sha256": "95e5b98ea2b6e2f71d5ea4812b4696f048c7bff84d1e2d79a4455b7f4c2a2d35",
+      "bytes": 271,
+      "testSummary": [
+        "Test Files  41 passed (41)",
+        "Tests  1840 passed (1840)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-browser-full.log",
+      "sha256": "55451a341a6c0bc5726e98f0acd983cace93c4f3eb4ae946bfe58243e8652355",
+      "bytes": 101632,
+      "testSummary": []
+    },
+    {
+      "file": "/tmp/sdlc-S-2/TKT-399-first-gate.log",
+      "sha256": "059103089b0871a17f17b885e6e77ae93ec75025d723732e77fee4c72fca482f",
+      "bytes": 65859,
+      "testSummary": [
+        "Test Files  40 passed (40)",
+        "Tests  1754 passed (1754)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/css-control-app.log",
+      "sha256": "33dc2797c0d1835587571098429bfefa80fb8e7a890737cc994bc1953d9e3b05",
+      "bytes": 269,
+      "testSummary": [
+        "Test Files  15 passed (15)",
+        "Tests  1055 passed (1055)"
+      ]
+    },
+    {
+      "file": "/tmp/sdlc-S-2/css-control-browser.log",
+      "sha256": "872987dc06d1a54dfcc5f01e7498bf4b76037c8c89ed86c85812427bab015dea",
+      "bytes": 3205,
+      "testSummary": []
+    },
+    {
+      "file": "/tmp/sdlc-S-2/chrome-notice-entry-browser.log",
+      "sha256": "6eca904842a3ad0b9375d2e29b6f6d356a6e1404b3dbb06eed5b2890a12c6680",
+      "bytes": 3375,
+      "testSummary": []
+    }
+  ],
+  "contributors": {
+    "newDiff": [
+      "gpt-6.1-sol"
+    ],
+    "unchangedTKT558Decoder": [
+      "gpt-6.1-sol",
+      "claude-opus-5-5"
+    ],
+    "normalization": "opus-5.5 and claude-opus-5-5 are one identity",
+    "provenance": "TKT-399 D44/D45; no code or fixes from abandoned 24f1c209, its branch or PR451"
+  }
+}

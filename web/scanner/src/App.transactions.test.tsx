@@ -37,7 +37,8 @@ beforeEach(async () => {
   }))
 })
 afterEach(() => { cleanup(); destroyAllPages(); localStorage.clear(); sessionStorage.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
-async function scan() {
+async function scan(direction: 'entry' | 'exit' = 'entry') {
+  fireEvent.click(screen.getByRole('radio', { name: direction === 'entry' ? 'Entry' : 'Exit' }))
   fireEvent.change(screen.getByLabelText('Ticket credential'), { target: { value: 'credential' } })
   await waitFor(() => expect(screen.getByRole('button', { name: 'Check ticket' }).hasAttribute('disabled')).toBe(false))
   fireEvent.submit(screen.getByRole('form', { name: 'Ticket scan' }))
@@ -71,7 +72,7 @@ it.each(['commit', 'abort'] as const)('does not send before mint completion, the
   } finally { held.release(); instrument.restore() }
 })
 
-it.each(['ordinary', 'versionchange', 'unexpected close'] as const)('opens only after the actual mark completes through %s', async (event) => {
+it.each((['entry', 'exit'] as const).flatMap(direction => (['ordinary', 'versionchange', 'unexpected close'] as const).map(event => ({ direction, event }))))('opens only after the actual mark completes through $event for $direction', async ({ direction, event }) => {
   render(<App />)
   const instrument = instrumentTransactions()
   const holding: ReturnType<typeof instrument.hold>[] = []
@@ -80,18 +81,18 @@ it.each(['ordinary', 'versionchange', 'unexpected close'] as const)('opens only 
     return new Response(JSON.stringify({ decision: 'accepted', scanned_at: '2026-10-18T09:00:01.456Z' }), { status: 200 })
   }
   try {
-    await scan(); await waitFor(() => expect(holding).toHaveLength(1))
+    await scan(direction); await waitFor(() => expect(holding).toHaveLength(1))
     const call = await holding[0].started
     await waitFor(() => expect(call.events).toContain('write-success'))
-    expect(screen.queryByRole('heading', { name: 'Accepted' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: direction === 'entry' ? 'Accepted' : 'Exit recorded' })).toBeNull()
     const db = page.store().db
     if (event === 'versionchange') db.dispatchEvent(new IDBVersionChangeEvent('versionchange', { oldVersion: 3, newVersion: 4 }))
     if (event === 'unexpected close') forceCloseDatabase(db as never)
     holding[0].release()
-    await screen.findByRole('heading', { name: 'Accepted' })
+    await screen.findByRole('heading', { name: direction === 'entry' ? 'Accepted' : 'Exit recorded' })
     expect(call.events).toContain('complete')
     expect(await rawGet(dbName, STORE.occurrences, scans[0].occurrence_id as string)).toMatchObject({ state: 'ACTUATED', actuated: true })
-    expect(screen.getAllByText('Entry accepted. Admit.')).toHaveLength(1)
+    expect(screen.getAllByText(direction === 'entry' ? 'Entry accepted. Admit.' : 'Exit recorded. The holder may leave.')).toHaveLength(1)
   } finally { holding.forEach((held) => held.release()); instrument.restore() }
 })
 
@@ -232,7 +233,7 @@ function controlledClock() {
   }
 }
 
-it.each([409, 422, 200, 'headers', 502, 503, 504, 'native'] as const)('timed %s reaches actual App sync only through the eligible control', async (status) => {
+it.each((['entry', 'exit'] as const).flatMap(direction => ([409, 422, 200, 'headers', 502, 503, 504, 'native'] as const).map(status => ({ direction, status }))))('timed $direction $status reaches actual App sync only through the eligible control', async ({ direction, status }) => {
   const control = await queueControl()
   const clock = controlledClock()
   let finish!: (value: unknown) => void
@@ -244,7 +245,7 @@ it.each([409, 422, 200, 'headers', 502, 503, 504, 'native'] as const)('timed %s 
   } else scanReply = () => new Promise<Response>((resolve, reject) => {
     finish = () => { if (status === 'native') reject(new TypeError('Failed to fetch')); else resolve(r) }
   })
-  render(<App />); await scan()
+  render(<App />); await scan(direction)
   await waitFor(() => expect(scans).toHaveLength(1))
   if (typeof status === 'number' && status < 500) await waitFor(() => expect(bodyStarted).toBe(true))
   await act(async () => {
@@ -252,14 +253,18 @@ it.each([409, 422, 200, 'headers', 502, 503, 504, 'native'] as const)('timed %s 
     if (status === 502 || status === 503 || status === 504 || status === 'native') finish(undefined)
     else clock.wake()
   })
-  await waitFor(() => expect(screen.getByRole('alert', { name: 'Scan result' })).toBeDefined())
+  await waitFor(() => expect(screen.getByRole(direction === 'entry' ? 'alert' : 'status', { name: 'Scan result' })).toBeDefined())
+  if (direction === 'exit') expect(screen.getByRole('status', { name: 'Scan result' }).textContent).toBe(status === 409 || status === 422
+    ? 'Exit not recordedExit not recorded; reason unavailable. The holder may leave'
+    : status === 200 ? 'Operator requiredScan response unconfirmed. Scanner did not open. Access may have recorded this scan. Get an operator; do not admit from this result.Exit result unknown; the holder may leave'
+    : 'Operator requiredScan sent, answer unconfirmed. Scanner did not open. Access may have recorded this scan. Get an operator; do not admit from this result.Exit result unknown; the holder may leave')
   expect(screen.queryByText(OFFLINE_INSTRUCTION)).toBeNull()
   await waitFor(() => expect(screen.getByRole('button', { name: 'Check ticket' }).hasAttribute('disabled')).toBe(false))
   await act(async () => { await page.coordinator.persist(scans[0].occurrence_id as string) })
   fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
   await screen.findByText('Synced 1 offline scan(s).')
   expect(batches.flat().map((row) => row.occurrence_id)).toEqual([control.occurrenceId])
-  expect(await rawGet(dbName, STORE.occurrences, scans[0].occurrence_id as string)).toMatchObject({ state: 'RESOLVED' })
+  expect(await rawGet(dbName, STORE.occurrences, scans[0].occurrence_id as string)).toMatchObject({ state: 'RESOLVED', direction })
   if (status === 409 || status === 422 || status === 200) await act(async () => { finish({ decision: 'accepted', scanned_at: '2026-10-18T09:00:01Z' }) })
   expect(screen.queryByText(OFFLINE_INSTRUCTION)).toBeNull()
 })

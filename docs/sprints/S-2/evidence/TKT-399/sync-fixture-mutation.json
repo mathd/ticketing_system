@@ -1,0 +1,16 @@
+[
+  {
+    "mutation": "sync-failure-silent",
+    "path": "App.tsx",
+    "command": [
+      "vitest",
+      "run",
+      "src/App.sync.test.tsx"
+    ],
+    "exit": 1,
+    "discriminatingFailure": true,
+    "started": "2026-10-19T13:38:25.010091+00:00",
+    "seconds": 18.522,
+    "log": "/tmp/sdlc-S-2/TKT-399-mutant-sync-failure-silent.log"
+  }
+]

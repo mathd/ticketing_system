@@ -1,8 +1,9 @@
 import { flushSync } from 'react-dom'
 import { useEffect, useRef, useState } from 'react'
 import { decodeReconcileResponse, type ReconcileResponse } from './access-contract'
-import { createEntryScanner, type EntryResult, type Pairing } from './entry-scan'
+import { createEntryScanner, type EntryResult, type Pairing, type ResultContext } from './entry-scan'
 import { pageStorage, type StorageReadiness } from './occurrence-readiness'
+import type { ScanDirection } from './occurrence-model'
 import { type QueuedEntry } from './occurrence-store'
 import { planReconcileBatches } from './reconcile-batch'
 import { OccurrenceRecords } from './OccurrenceRecords'
@@ -43,8 +44,12 @@ function App() {
   const storage = useRef(pageStorage).current
   const [readiness, setReadiness] = useState<StorageReadiness>(storage.state)
   const [payload, setPayload] = useState('')
-  const [outcome, setOutcome] = useState<EntryResult | null>(null)
+  const [outcome, setOutcome] = useState<{ result: EntryResult; context: ResultContext } | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const submittingRef = useRef(false)
+  const [direction, setDirection] = useState<ScanDirection>('entry')
+  const directionRef = useRef<ScanDirection>('entry')
+  const [storageWarnings, setStorageWarnings] = useState<string[]>([])
   const [queuedCount, setQueuedCount] = useState(0)
   const [syncNote, setSyncNote] = useState<SyncNote>(null)
   const [reconcileWarnings, setReconcileWarnings] = useState<string[]>([])
@@ -74,8 +79,8 @@ function App() {
   const diagnostic = () => { if (mounted.current) setRecordsRefresh((value) => value + 1) }
   const scanner = useRef<ReturnType<typeof createEntryScanner> | null>(null)
   if (!scanner.current) scanner.current = createEntryScanner({ storage, pairing,
-    publish: (result) => { if (mounted.current) flushSync(() => setOutcome(result)) },
-    busy: (value) => { if (mounted.current) setSubmitting(value) }, diagnostic,
+    publish: (result, context) => { if (mounted.current) flushSync(() => setOutcome({ result, context })) },
+    busy: (value) => { submittingRef.current = value; if (mounted.current) setSubmitting(value) }, diagnostic,
     refusalQueued: () => { if (mounted.current) void syncQueued() },
     authRefused: (captured) => clearPairing('This device is not paired. Enter its pairing token before admitting anyone.', captured, true),
   })
@@ -87,6 +92,24 @@ function App() {
     stream.current?.getTracks().forEach((track) => track.stop())
     stream.current = null
     setCameraActive(false)
+  }
+  const resetDirection = () => {
+    stopCamera()
+    setCameraMessage('')
+    directionRef.current = 'entry'
+    setDirection('entry')
+  }
+  const changeDirection = (next: ScanDirection) => {
+    if (submittingRef.current || !storage.readyStore() || !deviceTokenRef.current) return
+    stopCamera()
+    setCameraMessage('')
+    setOutcome(null)
+    directionRef.current = next
+    setDirection(next)
+  }
+  const publishStorageWarnings = (warnings: Array<{ key: IDBValidKey; problem: string }>) => {
+    if (mounted.current) setStorageWarnings(warnings.map((warning) =>
+      `Local record ${String(warning.key)} cannot be read: ${warning.problem}. It stays on this device and will not sync.`))
   }
   const getStore = () => {
     const store = storage.readyStore()
@@ -101,6 +124,7 @@ function App() {
       await storage.coordinator.repairAll()
       await store.recoverDeadOwners()
       const queue = await store.queued()
+      publishStorageWarnings(queue.warnings)
       if (mounted.current) {
         setQueuedCount(queue.entries.length)
         reportStorageReady()
@@ -132,13 +156,13 @@ function App() {
     }
     const onPairingChange = (event: StorageEvent) => {
       if (event.key !== deviceTokenKey || (event.newValue?.trim() ?? '') === deviceTokenRef.current) return
+      resetDirection()
       scanner.current!.cancel()
       pairingGeneration.current += 1
       deviceTokenRef.current = event.newValue?.trim() ?? ''
       setDeviceToken(deviceTokenRef.current)
       setOutcome(null)
       setHasRevocationPull(false)
-      stopCamera()
     }
     window.addEventListener('online', onOnline)
     window.addEventListener('storage', onPairingChange)
@@ -198,7 +222,7 @@ function App() {
   const submit = async (value = payload) => {
     if (!value.trim()) return
     if (!submitting) setOutcome(null)
-    await scanner.current!.submit(value)
+    await scanner.current!.submit(value, directionRef.current)
     if (mounted.current) void refreshQueued()
   }
 
@@ -217,7 +241,9 @@ function App() {
       return previous?.kind === 'pairing' ? { ...previous, failure: corrected } : { kind: 'failure', ...corrected }
     }
     try {
-      const queue = (await getStore().queued()).entries
+      const read = await getStore().queued()
+      publishStorageWarnings(read.warnings)
+      const queue = read.entries
       if (!mounted.current) return
       setQueuedCount(queue.length)
       setSyncNote((previous) => correctFailure(previous, queue.length ? failureText(queue.length) : undefined))
@@ -253,7 +279,9 @@ function App() {
       const store = getStore()
       await storage.coordinator.repairAll()
       await store.recoverDeadOwners()
-      queue = (await store.queued()).entries
+      const read = await store.queued()
+      publishStorageWarnings(read.warnings)
+      queue = read.entries
       reportStorageReady()
       diagnostic()
     } catch { reportStorageFailure(); return }
@@ -316,7 +344,7 @@ function App() {
   }
 
   const startCamera = async () => {
-    if (!storage.readyStore()) { setOutcome({ kind: 'storage-unready' }); return }
+    if (!storage.readyStore()) { setOutcome({ result: { kind: 'storage-unready' }, context: Object.freeze({ direction: directionRef.current, requestMayHaveBeenSent: false }) }); return }
     if (!window.BarcodeDetector || !navigator.mediaDevices?.getUserMedia) {
       setCameraMessage('Camera QR detection is unavailable in this browser. Paste the credential instead.')
       return
@@ -410,6 +438,7 @@ function App() {
 
   const clearPairing = (reason: string, rejected: Pairing, retainResult = false) => {
     if (!isPairing(rejected)) return
+    resetDirection()
     scanner.current!.cancel()
     pairingGeneration.current += 1
     try { if (localStorage.getItem(deviceTokenKey) === rejected.token) localStorage.removeItem(deviceTokenKey) } catch { /* In-memory invalidation still applies. */ }
@@ -417,7 +446,6 @@ function App() {
     setDeviceToken('')
     setHasRevocationPull(false)
     if (!retainResult) setOutcome(null)
-    stopCamera()
     setSyncNote((previous) => {
       if (previous?.kind === 'failure') return { kind: 'pairing', text: reason, failure: { id: previous.id, text: previous.text } }
       if (previous?.kind === 'pairing' && previous.failure) return { kind: 'pairing', text: reason, failure: previous.failure }
@@ -435,6 +463,7 @@ function App() {
       const fingerprint = await tokenFingerprint(token)
       const pull = await getStore().revocationPull(fingerprint)
       if (!mounted.current || !isPairing(captured)) return
+      resetDirection()
       scanner.current!.cancel()
       pairingGeneration.current += 1
       deviceTokenRef.current = token
@@ -443,7 +472,6 @@ function App() {
       setHasRevocationPull(!!pull.completedAt)
       setPairingInput('')
       setOutcome(null)
-      stopCamera()
       setSyncNote((previous) => {
         if (previous?.kind === 'failure') return previous
         if (previous?.kind === 'pairing' && previous.failure) return { kind: 'failure', ...previous.failure }
@@ -463,11 +491,16 @@ function App() {
   }
   const ready = readiness.status === 'ready'
   const warnings = storage.coordinator.repairWarnings()
-  const result = outcome ? presentResult(outcome) : null
+  const result = outcome ? presentResult(outcome.result, outcome.context) : null
   return <main className="scanner">
     <h1>Gate scanner</h1>
+    <fieldset className="scan-direction" disabled={!deviceToken || !ready || submitting}>
+      <legend>Scan direction</legend>
+      <label><input type="radio" name="direction" value="entry" checked={direction === 'entry'} onChange={() => changeDirection('entry')} /> Entry</label>
+      <label><input type="radio" name="direction" value="exit" checked={direction === 'exit'} onChange={() => changeDirection('exit')} /> Exit</label>
+    </fieldset>
     {!deviceToken ? <section aria-label="Device pairing">
-      <h2>{outcome?.kind === 'auth-refused' ? 'Device pairing' : 'Pair this device'}</h2>
+      <h2>{outcome?.result.kind === 'auth-refused' ? 'Device pairing' : 'Pair this device'}</h2>
       <p>This scanner is not paired yet. An operator enrols it once with <code>access enrol-scanner</code> and reads out the token it prints.</p>
       <form aria-label="Device pairing" onSubmit={(event) => void pairDevice(event)}>
         <label htmlFor="pairing-token">Pairing token</label>
@@ -476,7 +509,7 @@ function App() {
       </form>
       {queuedCount > 0 && <p className="queue-note" role="status">{queuedCount} offline scan{queuedCount === 1 ? '' : 's'} are still saved on this device and will sync once it is paired.</p>}
     </section> : <>
-      <p>Scan a ticket QR code or paste its credential to validate entry.</p>
+      <p>Scan a ticket QR code or paste its credential {direction === 'entry' ? 'to validate entry.' : 'to record Exit.'}</p>
       <section aria-label="Ticket scan input">
         <form aria-label="Ticket scan" onSubmit={(event) => { event.preventDefault(); void submit() }}>
           <label htmlFor="qr-payload">Ticket credential</label>
@@ -500,6 +533,7 @@ function App() {
       {result.heading && <h2>{result.heading}</h2>}{result.lines.map((line) => <p key={line}>{line}</p>)}
     </section>}
     {syncNote && <p className="sync-note" role="status">{syncNote.text}{syncNote.kind === 'pairing' && syncNote.failure && <><br />{syncNote.failure.text}</>}</p>}
+    {storageWarnings.map((warning) => <p role="alert" key={warning}>{warning}</p>)}
     {reconcileWarnings.map((warning) => <p role="alert" key={warning}>{warning}</p>)}
     {!ready && <p role="alert">{STORAGE_UNREADY}</p>}
     {(storageFailure || readiness.status === 'failed' || readiness.status === 'closed') && <p role="alert">{STORAGE_UNAVAILABLE}</p>}

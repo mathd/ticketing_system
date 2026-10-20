@@ -181,3 +181,36 @@ export async function measureStrictCommits({ browser, BASE, token, fixture, chec
     check(`TKT-559 Chrome ${browser.version()} measured 100 strict mint and 100 strict mark completions with native clocks`, true);
   } finally { await context.close(); }
 }
+
+export async function timedExit({ browser, BASE, token, fixture, check }) {
+  const context = await timedContext(browser, BASE), page = await context.newPage();
+  const batches = [];
+  page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/reconciliations')) batches.push(request.postDataJSON().occurrences); });
+  try {
+    await pair(page, token);
+    const control = fixture();
+    await page.route(scanPath, route => route.fulfill({ status: 503, body: '{}' }));
+    await submit(page, control.credential); await page.getByRole('heading', { name: 'Offline decision', exact: true }).waitFor();
+    await page.waitForFunction(() => window.__tkt558IdbProbe.events.some(event => event.state === 'QUEUED' && event.event === 'complete'));
+    const [queued] = await read(page);
+    await page.unroute(scanPath);
+    await page.getByRole('radio', { name: 'Exit', exact: true }).check();
+    await page.evaluate(() => { window.__tkt559Wait.mode = 'headers'; });
+    const request = page.waitForRequest(request => request.method() === 'POST' && scanPath(request.url()));
+    await submit(page, fixture().credential); const target = (await request).postDataJSON();
+    await page.waitForFunction(() => window.__tkt559Wait.started);
+    await advance(page, 30000);
+    const expected = 'Operator requiredScan sent, answer unconfirmed. Scanner did not open. Access may have recorded this scan. Get an operator; do not admit from this result.Exit result unknown; the holder may leave';
+    await page.getByRole('status', { name: 'Scan result' }).waitFor();
+    assert.equal(await resultText(page), expected);
+    await releaseResponse(page);
+    await page.waitForFunction(id => window.__tkt558IdbProbe.events.some(event => event.id === id && event.state === 'RESOLVED' && event.event === 'complete'), target.occurrence_id);
+    const row = (await read(page)).find(row => row.occurrenceId === target.occurrence_id);
+    assert.equal(row.direction, 'exit'); assert.equal(row.localOutcome.cause, 'stopped');
+    await page.getByRole('button', { name: 'Sync queued scans' }).click();
+    await page.getByText('Synced 1 offline scan(s).', { exact: true }).waitFor();
+    assert.deepEqual(batches.flat(), [{ occurrence_id: queued.occurrenceId, qr_payload: queued.qrPayload, occurred_at: queued.occurredAt, event_type: 'entry' }]);
+    assert.equal(await resultText(page), expected);
+    check('TKT-399 host Chrome timed Exit publishes exact sent-unknown at 30000ms and syncs only its queued control', true);
+  } finally { await context.close(); }
+}

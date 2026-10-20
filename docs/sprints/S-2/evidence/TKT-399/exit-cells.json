@@ -1,0 +1,2892 @@
+{
+  "rows": {
+    "R01-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "already_redeemed",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        }
+      }
+    },
+    "R02-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "entry_limit_reached",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        }
+      }
+    },
+    "R03-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "exit_required",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        }
+      }
+    },
+    "R04-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "not_inside",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        }
+      }
+    },
+    "R05-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "exit_not_applicable",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        }
+      }
+    },
+    "R06-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "invalid_credential",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        }
+      }
+    },
+    "R07-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "revoked",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        }
+      }
+    },
+    "R08-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "refunded",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        }
+      }
+    },
+    "R09-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "exchanged",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        }
+      }
+    },
+    "R10-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "exit_unverified",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        }
+      }
+    },
+    "R11-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "integrity_quarantined",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        }
+      }
+    },
+    "R12-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "integrity_operator_controlled",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        }
+      }
+    },
+    "R13-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "occurrence_required",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        }
+      }
+    },
+    "R14-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "unknown_future_reason",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        }
+      }
+    },
+    "R15-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "invalid_occurrence",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        }
+      }
+    },
+    "R16-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "occurrence_collision",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and same decision",
+            "queued positive control",
+            "exact Exit recovery and reconciliation after actual page loss only"
+          ]
+        }
+      }
+    },
+    "U01-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "401",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        }
+      }
+    },
+    "R17-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "409-unreadable / 422-invalid",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        }
+      }
+    },
+    "U02-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "200-invalid",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        }
+      }
+    },
+    "U03-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "500 / 501 / 505 / 599 / status",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        }
+      }
+    },
+    "X01-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "sent plain-error / dom-error / type-error; separate beforeSend cases",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral sent-result region; before-send region is a separate fixture",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral sent-result region; before-send region is a separate fixture",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral sent-result region; before-send region is a separate fixture",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral sent-result region; before-send region is a separate fixture",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral sent-result region; before-send region is a separate fixture",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral sent-result region; before-send region is a separate fixture",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        }
+      },
+      "beforeSend": {
+        "fixture": "web/scanner/src/App.exit-results.test.tsx",
+        "cases": [
+          "clock capture throws before registration, no row or request",
+          "invalid Request header after completed mint, no request, exact Exit local_failure terminal row"
+        ],
+        "presentation": "full neutral App result says Exit not recorded; the holder may leave"
+      }
+    },
+    "G01-X": {
+      "fixture": "web/scanner/src/App.exit-matrix.test.tsx",
+      "family": "mark-failed",
+      "cells": {
+        "S": {
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "F": {
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "C": {
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "T": {
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "V": {
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        },
+        "P": {
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full neutral result",
+            "exact captured row and first latch",
+            "queued positive control",
+            "page-loss recovery split"
+          ]
+        }
+      }
+    },
+    "O01-X": {
+      "classification": [
+        "web/scanner/src/entry-scan.timing.test.ts",
+        "web/scanner/src/App.transactions.test.tsx",
+        "web/scanner/src/App.latch-matrix.test.tsx",
+        "web/scanner/src/App.exit.test.tsx"
+      ],
+      "cells": {
+        "S": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "F": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "C": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "T": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "V": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "P": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        }
+      }
+    },
+    "O02-X": {
+      "classification": [
+        "web/scanner/src/entry-scan.timing.test.ts",
+        "web/scanner/src/App.transactions.test.tsx",
+        "web/scanner/src/App.latch-matrix.test.tsx",
+        "web/scanner/src/App.exit.test.tsx"
+      ],
+      "cells": {
+        "S": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "F": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "C": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "T": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "V": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "P": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        }
+      }
+    },
+    "L02-X": {
+      "classification": [
+        "web/scanner/src/entry-scan.timing.test.ts",
+        "web/scanner/src/App.transactions.test.tsx",
+        "web/scanner/src/App.latch-matrix.test.tsx",
+        "web/scanner/src/App.exit.test.tsx",
+        "web/scanner/src/App.exit-results.test.tsx"
+      ],
+      "cells": {
+        "S": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "F": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "C": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "T": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "V": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "P": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        }
+      }
+    },
+    "L03-X": {
+      "classification": [
+        "web/scanner/src/entry-scan.timing.test.ts",
+        "web/scanner/src/App.transactions.test.tsx",
+        "web/scanner/src/App.latch-matrix.test.tsx",
+        "web/scanner/src/App.exit.test.tsx",
+        "web/scanner/src/App.exit-results.test.tsx"
+      ],
+      "cells": {
+        "S": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "F": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "C": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "T": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "V": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "P": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        }
+      }
+    },
+    "L05-X": {
+      "classification": [
+        "web/scanner/src/entry-scan.timing.test.ts",
+        "web/scanner/src/App.transactions.test.tsx",
+        "web/scanner/src/App.latch-matrix.test.tsx",
+        "web/scanner/src/App.exit.test.tsx",
+        "web/scanner/src/App.exit-results.test.tsx"
+      ],
+      "cells": {
+        "S": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "F": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "C": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "T": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "V": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "P": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        }
+      }
+    },
+    "C01-X": {
+      "classification": [
+        "web/scanner/src/entry-scan.timing.test.ts",
+        "web/scanner/src/App.transactions.test.tsx",
+        "web/scanner/src/App.latch-matrix.test.tsx",
+        "web/scanner/src/App.exit.test.tsx",
+        "web/scanner/src/scan-result.exit.test.ts"
+      ],
+      "cells": {
+        "S": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "F": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "C": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "T": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "V": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "P": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        }
+      },
+      "presentationScope": "Full sent/unsent cancelled presentation is asserted at the presenter tier, composed with controller captured-context tests. Pairing reset clears the transient App region; no persistent cancellation region is claimed."
+    },
+    "S02-X": {
+      "classification": [
+        "web/scanner/src/entry-scan.timing.test.ts",
+        "web/scanner/src/App.transactions.test.tsx",
+        "web/scanner/src/App.latch-matrix.test.tsx",
+        "web/scanner/src/App.exit.test.tsx"
+      ],
+      "cells": {
+        "S": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "S"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "F": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "F-throw",
+            "F-abort"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "C": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "C"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "T": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "T"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "V": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "V"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        },
+        "P": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "caseColumns": [
+            "P-committed",
+            "P-uncommitted"
+          ],
+          "assertions": [
+            "full captured Exit row after classification",
+            "same owner across replacement",
+            "live owner protected after lease expiry",
+            "repair before version close",
+            "separate page-loss recovery",
+            "positive Entry queue and exact Exit serializer eligibility"
+          ]
+        }
+      }
+    },
+    "A01-X": {
+      "classification": [
+        "web/scanner/src/App.guards.test.tsx",
+        "web/scanner/src/App.transactions.test.tsx",
+        "web/scanner/src/entry-scan.timing.test.ts"
+      ],
+      "cells": {
+        "S": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        },
+        "F": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        },
+        "C": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        },
+        "T": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        },
+        "V": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        },
+        "P": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        }
+      },
+      "scope": "Shared state invariants compose with the App producer assertions. The store cell does not simulate every accepted-response arrival order."
+    },
+    "D01-X": {
+      "classification": [
+        "web/scanner/src/App.guards.test.tsx",
+        "web/scanner/src/App.transactions.test.tsx",
+        "web/scanner/src/entry-scan.timing.test.ts"
+      ],
+      "cells": {
+        "S": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        },
+        "F": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        },
+        "C": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        },
+        "T": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        },
+        "V": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        },
+        "P": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        }
+      },
+      "scope": "Shared state invariants compose with the App producer assertions. The store cell does not simulate every accepted-response arrival order."
+    },
+    "D02-X": {
+      "classification": [
+        "web/scanner/src/App.guards.test.tsx",
+        "web/scanner/src/App.transactions.test.tsx",
+        "web/scanner/src/entry-scan.timing.test.ts"
+      ],
+      "cells": {
+        "S": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        },
+        "F": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        },
+        "C": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        },
+        "T": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        },
+        "V": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        },
+        "P": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        }
+      },
+      "scope": "Shared state invariants compose with the App producer assertions. The store cell does not simulate every accepted-response arrival order."
+    },
+    "L04-X": {
+      "classification": [
+        "web/scanner/src/App.guards.test.tsx",
+        "web/scanner/src/App.transactions.test.tsx",
+        "web/scanner/src/entry-scan.timing.test.ts",
+        "web/scanner/src/App.exit-results.test.tsx"
+      ],
+      "cells": {
+        "S": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        },
+        "F": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        },
+        "C": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        },
+        "T": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        },
+        "V": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        },
+        "P": {
+          "fixture": "web/scanner/src/occurrence-exit-cells.test.ts",
+          "assertions": [
+            "committed mark remains identical through C/T/V/P",
+            "actual late queue repair refuses a committed mark",
+            "App replay true/false/absent distinguishes own ACT from missing/foreign/ineligible",
+            "aborted mark follows G01; late completion follows L04"
+          ]
+        }
+      },
+      "scope": "Shared state invariants compose with the App producer assertions. The store cell does not simulate every accepted-response arrival order."
+    },
+    "S01-X": {
+      "classification": [
+        "web/scanner/src/App.exit.test.tsx",
+        "web/scanner/src/entry-scan.timing.test.ts"
+      ],
+      "cells": {
+        "S": {
+          "assertions": [
+            "no new row or request",
+            "no delayed presentation replay",
+            "known listed Exit stays no-row",
+            "unknown lookup after close/version reset uses storage-unready or prior deadline"
+          ],
+          "writeInjection": "No outcome write exists. F injection is protocol-inapplicable; mint/register/fetch traps prove non-use."
+        },
+        "F": {
+          "assertions": [
+            "no new row or request",
+            "no delayed presentation replay",
+            "known listed Exit stays no-row",
+            "unknown lookup after close/version reset uses storage-unready or prior deadline"
+          ],
+          "writeInjection": "No outcome write exists. F injection is protocol-inapplicable; mint/register/fetch traps prove non-use."
+        },
+        "C": {
+          "assertions": [
+            "no new row or request",
+            "no delayed presentation replay",
+            "known listed Exit stays no-row",
+            "unknown lookup after close/version reset uses storage-unready or prior deadline"
+          ],
+          "writeInjection": "No outcome write exists. F injection is protocol-inapplicable; mint/register/fetch traps prove non-use."
+        },
+        "T": {
+          "assertions": [
+            "no new row or request",
+            "no delayed presentation replay",
+            "known listed Exit stays no-row",
+            "unknown lookup after close/version reset uses storage-unready or prior deadline"
+          ],
+          "writeInjection": "No outcome write exists. F injection is protocol-inapplicable; mint/register/fetch traps prove non-use."
+        },
+        "V": {
+          "assertions": [
+            "no new row or request",
+            "no delayed presentation replay",
+            "known listed Exit stays no-row",
+            "unknown lookup after close/version reset uses storage-unready or prior deadline"
+          ],
+          "writeInjection": "No outcome write exists. F injection is protocol-inapplicable; mint/register/fetch traps prove non-use."
+        },
+        "P": {
+          "assertions": [
+            "no new row or request",
+            "no delayed presentation replay",
+            "known listed Exit stays no-row",
+            "unknown lookup after close/version reset uses storage-unready or prior deadline"
+          ],
+          "writeInjection": "No outcome write exists. F injection is protocol-inapplicable; mint/register/fetch traps prove non-use."
+        }
+      }
+    },
+    "L01-X": {
+      "classification": [
+        "web/scanner/src/App.exit.test.tsx",
+        "web/scanner/src/entry-scan.timing.test.ts",
+        "web/scanner/src/App.exit-results.test.tsx"
+      ],
+      "cells": {
+        "S": {
+          "assertions": [
+            "no new row or request",
+            "no delayed presentation replay",
+            "known listed Exit stays no-row",
+            "unknown lookup after close/version reset uses storage-unready or prior deadline"
+          ],
+          "writeInjection": "No outcome write exists. F injection is protocol-inapplicable; mint/register/fetch traps prove non-use."
+        },
+        "F": {
+          "assertions": [
+            "no new row or request",
+            "no delayed presentation replay",
+            "known listed Exit stays no-row",
+            "unknown lookup after close/version reset uses storage-unready or prior deadline"
+          ],
+          "writeInjection": "No outcome write exists. F injection is protocol-inapplicable; mint/register/fetch traps prove non-use."
+        },
+        "C": {
+          "assertions": [
+            "no new row or request",
+            "no delayed presentation replay",
+            "known listed Exit stays no-row",
+            "unknown lookup after close/version reset uses storage-unready or prior deadline"
+          ],
+          "writeInjection": "No outcome write exists. F injection is protocol-inapplicable; mint/register/fetch traps prove non-use."
+        },
+        "T": {
+          "assertions": [
+            "no new row or request",
+            "no delayed presentation replay",
+            "known listed Exit stays no-row",
+            "unknown lookup after close/version reset uses storage-unready or prior deadline"
+          ],
+          "writeInjection": "No outcome write exists. F injection is protocol-inapplicable; mint/register/fetch traps prove non-use."
+        },
+        "V": {
+          "assertions": [
+            "no new row or request",
+            "no delayed presentation replay",
+            "known listed Exit stays no-row",
+            "unknown lookup after close/version reset uses storage-unready or prior deadline"
+          ],
+          "writeInjection": "No outcome write exists. F injection is protocol-inapplicable; mint/register/fetch traps prove non-use."
+        },
+        "P": {
+          "assertions": [
+            "no new row or request",
+            "no delayed presentation replay",
+            "known listed Exit stays no-row",
+            "unknown lookup after close/version reset uses storage-unready or prior deadline"
+          ],
+          "writeInjection": "No outcome write exists. F injection is protocol-inapplicable; mint/register/fetch traps prove non-use."
+        }
+      }
+    },
+    "V04-X": {
+      "classification": [
+        "web/scanner/src/App.exit.test.tsx",
+        "web/scanner/src/entry-scan.timing.test.ts"
+      ],
+      "cells": {
+        "S": {
+          "assertions": [
+            "no new row or request",
+            "no delayed presentation replay",
+            "known listed Exit stays no-row",
+            "unknown lookup after close/version reset uses storage-unready or prior deadline"
+          ],
+          "writeInjection": "No outcome write exists. F injection is protocol-inapplicable; mint/register/fetch traps prove non-use."
+        },
+        "F": {
+          "assertions": [
+            "no new row or request",
+            "no delayed presentation replay",
+            "known listed Exit stays no-row",
+            "unknown lookup after close/version reset uses storage-unready or prior deadline"
+          ],
+          "writeInjection": "No outcome write exists. F injection is protocol-inapplicable; mint/register/fetch traps prove non-use."
+        },
+        "C": {
+          "assertions": [
+            "no new row or request",
+            "no delayed presentation replay",
+            "known listed Exit stays no-row",
+            "unknown lookup after close/version reset uses storage-unready or prior deadline"
+          ],
+          "writeInjection": "No outcome write exists. F injection is protocol-inapplicable; mint/register/fetch traps prove non-use."
+        },
+        "T": {
+          "assertions": [
+            "no new row or request",
+            "no delayed presentation replay",
+            "known listed Exit stays no-row",
+            "unknown lookup after close/version reset uses storage-unready or prior deadline"
+          ],
+          "writeInjection": "No outcome write exists. F injection is protocol-inapplicable; mint/register/fetch traps prove non-use."
+        },
+        "V": {
+          "assertions": [
+            "no new row or request",
+            "no delayed presentation replay",
+            "known listed Exit stays no-row",
+            "unknown lookup after close/version reset uses storage-unready or prior deadline"
+          ],
+          "writeInjection": "No outcome write exists. F injection is protocol-inapplicable; mint/register/fetch traps prove non-use."
+        },
+        "P": {
+          "assertions": [
+            "no new row or request",
+            "no delayed presentation replay",
+            "known listed Exit stays no-row",
+            "unknown lookup after close/version reset uses storage-unready or prior deadline"
+          ],
+          "writeInjection": "No outcome write exists. F injection is protocol-inapplicable; mint/register/fetch traps prove non-use."
+        }
+      }
+    },
+    "W01-X": {
+      "classification": [
+        "web/scanner/src/occurrence-exit.test.ts",
+        "web/scanner/src/App.exit.test.tsx",
+        "test/browser/lib/scanner-exit.mjs",
+        "test/browser/lib/scanner-predecessor.mjs"
+      ],
+      "cells": {
+        "S": {
+          "assertions": [
+            "normal Exit captured before wait",
+            "actual page destroy/reload, not connection close, enables uncertainty recovery",
+            "full second-page and retired notice retains Exit",
+            "exact old client excludes Exit without rewrite"
+          ]
+        },
+        "F": {
+          "assertions": [
+            "normal Exit captured before wait",
+            "actual page destroy/reload, not connection close, enables uncertainty recovery",
+            "full second-page and retired notice retains Exit",
+            "exact old client excludes Exit without rewrite"
+          ]
+        },
+        "C": {
+          "assertions": [
+            "normal Exit captured before wait",
+            "actual page destroy/reload, not connection close, enables uncertainty recovery",
+            "full second-page and retired notice retains Exit",
+            "exact old client excludes Exit without rewrite"
+          ]
+        },
+        "T": {
+          "assertions": [
+            "normal Exit captured before wait",
+            "actual page destroy/reload, not connection close, enables uncertainty recovery",
+            "full second-page and retired notice retains Exit",
+            "exact old client excludes Exit without rewrite"
+          ]
+        },
+        "V": {
+          "assertions": [
+            "normal Exit captured before wait",
+            "actual page destroy/reload, not connection close, enables uncertainty recovery",
+            "full second-page and retired notice retains Exit",
+            "exact old client excludes Exit without rewrite"
+          ]
+        },
+        "P": {
+          "assertions": [
+            "normal Exit captured before wait",
+            "actual page destroy/reload, not connection close, enables uncertainty recovery",
+            "full second-page and retired notice retains Exit",
+            "exact old client excludes Exit without rewrite"
+          ]
+        }
+      }
+    },
+    "Z01-X": {
+      "classification": [
+        "web/scanner/src/App.latch-matrix.test.tsx",
+        "web/scanner/src/entry-scan.timing.test.ts",
+        "web/scanner/src/occurrence-exit-cells.test.ts"
+      ],
+      "cells": {
+        "S": {
+          "assertions": [
+            "first decision and whole result survive later producers",
+            "same target repairs only",
+            "ACT late repair is refused",
+            "actual page loss preserves durable state or pins uncertain recovery"
+          ]
+        },
+        "F": {
+          "assertions": [
+            "first decision and whole result survive later producers",
+            "same target repairs only",
+            "ACT late repair is refused",
+            "actual page loss preserves durable state or pins uncertain recovery"
+          ]
+        },
+        "C": {
+          "assertions": [
+            "first decision and whole result survive later producers",
+            "same target repairs only",
+            "ACT late repair is refused",
+            "actual page loss preserves durable state or pins uncertain recovery"
+          ]
+        },
+        "T": {
+          "assertions": [
+            "first decision and whole result survive later producers",
+            "same target repairs only",
+            "ACT late repair is refused",
+            "actual page loss preserves durable state or pins uncertain recovery"
+          ]
+        },
+        "V": {
+          "assertions": [
+            "first decision and whole result survive later producers",
+            "same target repairs only",
+            "ACT late repair is refused",
+            "actual page loss preserves durable state or pins uncertain recovery"
+          ]
+        },
+        "P": {
+          "assertions": [
+            "first decision and whole result survive later producers",
+            "same target repairs only",
+            "ACT late repair is refused",
+            "actual page loss preserves durable state or pins uncertain recovery"
+          ]
+        }
+      }
+    }
+  },
+  "columns": [
+    "S",
+    "F",
+    "C",
+    "T",
+    "V",
+    "P"
+  ],
+  "method": "Composed evidence: App/controller classification and full result assertions plus production-store column and ownership assertions. References identify shared mechanisms; this is not a claim that every producer/column pair ran end to end. Round 8 adds exact presenter assertions for transient cancellation; the App clears that transient region on pairing reset. Persistent no-send, late accepted and local-failure results use full App-region assertions with production storage.",
+  "protocolExclusions": [
+    "Offline queue before any send is not an O01/O02 producer.",
+    "No storage API executes before the queue latch; a pre-latch storage injection is inapplicable under TKT-558 D24.",
+    "No outcome write exists for S01/L01/V04 no-row paths.",
+    "Connection close is not page loss.",
+    "Actual page loss before a terminal commit may recover a false Exit fact; live-owner no-sync assertions do not erase that residual."
+  ]
+}

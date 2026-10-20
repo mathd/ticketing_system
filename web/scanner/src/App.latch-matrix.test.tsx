@@ -13,7 +13,7 @@ afterEach(() => { cleanup(); destroyAllPages(); localStorage.clear(); vi.restore
 const families = ['U01','denial-known','denial-unknown','O01','O02','local-refusal','U02','U03','X01','G01','S02','C01'] as const
 const producers = ['exception','pairing','unexpected-close','versionchange','deletion','repair','renewal'] as const
 const modes = ['held','throw','abort'] as const
-const matrix = families.flatMap(family => producers.flatMap(producer => modes.map(mode => ({ family,producer,mode }))))
+const matrix = (['entry', 'exit'] as const).flatMap(direction => families.filter(family => direction === 'entry' || family !== 'local-refusal').flatMap(family => producers.flatMap(producer => modes.map(mode => ({ direction,family,producer,mode })))))
 // The ST case manifest lists the protocol exclusions. These AP cells execute the
 // controller and preserve its whole result region. A retry or renewal does not
 // propose a new outcome and is a control. Competing writes complete after a hold.
@@ -36,7 +36,7 @@ async function changedConnection(page:TestPage, operation:'unexpected-close'|'ve
   }
   await act(async()=>{page.storage.retry()});await tickReady(page)
 }
-it.each(matrix)('AP I3-10 $family / $producer / $mode retains its first latch and published region',async({family,producer,mode})=>{
+it.each(matrix)('AP I3-10 $direction $family / $producer / $mode retains its first latch and published region',async({direction,family,producer,mode})=>{
   const dbName=`app-latch-${crypto.randomUUID()}`
   const page=createTestPage({dbName,now:()=>1000,renewalMs:producer==='renewal'?5:3600000})
   runtime.storage=page.storage;await page.ready();localStorage.setItem('scanner.device-token','token-a')
@@ -76,7 +76,7 @@ it.each(matrix)('AP I3-10 $family / $producer / $mode retains its first latch an
     payload=`e30.${btoa(JSON.stringify({tid:ticketId})).replace(/=/g,'')}.sig`
   }
   try{
-    render(<App/>);fireEvent.change(screen.getByLabelText('Ticket credential'),{target:{value:payload}})
+    render(<App/>);fireEvent.click(screen.getByRole('radio',{name:direction==='entry'?'Entry':'Exit'}));fireEvent.change(screen.getByLabelText('Ticket credential'),{target:{value:payload}})
     fireEvent.submit(screen.getByRole('form',{name:'Ticket scan'}))
     await waitFor(()=>expect(id).not.toBe(''))
     if(family==='C01'){await waitFor(()=>expect(finishReply).toBeDefined());await act(async()=>reset())}
@@ -105,13 +105,13 @@ it.each(matrix)('AP I3-10 $family / $producer / $mode retains its first latch an
   }finally{armed=false;hold?.release();finishReply?.(new Response('{}',{status:500}));instrument.restore()}
 })
 
-it.each(producers)('AP I3-10 committed ACT / %s performs no new target write',async producer=>{
+it.each((['entry','exit'] as const).flatMap(direction=>producers.map(producer=>({direction,producer}))))('AP I3-10 committed $direction ACT / $producer performs no new target write',async ({direction,producer})=>{
   const dbName=`app-act-${crypto.randomUUID()}`
   const page=createTestPage({dbName,now:()=>1000,renewalMs:producer==='renewal'?5:3600000});runtime.storage=page.storage;await page.ready()
   localStorage.setItem('scanner.device-token','token-a')
   vi.stubGlobal('fetch',vi.fn(async(input:Request|string)=>new Response(JSON.stringify(typeof input==='string'?{ticket_ids:[],next_cursor:null}:{decision:'accepted',scanned_at:'2026-10-18T12:34:56.789Z'}))))
-  render(<App/>);fireEvent.change(screen.getByLabelText('Ticket credential'),{target:{value:'credential'}});fireEvent.submit(screen.getByRole('form',{name:'Ticket scan'}))
-  await screen.findByRole('heading',{name:'Accepted'})
+  render(<App/>);fireEvent.click(screen.getByRole('radio',{name:direction==='entry'?'Entry':'Exit'}));fireEvent.change(screen.getByLabelText('Ticket credential'),{target:{value:'credential'}});fireEvent.submit(screen.getByRole('form',{name:'Ticket scan'}))
+  await screen.findByRole('heading',{name:direction==='entry'?'Accepted':'Exit recorded'})
   const [id]=page.coordinator.pendingTargets()
   expect(id).toBeUndefined()
   const db=page.store().db
