@@ -1,0 +1,10 @@
+$ vitest run src/App.legacy.test.tsx -t 'keeps completed-batch counts separate'
+
+ RUN  v4.1.10 /home/mathieu/sources/ticketing_system.TKT-551-sync-report/web/scanner
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 3 skipped (4)
+   Start at  09:23:21
+   Duration  1.04s (transform 196ms, setup 34ms, import 268ms, tests 156ms, environment 487ms)
+

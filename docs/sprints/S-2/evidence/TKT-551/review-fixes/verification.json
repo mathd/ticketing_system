@@ -1,0 +1,370 @@
+{
+  "reviewedHead": "72f032957e84c3ad085dadafc90adc6f29d2f8bb",
+  "fixHead": "ed16ba55b1afff90b4266f011c94312674bdd26a",
+  "author": "gpt-6.1-sol",
+  "effort": "high",
+  "productSourceChanged": false,
+  "newMutationAssertionKills": 5,
+  "oldLegacyAssertionBlindDemonstration": true,
+  "focusedTests": 54,
+  "restoredRuns": 8,
+  "testsPerFullRun": 1863,
+  "filesPerFullRun": 43,
+  "timingReceipt": "aggregate-test-timings.json",
+  "verificationScope": "Review-fix tests and documentation; original 15 mutation receipts remain in parent directory and describe their original artifact.",
+  "runs": [
+    {
+      "operation": "focused-green",
+      "ticket": "TKT-551",
+      "start": "2026-10-20T13:23:08.719869+00:00",
+      "end": "2026-10-20T13:23:12.443851+00:00",
+      "seconds": 3.7239788610022515,
+      "exitCode": 0,
+      "expectedExit": 0,
+      "head": "ed16ba55b1afff90b4266f011c94312674bdd26a",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.sync.test.tsx",
+        "src/App.legacy.test.tsx",
+        "src/App.reconcile.test.tsx"
+      ],
+      "receipt": "/tmp/sdlc-S-2/TKT-551-review-fix-verification/focused-green.log",
+      "logSha256": "0c0590e1fb068a78312a82331252cd9677d39b97eac3b9bb3489ff6b76538d8f"
+    },
+    {
+      "operation": "build",
+      "ticket": "TKT-551",
+      "start": "2026-10-20T13:23:12.444120+00:00",
+      "end": "2026-10-20T13:23:13.411339+00:00",
+      "seconds": 0.9672262910171412,
+      "exitCode": 0,
+      "expectedExit": 0,
+      "head": "ed16ba55b1afff90b4266f011c94312674bdd26a",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "build"
+      ],
+      "receipt": "/tmp/sdlc-S-2/TKT-551-review-fix-verification/build.log",
+      "logSha256": "c393bba18e41c5572042fc69aff6dedb6000e3cdacb0268bea2bac9f21402e48"
+    },
+    {
+      "operation": "lint",
+      "ticket": "TKT-551",
+      "start": "2026-10-20T13:23:13.411555+00:00",
+      "end": "2026-10-20T13:23:13.927629+00:00",
+      "seconds": 0.5160800580051728,
+      "exitCode": 0,
+      "expectedExit": 0,
+      "head": "ed16ba55b1afff90b4266f011c94312674bdd26a",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "lint"
+      ],
+      "receipt": "/tmp/sdlc-S-2/TKT-551-review-fix-verification/lint.log",
+      "logSha256": "d4a09b61560776ae8feee6a490738c8d5748a904be5cbbc1d00a2d92a4587484"
+    },
+    {
+      "operation": "M16-empty-read-warning-retention",
+      "ticket": "TKT-551",
+      "start": "2026-10-20T13:23:13.928031+00:00",
+      "end": "2026-10-20T13:23:15.646808+00:00",
+      "seconds": 1.7187824160209857,
+      "exitCode": 1,
+      "expectedExit": 1,
+      "head": "ed16ba55b1afff90b4266f011c94312674bdd26a",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.sync.test.tsx",
+        "-t",
+        "keeps the final report and rejection warning"
+      ],
+      "receipt": "/tmp/sdlc-S-2/TKT-551-review-fix-verification/M16-empty-read-warning-retention.log",
+      "logSha256": "d0fca2ba73733bdfa15659caa135c56550aa102c885fc85ed5e3b1c5305a5e42"
+    },
+    {
+      "operation": "M17-empty-read-final-note-retention",
+      "ticket": "TKT-551",
+      "start": "2026-10-20T13:23:15.652791+00:00",
+      "end": "2026-10-20T13:23:17.373425+00:00",
+      "seconds": 1.7206388400518335,
+      "exitCode": 1,
+      "expectedExit": 1,
+      "head": "ed16ba55b1afff90b4266f011c94312674bdd26a",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.sync.test.tsx",
+        "-t",
+        "keeps the final report and rejection warning"
+      ],
+      "receipt": "/tmp/sdlc-S-2/TKT-551-review-fix-verification/M17-empty-read-final-note-retention.log",
+      "logSha256": "73e52a46ff570c5420773d9dc0d86c5e72f817b284175117799a810ebfd6ffbc"
+    },
+    {
+      "operation": "M18-exit-fixture-observation",
+      "ticket": "TKT-551",
+      "start": "2026-10-20T13:23:17.381740+00:00",
+      "end": "2026-10-20T13:23:19.000109+00:00",
+      "seconds": 1.6183732089702971,
+      "exitCode": 1,
+      "expectedExit": 1,
+      "head": "ed16ba55b1afff90b4266f011c94312674bdd26a",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.sync.test.tsx",
+        "-t",
+        "counts every result.*false"
+      ],
+      "receipt": "/tmp/sdlc-S-2/TKT-551-review-fix-verification/M18-exit-fixture-observation.log",
+      "logSha256": "3708a594c5d0c572c688f212919f5631d0189e60a50cff0ca4be765d249f3785"
+    },
+    {
+      "operation": "M19-refusal-fixture-observation",
+      "ticket": "TKT-551",
+      "start": "2026-10-20T13:23:19.007097+00:00",
+      "end": "2026-10-20T13:23:20.575474+00:00",
+      "seconds": 1.5683759750099853,
+      "exitCode": 1,
+      "expectedExit": 1,
+      "head": "ed16ba55b1afff90b4266f011c94312674bdd26a",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.sync.test.tsx",
+        "-t",
+        "counts every result.*false"
+      ],
+      "receipt": "/tmp/sdlc-S-2/TKT-551-review-fix-verification/M19-refusal-fixture-observation.log",
+      "logSha256": "94547d768217ea7901ed6080dfcef78a71b576a5c82eefc0a3cee66dde65012a"
+    },
+    {
+      "operation": "M20-old-slice-misses-extra-warning",
+      "ticket": "TKT-551",
+      "start": "2026-10-20T13:23:20.581779+00:00",
+      "end": "2026-10-20T13:23:22.250402+00:00",
+      "seconds": 1.6686237039975822,
+      "exitCode": 0,
+      "expectedExit": 0,
+      "head": "ed16ba55b1afff90b4266f011c94312674bdd26a",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.legacy.test.tsx",
+        "-t",
+        "keeps completed-batch counts separate"
+      ],
+      "receipt": "/tmp/sdlc-S-2/TKT-551-review-fix-verification/M20-old-slice-misses-extra-warning.log",
+      "logSha256": "482869c22db8f70660c34f1ce65a7febf1e4bbebbb9d013c7f68efb5a566949e"
+    },
+    {
+      "operation": "M20-exact-alert-list-catches-extra-warning",
+      "ticket": "TKT-551",
+      "start": "2026-10-20T13:23:22.250698+00:00",
+      "end": "2026-10-20T13:23:24.057036+00:00",
+      "seconds": 1.769450555962976,
+      "exitCode": 1,
+      "expectedExit": 1,
+      "head": "ed16ba55b1afff90b4266f011c94312674bdd26a",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "src/App.legacy.test.tsx",
+        "-t",
+        "keeps completed-batch counts separate"
+      ],
+      "receipt": "/tmp/sdlc-S-2/TKT-551-review-fix-verification/M20-exact-alert-list-catches-extra-warning.log",
+      "logSha256": "a2b271f3ba132db972f5aab50c4b72ef4f348377d8278d78fd41ce9ce3bc2fc1"
+    },
+    {
+      "operation": "restored-full-01",
+      "ticket": "TKT-551",
+      "start": "2026-10-20T13:23:24.062780+00:00",
+      "end": "2026-10-20T13:23:45.049042+00:00",
+      "seconds": 20.986265512008686,
+      "exitCode": 0,
+      "expectedExit": 0,
+      "head": "ed16ba55b1afff90b4266f011c94312674bdd26a",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test",
+        "--reporter=default",
+        "--reporter=json",
+        "--outputFile=/tmp/sdlc-S-2/TKT-551-review-fix-verification/restored-full-01.json"
+      ],
+      "receipt": "/tmp/sdlc-S-2/TKT-551-review-fix-verification/restored-full-01.log",
+      "logSha256": "71876b5c1a2f8cdcb57d1c9e8e766a4d37e04a06cd8d0061d66466a97ec4ed7f"
+    },
+    {
+      "operation": "restored-full-02",
+      "ticket": "TKT-551",
+      "start": "2026-10-20T13:23:45.049436+00:00",
+      "end": "2026-10-20T13:24:06.881835+00:00",
+      "seconds": 21.795027092040982,
+      "exitCode": 0,
+      "expectedExit": 0,
+      "head": "ed16ba55b1afff90b4266f011c94312674bdd26a",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test"
+      ],
+      "receipt": "/tmp/sdlc-S-2/TKT-551-review-fix-verification/restored-full-02.log",
+      "logSha256": "7b0918cf534124ac52320536903a6d1039222ad584d958d68abfb79d1de7b9e4"
+    },
+    {
+      "operation": "restored-full-03",
+      "ticket": "TKT-551",
+      "start": "2026-10-20T13:24:06.882060+00:00",
+      "end": "2026-10-20T13:24:28.018218+00:00",
+      "seconds": 21.097924839006737,
+      "exitCode": 0,
+      "expectedExit": 0,
+      "head": "ed16ba55b1afff90b4266f011c94312674bdd26a",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test"
+      ],
+      "receipt": "/tmp/sdlc-S-2/TKT-551-review-fix-verification/restored-full-03.log",
+      "logSha256": "f467b2c9674f425b045df2dae0335f1a4a9dad7f73a80015ec08e750aec08d8e"
+    },
+    {
+      "operation": "restored-full-04",
+      "ticket": "TKT-551",
+      "start": "2026-10-20T13:24:28.018459+00:00",
+      "end": "2026-10-20T13:24:49.498258+00:00",
+      "seconds": 21.47980660898611,
+      "exitCode": 0,
+      "expectedExit": 0,
+      "head": "ed16ba55b1afff90b4266f011c94312674bdd26a",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test"
+      ],
+      "receipt": "/tmp/sdlc-S-2/TKT-551-review-fix-verification/restored-full-04.log",
+      "logSha256": "26d01876f6dba044c888b458696c97e95a8b4ae80e037bb9a0cc3a55a6cc0965"
+    },
+    {
+      "operation": "restored-full-05",
+      "ticket": "TKT-551",
+      "start": "2026-10-20T13:24:49.498459+00:00",
+      "end": "2026-10-20T13:25:12.133273+00:00",
+      "seconds": 22.599482080026064,
+      "exitCode": 0,
+      "expectedExit": 0,
+      "head": "ed16ba55b1afff90b4266f011c94312674bdd26a",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test"
+      ],
+      "receipt": "/tmp/sdlc-S-2/TKT-551-review-fix-verification/restored-full-05.log",
+      "logSha256": "39d25803c753b472624a3aa6dd0835fed4a08cf49261e1dfb8d69c7c2b781265"
+    },
+    {
+      "operation": "restored-full-06",
+      "ticket": "TKT-551",
+      "start": "2026-10-20T13:25:12.133531+00:00",
+      "end": "2026-10-20T13:25:33.709588+00:00",
+      "seconds": 21.54216761997668,
+      "exitCode": 0,
+      "expectedExit": 0,
+      "head": "ed16ba55b1afff90b4266f011c94312674bdd26a",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test"
+      ],
+      "receipt": "/tmp/sdlc-S-2/TKT-551-review-fix-verification/restored-full-06.log",
+      "logSha256": "2d1c622a93b15e65645970bf0cead654ecd721b83f8d2b1bfa37c8cf36ab394c"
+    },
+    {
+      "operation": "restored-full-07",
+      "ticket": "TKT-551",
+      "start": "2026-10-20T13:25:33.709785+00:00",
+      "end": "2026-10-20T13:25:55.260626+00:00",
+      "seconds": 21.515244828013238,
+      "exitCode": 0,
+      "expectedExit": 0,
+      "head": "ed16ba55b1afff90b4266f011c94312674bdd26a",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test"
+      ],
+      "receipt": "/tmp/sdlc-S-2/TKT-551-review-fix-verification/restored-full-07.log",
+      "logSha256": "541c9f842fcf28dfe1108428d76b75662bff20b1ea51d97baf7d28df3c6911ae"
+    },
+    {
+      "operation": "restored-full-08",
+      "ticket": "TKT-551",
+      "start": "2026-10-20T13:25:55.260828+00:00",
+      "end": "2026-10-20T13:26:17.040318+00:00",
+      "seconds": 21.77949778898619,
+      "exitCode": 0,
+      "expectedExit": 0,
+      "head": "ed16ba55b1afff90b4266f011c94312674bdd26a",
+      "command": [
+        "pnpm",
+        "--filter",
+        "scanner",
+        "test"
+      ],
+      "receipt": "/tmp/sdlc-S-2/TKT-551-review-fix-verification/restored-full-08.log",
+      "logSha256": "87914349933dbfa667c9862bff0a3fb90ed20ab69c81c90c1b81ab59bd899490"
+    }
+  ],
+  "fileHashes": {
+    "M16-empty-read-warning-retention.log": "d0fca2ba73733bdfa15659caa135c56550aa102c885fc85ed5e3b1c5305a5e42",
+    "M17-empty-read-final-note-retention.log": "73e52a46ff570c5420773d9dc0d86c5e72f817b284175117799a810ebfd6ffbc",
+    "M18-exit-fixture-observation.log": "3708a594c5d0c572c688f212919f5631d0189e60a50cff0ca4be765d249f3785",
+    "M19-refusal-fixture-observation.log": "94547d768217ea7901ed6080dfcef78a71b576a5c82eefc0a3cee66dde65012a",
+    "M20-exact-alert-list-catches-extra-warning.log": "a2b271f3ba132db972f5aab50c4b72ef4f348377d8278d78fd41ce9ce3bc2fc1",
+    "M20-old-slice-misses-extra-warning.log": "482869c22db8f70660c34f1ce65a7febf1e4bbebbb9d013c7f68efb5a566949e",
+    "aggregate-test-timings.json": "cae9721cf0325cd4234b6c8dcd607212344926806af468aed474052373dfd09f",
+    "build.log": "c393bba18e41c5572042fc69aff6dedb6000e3cdacb0268bea2bac9f21402e48",
+    "focused-green.log": "0c0590e1fb068a78312a82331252cd9677d39b97eac3b9bb3489ff6b76538d8f",
+    "lint.log": "d4a09b61560776ae8feee6a490738c8d5748a904be5cbbc1d00a2d92a4587484",
+    "restored-full-01.json": "fe79f11ed9858dc2963ee2eaadf26672d927f0aad3be6ef56bf08a47041ecccf",
+    "restored-full-01.log": "71876b5c1a2f8cdcb57d1c9e8e766a4d37e04a06cd8d0061d66466a97ec4ed7f",
+    "restored-full-02.log": "7b0918cf534124ac52320536903a6d1039222ad584d958d68abfb79d1de7b9e4",
+    "restored-full-03.log": "f467b2c9674f425b045df2dae0335f1a4a9dad7f73a80015ec08e750aec08d8e",
+    "restored-full-04.log": "26d01876f6dba044c888b458696c97e95a8b4ae80e037bb9a0cc3a55a6cc0965",
+    "restored-full-05.log": "39d25803c753b472624a3aa6dd0835fed4a08cf49261e1dfb8d69c7c2b781265",
+    "restored-full-06.log": "2d1c622a93b15e65645970bf0cead654ecd721b83f8d2b1bfa37c8cf36ab394c",
+    "restored-full-07.log": "541c9f842fcf28dfe1108428d76b75662bff20b1ea51d97baf7d28df3c6911ae",
+    "restored-full-08.log": "87914349933dbfa667c9862bff0a3fb90ed20ab69c81c90c1b81ab59bd899490",
+    "runs.jsonl": "ae44029b075035b1b719747ea01b26441f5a8b7c1e6e255d353d26a6572b69df",
+    "verify.py": "a446ff55d96a56ffbedd4543be0053df1173da21901c918b330740c86b86fcf9"
+  }
+}
