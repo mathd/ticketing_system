@@ -488,7 +488,8 @@ async function idbContention({ browser, BASE, token, fixture, facts, quarantine 
     await a.getByRole('button', { name: SYNC_BUTTON }).click();
     let seq = await sequenceOf(a);
     const clickAt = seq.findLastIndex((event) => event.kind === 'click' && event.text === SYNC_BUTTON);
-    assert.ok(clickAt > disarmAt, 'the sync click was not recorded after the disarm');
+    // disarmAt is the index of the next recorded event. With no event between the disarm and the click, clickAt === disarmAt.
+    assert.ok(clickAt >= disarmAt, 'the sync click was not recorded at or after the disarm');
     const beforeClick = transactionsOf(seq).filter((view) => view.createdAt >= disarmAt && view.createdAt < clickAt);
     assert.equal(beforeClick.some((view) => (isStrictRepair(view) && !isHeartbeat(view)) || isQueueRead(view) || isRecoveryList(view)), false,
       'a repair or queue read ran between disarm and the actual sync click');
