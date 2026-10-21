@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { forceCloseDatabase } from 'fake-indexeddb'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { StrictMode } from 'react'
+import { Activity, StrictMode } from 'react'
 import App, { reconcileTimeoutMs } from './App'
 import type { CurrentRecord as OccurrenceRecord } from './occurrence-model'
 import type { QueuedEntry } from './occurrence-store'
@@ -64,6 +64,7 @@ const unknownOfflineNote = 'Sync failed: No connection. Any scans saved on this 
 const offlineNote = /Sync failed: No connection\. 1 scan is saved on this device and will be sent on the next sync\. Last successful sync this session: none\./
 const unreadableNote = /Sync failed: The server answered but the reply could not be read\. 1 scan is saved on this device and will be sent on the next sync\. Last successful sync this session: none\./
 const unknownUnreadableNote = 'Sync failed: The server answered but the reply could not be read. Any scans saved on this device will be sent on the next sync. Last successful sync this session: none.'
+const unreadableTwoNote = /Sync failed: The server answered but the reply could not be read\. 2 scans are saved on this device and will be sent on the next sync\. Last successful sync this session: none\./
 // TKT-512 copy. Each message says what did and did not happen. None claims a storage outage.
 const writeDiagnostic = 'The last sync result could not be saved on this device, so that batch was not applied. Scans from that batch that are still queued will be retried on a later sync.'
 const refusedDiagnostic = 'A scan in the last sync batch changed on this device, so that batch was not applied. Scans that are still queued will be retried on a later sync.'
@@ -717,31 +718,42 @@ describe('a failed sync of the offline queue', () => {
   it('a delayed failure correction does not overwrite a newer follow-up failure', async () => {
     render(<App />)
     stubFetch(() => Promise.reject(new TypeError('not yet')))
-    await queueOneScan()
+    await queueOneScan('older-a')
+    await queueOneScan('older-b')
     await readsSettled()
-    const rows = await storedRows() as OccurrenceRecord[]
+    const [rowA, rowB] = await storedRows() as OccurrenceRecord[]
     const held = holdReconciles()
     fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
     const first = await held.next()
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const firstRead = holdNextQueueRead()
-    window.dispatchEvent(new Event('online'))
+    // The first failure's correction reads both rows. That read is held, so its old two-row result can arrive last.
+    const olderCorrection = holdNextQueueRead()
     await act(async () => {
       first.fail(new TypeError('network down'))
-      await firstRead.started
+      await olderCorrection.started
     })
     expect(screen.getByText(checkingOfflineNote)).toBeDefined()
+    // Another tab retires B through a second page on the same database. The follow-up sync sends only A and fails.
+    // Its own correction reads one row.
+    const other = createTestPage({ dbName })
+    await other.ready()
+    await other.store().applyReconcileResults([rowB.occurrenceId], [{ occurrence_id: rowB.occurrenceId, result: 'recorded' }])
+    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
     const second = await held.next()
-    const secondRead = holdNextQueueRead()
+    expect(second.body.occurrences.map((row) => row.occurrence_id)).toStrictEqual([rowA.occurrenceId])
+    const newerCorrection = holdNextQueueRead()
     await act(async () => {
       second.answer(new Response('', { status: 502 }))
-      await secondRead.started
+      await newerCorrection.started
     })
     expect(screen.getByText('Sync failed: The server answered but the reply could not be read. Checking the scans saved on this device…')).toBeDefined()
-    await act(async () => { secondRead.result.resolve(rows) })
+    await act(async () => { newerCorrection.result.resolve([rowA]) })
     expect(screen.getByText(unreadableNote)).toBeDefined()
-    await act(async () => { firstRead.result.resolve([]) })
+    // The older correction now resolves with its two-row snapshot. It must not replace the newer count or failure.
+    await act(async () => { olderCorrection.result.resolve([rowA, rowB]) })
+    await settle()
     expect(screen.getByText(unreadableNote)).toBeDefined()
+    expect(screen.getByText(/^1 queued offline scan awaiting sync\./)).toBeDefined()
+    expect(await storedRows()).toStrictEqual([rowA, terminalRow(rowB, 'recorded')])
   })
 
   it('uses the fresh count when another scan was queued before the failure', async () => {
@@ -1066,6 +1078,41 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       read.result.resolve(rows)
       vi.useRealTimers()
     }
+  })
+
+  it('waiting does not return after a fast initial read, even when the timer passes while the request is held', async () => {
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('not yet')))
+    await queueOneScan()
+    await readsSettled()
+    const [row] = await storedRows() as OccurrenceRecord[]
+    const answer = deferred<Response>()
+    const sent = deferred<{ body: ReconcileBody; signal: AbortSignal }>()
+    const fetchMock = stubFetch((body, init) => {
+      sent.resolve({ body, signal: init.signal! })
+      return answer.promise
+    })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+      // The initial storage work finishes in real time, before any virtual time passes.
+      const request = await sent.promise
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+      expect(screen.queryByText(waitingNote)).toBeNull()
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000) })
+      expect(screen.queryByText(waitingNote)).toBeNull()
+      // 3,000 ms of virtual time stays under the reconcile deadline, so the held request is still open.
+      expect(3_000).toBeLessThan(reconcileTimeoutMs)
+      expect(request.signal.aborted).toBe(false)
+      expect(reconcileCalls(fetchMock)).toBe(1)
+    } finally {
+      vi.useRealTimers()
+      // Release the held response even when an assertion above failed.
+      void sent.promise.then(({ body }) => answer.resolve(recordedResponse(body)))
+    }
+    await screen.findByText('Synced 1 offline scan(s).', {}, { timeout: BOUND_MS })
+    expect(await storedRows()).toStrictEqual([terminalRow(row, 'recorded')])
+    expect(screen.queryByText(waitingNote)).toBeNull()
   })
 
   it('aborts the owned reconcile request on cleanup and does not apply its late response', async () => {
@@ -1400,19 +1447,37 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
 
   describe('T2 observation order and captured failures', () => {
     it('an older read that resolves first publishes, then a newer empty read clears the count and its captured failure', async () => {
-      const row = await failedSyncWithOneRow()
+      render(<App />)
+      stubFetch(() => Promise.reject(new TypeError('not yet')))
+      await queueOneScan('older-a')
+      await queueOneScan('older-b')
+      await readsSettled()
+      const [rowA, rowB] = await storedRows() as OccurrenceRecord[]
+      stubFetch(() => Promise.resolve(new Response('', { status: 502 })))
+      fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+      expect(await screen.findByText(unreadableTwoNote)).toBeDefined()
+      await readsSettled()
+      // Another tab retires B. The older read starts after that and captures only A.
+      await retireElsewhere([rowB])
+      const remaining = (await storedRows() as OccurrenceRecord[]).filter((row) => row.state === 'QUEUED')
+      expect(remaining).toStrictEqual([rowA])
       const older = holdNextQueueRead()
       focusWindow()
       await bounded(older.started, 'older focus read')
+      // Another tab retires A before the newer read starts, so the newer read finds nothing.
+      await retireElsewhere([rowA])
       const newer = holdNextQueueRead()
       focusWindow()
       await bounded(newer.started, 'newer focus read')
-      await act(async () => { older.result.resolve([row]) })
-      await settle()
+      // The older read publishes while the newer read is still held. Its count and failure must change now.
+      await act(async () => { older.result.resolve(remaining) })
+      await waitFor(() => expect(screen.getByText(unreadableNote)).toBeDefined(), { timeout: BOUND_MS })
+      expect(screen.getByText(/^1 queued offline scan awaiting sync\./)).toBeDefined()
       await act(async () => { newer.result.resolve([]) })
       await readsSettled()
       expect(screen.queryByText(/^Sync failed:/)).toBeNull()
       expect(screen.queryByRole('button', { name: 'Sync queued scans' })).toBeNull()
+      expect(await storedRows()).toStrictEqual([terminalRow(rowA, 'recorded'), terminalRow(rowB, 'recorded')])
     })
 
     it('a newer empty read that publishes first is not restored by an older read that later rejects', async () => {
@@ -1712,10 +1777,20 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       commitPairing('cross-tab-token')
       await act(async () => { digest.reject(new Error('digest unavailable')) })
       await settle()
+      // The paired view has no pairing form, so the late local rejection has nowhere to show.
+      expect(screen.queryByLabelText(/pairing token/i)).toBeNull()
       expect(screen.queryByText(pairingError)).toBeNull()
       expect(screen.queryByText(readAlert)).toBeNull()
       expect(screen.queryByRole('button', { name: 'Retry storage' })).toBeNull()
       expect(await screen.findByRole('button', { name: 'Check ticket' })).toBeDefined()
+      // Removing the token shows the pairing form again, and the obsolete rejection must not appear there.
+      // This removal is one synthetic StorageEvent in this window. It is not a second browser tab.
+      localStorage.removeItem('scanner.device-token')
+      tokenEvent(null)
+      expect(await screen.findByLabelText(/pairing token/i)).toBeDefined()
+      expect(screen.queryByText(pairingError)).toBeNull()
+      expect(screen.queryByText(readAlert)).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Retry storage' })).toBeNull()
     })
 
     it('an incompatible batch with a queued sibling applies none of its rows and leaves the sibling queued', async () => {
@@ -1753,9 +1828,14 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       stubFetch((body) => Promise.resolve(recordedResponse(body)))
       fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
       expect(await screen.findByText(writeDiagnostic)).toBeDefined()
+      // The diagnostic alone shows no Retry storage. The page is ready, and no read or repair has failed.
+      expect(screen.queryByRole('button', { name: 'Retry storage' })).toBeNull()
+      expect(screen.queryByText(readAlert)).toBeNull()
+      expect(screen.queryByText(REPAIR_NEEDED_TEXT)).toBeNull()
       focusWindow()
       await readsSettled()
       expect(screen.getByText(writeDiagnostic)).toBeDefined()
+      expect(screen.queryByRole('button', { name: 'Retry storage' })).toBeNull()
       const empty = holdNextQueueRead()
       const fetchMock = stubFetch(() => Promise.reject(new TypeError('must not be called')))
       fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
@@ -1770,6 +1850,9 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
       await readsSettled()
       expect(prelude).toHaveBeenCalledTimes(1)
+      // The failed prelude is a real read error. Its source, not the diagnostic, is what shows Retry storage.
+      expect(screen.getByText(readAlert)).toBeDefined()
+      expect(screen.getByRole('button', { name: 'Retry storage' })).toBeDefined()
       expect(screen.getByText(writeDiagnostic)).toBeDefined()
       commitPairing('replacement-token')
       await readsSettled()
@@ -1837,11 +1920,14 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
         fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
         expect(await screen.findByText(writeDiagnostic)).toBeDefined()
         expect(screen.getByText(REPAIR_NEEDED_TEXT)).toBeDefined()
+        // The coordinator warning is an independent source, so Retry storage shows for it.
+        expect(screen.getByRole('button', { name: 'Retry storage' })).toBeDefined()
         const held = holdReconciles()
         fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
         const request = await held.next()
         await waitFor(() => expect(screen.queryByText(writeDiagnostic)).toBeNull(), { timeout: BOUND_MS })
         expect(screen.getByText(REPAIR_NEEDED_TEXT)).toBeDefined()
+        expect(screen.getByRole('button', { name: 'Retry storage' })).toBeDefined()
         await act(async () => { request.fail(new TypeError('network down')) })
         await waitFor(() => expect(screen.getByText(/^Sync failed: No connection\./)).toBeDefined(), { timeout: BOUND_MS })
         expect(screen.getByText(REPAIR_NEEDED_TEXT)).toBeDefined()
@@ -1995,7 +2081,10 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       await screen.findByText('Synced 1 offline scan(s).', {}, { timeout: BOUND_MS })
     })
 
-    it('a remount during a held wait keeps the new lifecycle waiting, and the old finalizer cannot clear it', async () => {
+    // cleanup and render make a new component. React ignores state updates from an unmounted component, so the old
+    // finalizer cannot change the new wait. This test proves only independent remount behavior. The new wait stays
+    // visible, and obsolete work publishes nothing. The same-component case is in the next test.
+    it('a remount during a held wait keeps the new lifecycle waiting until its own prelude settles', async () => {
       render(<App />)
       stubFetch(() => Promise.reject(new TypeError('not yet')))
       await queueOneScan()
@@ -2022,7 +2111,49 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
         await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
         expect(screen.getByText(waitingNote)).toBeDefined()
       } finally { vi.useRealTimers() }
-      // The old prelude now settles. Its finalizer must leave the new lifecycle's wait in place.
+      // The old prelude now settles. Its component is unmounted, so the new wait stays visible and no obsolete request starts.
+      oldPrelude.release()
+      await settle()
+      expect(screen.getByText(waitingNote)).toBeDefined()
+      expect(sent).toHaveLength(0)
+      newPrelude.release()
+      await waitFor(() => expect(sent).toHaveLength(1), { timeout: BOUND_MS })
+      expect(sent[0].waiting).toBe(false)
+      sent[0].answer(recordedResponse(sent[0].body))
+      await screen.findByText('Synced 1 offline scan(s).', {}, { timeout: BOUND_MS })
+    })
+
+    // A hidden Activity runs the old effect cleanup. Showing it runs a new setup on the same component, so both
+    // lifecycles share one set of state setters. The old finalizer must not clear the new lifecycle's wait.
+    // main.tsx does not render App inside an Activity, so the scanner does not take this path in production.
+    it('a remount during a held wait keeps the new wait when an Activity re-runs effects on the same component', async () => {
+      const view = render(<Activity mode="visible"><App /></Activity>)
+      stubFetch(() => Promise.reject(new TypeError('not yet')))
+      await queueOneScan()
+      await readsSettled()
+      const sent: Sent[] = []
+      recordRequests(sent)
+      const repairs = gateMethod(page.coordinator, 'repairAll')
+      const oldPrelude = repairs.hold()
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+        await bounded(oldPrelude.started, 'old prelude')
+        await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+        expect(screen.getByText(waitingNote)).toBeDefined()
+      } finally { vi.useRealTimers() }
+      view.rerender(<Activity mode="hidden"><App /></Activity>)
+      view.rerender(<Activity mode="visible"><App /></Activity>)
+      await readsSettled()
+      const newPrelude = repairs.hold()
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+        await bounded(newPrelude.started, 'new prelude')
+        await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+        expect(screen.getByText(waitingNote)).toBeDefined()
+      } finally { vi.useRealTimers() }
+      // The old prelude settles after its lifecycle ended. The new wait stays visible, and no obsolete request starts.
       oldPrelude.release()
       await settle()
       expect(screen.getByText(waitingNote)).toBeDefined()
@@ -2195,6 +2326,34 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       prelude.release()
       await settle()
       expect(recovery).not.toHaveBeenCalled()
+      expect(queueReads.started).toBe(reads)
+    })
+
+    // Repair finishes, then recovery waits while cleanup happens. The earlier cases hold repair only, so this case checks
+    // the guard after recovery. A recovery that settles after cleanup must start no repair and no queue read.
+    it('a prelude held in recovery across cleanup starts no queue read when recovery settles', async () => {
+      render(<App />)
+      stubFetch(() => Promise.reject(new TypeError('not yet')))
+      await queueOneScan()
+      await readsSettled()
+      const realRecovery = page.store().recoverDeadOwners.bind(page.store())
+      const recoveryStarted = deferred<void>()
+      const recoveryRelease = deferred<void>()
+      const recoveryDone = deferred<void>()
+      vi.spyOn(page.store(), 'recoverDeadOwners').mockImplementation(async () => {
+        recoveryStarted.resolve()
+        await recoveryRelease.promise
+        try { return await realRecovery() } finally { recoveryDone.resolve() }
+      })
+      focus()
+      await bounded(recoveryStarted.promise, 'held recovery')
+      cleanup()
+      const repairs = vi.spyOn(page.coordinator, 'repairAll')
+      const reads = queueReads.started
+      recoveryRelease.resolve()
+      await bounded(recoveryDone.promise, 'released recovery')
+      await settle()
+      expect(repairs).not.toHaveBeenCalled()
       expect(queueReads.started).toBe(reads)
     })
 
