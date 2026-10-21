@@ -1043,17 +1043,44 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
   })
 
   it('shows a pairing-form error for a failed fingerprint, without storage-unavailable text or Retry storage', async () => {
-    localStorage.removeItem('scanner.device-token')
-    render(<App />)
+    // A 502 sync leaves a failure with a count of one. A 401 then unpairs this device. The pairing instruction carries the failure.
+    await unpairedWithOneRow()
+    await readsSettled()
+    const rows = await storedRows() as OccurrenceRecord[]
+    const reads = queueReads.started
+    const unpairedInstruction = 'This device is not paired. Enter its pairing token to sync the queued scans.'
+    const oneScanUnreadableNote = 'Sync failed: The server answered but the reply could not be read. 1 scan is saved on this device and will be sent on the next sync. Last successful sync this session: none.'
+    // The instruction and the failure share one paragraph, so the check compares the whole paragraph.
+    expect((await screen.findByText(/^This device is not paired\./)).textContent).toBe(unpairedInstruction + oneScanUnreadableNote)
     vi.spyOn(crypto.subtle, 'digest').mockRejectedValueOnce(new Error('digest unavailable'))
-    fireEvent.change(screen.getByLabelText(/pairing token/i), { target: { value: 'new-device-token' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Pair device' }))
+    pairLocally('new-device-token')
     expect(await screen.findByText(pairingError)).toBeDefined()
     expect(screen.queryByText(readAlert)).toBeNull()
     expect(screen.queryByRole('button', { name: 'Retry storage' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Pair device' }))
-    expect(await screen.findByRole('button', { name: 'Check ticket' })).toBeDefined()
-    expect(screen.queryByText(pairingError)).toBeNull()
+    // The failed attempt keeps the carried failure. It starts no queue refresh and changes no stored row.
+    expect((await screen.findByText(/^This device is not paired\./)).textContent).toBe(unpairedInstruction + oneScanUnreadableNote)
+    await readsSettled()
+    expect(queueReads.started).toBe(reads)
+    expect(await storedRows()).toStrictEqual(rows)
+    // The second submit commits the pairing. Its refresh is held, so the failure reads unknown until the read answers.
+    const read = holdNextQueueRead()
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Pair device' }))
+      await bounded(read.started, 'pairing refresh after a failed fingerprint')
+      expect(screen.queryByText(pairingError)).toBeNull()
+      expect(screen.queryByText(/This device is not paired/)).toBeNull()
+      expect(screen.getByText(unknownUnreadableNote)).toBeDefined()
+      expect(screen.getByRole('button', { name: 'Check ticket' })).toBeDefined()
+      await act(async () => { read.result.resolve(rows) })
+      await readsSettled()
+    } finally {
+      // Release the held read even when an assertion above failed.
+      read.result.resolve(rows)
+    }
+    expect(screen.getByText(oneScanUnreadableNote)).toBeDefined()
+    expect(screen.getByText('1 queued offline scan awaiting sync.')).toBeDefined()
+    expect(screen.queryByText(readAlert)).toBeNull()
+    expect(await storedRows()).toStrictEqual(rows)
   })
 
   it('shows waiting at 1,000 ms of initial storage work and clears it before the first request is sent', async () => {
