@@ -73,7 +73,8 @@ it('rolls back the valid first retirement when the second retirement write abort
     return request
   })
   await renderWithQueue(<App />, page); fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
-  await screen.findByText('Storage is unavailable or incompatible. Keep this page open and retry storage.')
+  await screen.findByText('The last sync result could not be saved on this device, so that batch was not applied. Scans from that batch that are still queued will be retried on a later sync.')
+  expect(screen.queryByText('Storage is unavailable or incompatible. Keep this page open and retry storage.')).toBeNull()
   expect(failed).toBe(true)
   expect(await rawGetAll(dbName, STORE.occurrences)).toStrictEqual(before)
   expect(screen.queryByText(/^Synced /)).toBeNull()
