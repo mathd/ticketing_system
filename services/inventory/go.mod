@@ -1,6 +1,6 @@
 module ticketing/services/inventory
 
-go 1.27.2
+go 1.27.3
 
 replace ticketing/shared => ../../shared/go
 
