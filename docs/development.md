@@ -1645,6 +1645,68 @@ current sync state. The prior result and physical passage are unknown. Do not ad
 notice. Acknowledge the notice after operator review. This retains the scan and does not change its
 sync result.
 
+#### Queue refresh, carried failures and sync waiting, TKT-512
+
+The queue count and a carried sync failure read the shared queue again. This page does so on window
+focus, on a transition to a visible tab, after a committed pairing and after another tab replaces or
+removes the pairing token. A hidden transition does not read the queue. A storage event that repeats
+the token already in use does not read it either.
+
+A refresh repairs and recovers local rows, reads the queue once and updates the count and the
+failure line. It does not start a sync or a revocation pull. It does not change "Last successful
+sync". Focus and visible transitions keep the scan result on screen. A pairing commit clears the
+scan result, as before.
+
+A committed pairing removes the instruction to pair the device. The carried failure stays visible
+with no count until the refresh reads the queue. The count then comes from that read. An empty read
+removes the failure. A failed read leaves the count unknown. A removed failure does not return when
+the device is paired later.
+
+A local authentication failure, a 401 from this page's own sync or revocation check, does not read the
+queue. A read that is already running can still finish and update the count.
+
+If storage stops being ready while a failure count is still being read, the count becomes unknown at
+once. A read that finishes later, from the storage that stopped, changes nothing. Retry storage reads
+the queue on the new storage, and that read sets the count.
+
+Waiting. When initial storage work takes longer than 1,000 ms, the sync line shows "Waiting for local
+storage to finish before this sync can continue." The wait covers repair, recovery and the queue read
+before the first request. It describes local storage only. It does not mean a failure, a timeout, a
+saved scan, a sent scan or permission to admit. The line clears when that work finishes, when the page
+is closed or unmounted, or before the first request is sent. A pairing change does not clear it while
+the work continues. Application of a batch and the refresh after a batch do not show this line.
+
+A failed local write of a sync result shows this message: "The last sync result could not be saved on
+this device, so that batch was not applied. Scans from that batch that are still queued will be retried
+on a later sync." The message does not say that Access rolled back the batch, and it does not say that
+storage is still unavailable. It does not offer Retry storage.
+
+When the shared queue refuses a batch as a whole, the page shows no message of its own. The rows keep
+the state that the shared queue holds, and the refresh after the batch shows the count from that state.
+A refused batch is not a storage outage. The page does not send it again on its own.
+
+The write-result message stays through reads, pairing, readiness notifications and unrelated writes.
+The next nonempty paired sync clears it when its first request is sent, even if that request fails. An
+empty sync, a read that fails before the request and a sync with no pairing token do not clear it.
+
+A pairing form error reads "Pairing could not be completed on this device. Submit the pairing token
+again to retry." It appears when this page cannot compute the token fingerprint or read its local pairing record.
+It does not show the storage alert or Retry storage. A committed pairing clears it. A readiness
+notification alone does not clear the storage alert. An accepted queue read clears it.
+
+Closing or unmounting the page aborts a sync request that has not finished. A local write that has
+already started can still commit. The page then publishes no totals, no last-success time and no
+later batch from that sync.
+
+Verification limits. The browser journeys for this behavior run in real Chrome, in one browser
+context with two tabs. Only those journeys use a second page. The App tests simulate a cross-tab
+pairing in one window, with a localStorage write and a synthetic storage event. Focus uses trusted
+focus with focus emulation disabled. Synthetic visibility events prove the page's listener wiring
+only. Native visibility transitions are not verified. The
+1,000 ms wait tests the page's own storage await. The forced contention journey holds one IndexedDB
+transaction. It does not measure how often a stall happens on a venue device. These checks do not
+cover suspension, bfcache, physical passage or venue performance.
+
 #### Remaining limits
 
 TKT-559 checks both wall and monotonic elapsed time from submission. Mint and send must finish
