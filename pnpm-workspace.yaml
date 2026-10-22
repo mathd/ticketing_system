@@ -18,6 +18,7 @@ overrides:
 minimumReleaseAgeExclude:
   - '@astrojs/markdown-satteri@0.3.4'
   - astro@7.0.9
+  - vite@8.3.5 # TKT-568 D13: owner-approved release-age exception.
 # Generated from .trivyignore.yaml by 'node scripts/scan-allowlist.mjs sync' (ADR-081).
 # Do not edit by hand: `make check` refuses a list that is not the mirror of the
 # allowlist, and the pnpm-audit job refuses an expired entry before `pnpm audit`.
