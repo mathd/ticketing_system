@@ -143,7 +143,7 @@ it.each([409, 422])('reads denial %s body and publishes its memory result before
     const call = await holding[0].started
     await screen.findByRole('heading', { name: 'Rejected' })
     expect(call.events).not.toContain('complete')
-    expect(screen.getByRole('alert', { name: 'Scan result' }).textContent).toBe('RejectedCredential is invalid or cannot be redeemed.')
+    expect(screen.getByRole('alert', { name: 'Scan result' }).textContent).toBe('RejectedDo not admit. This ticket was voided by a refund. Get an operator.Reason: refunded.')
     holding[0].release()
     await waitFor(async () => expect(await rawGet(dbName, STORE.occurrences, scans[0].occurrence_id as string)).toMatchObject({ state: 'RESOLVED', localOutcome: { cause: 'denied', reason: 'refunded' } }))
   } finally { holding.forEach((held) => held.release()); instrument.restore() }

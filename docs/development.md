@@ -1571,7 +1571,7 @@ A failed outcome write does not give the scanner permission to choose another de
 | Already processed on this device | `This scan was already handled on this device. No second entry.` This requires a replay and an existing reservation owned by this page. |
 | Access accepted, but the local reservation cannot be confirmed | `Access recorded this scan; the scanner did not open; get an operator.` A missing or foreign record cannot prove that this device already handled the scan. |
 | `401` | `This attempt was not authorized. Do not admit from this result.` Pair the device and scan the ticket again. Older queued facts remain available for authenticated sync. |
-| `409` or `422` with a readable rejection | Rejected. The result remains terminal even if storage fails. `exit_required` and `entry_limit_reached` have their own instructions, below. Every other readable reason shows `Credential is invalid or cannot be redeemed.`, except `already_redeemed`, which keeps its own text. |
+| `409` or `422` with a readable rejection | Rejected, with the exact raw reason and the instruction below. The result stays terminal even if storage fails. Only `already_redeemed` displays a prior time, and only when Access supplies it. |
 | `409` or `422` with an unreadable body | `Access refused this scan; reason unavailable. Do not admit`. It never becomes an offline admission. |
 | Invalid accepted `200`, an unexpected status, or an opaque redirect | `Scan response unconfirmed. Scanner did not open. Access may have recorded this scan. Get an operator; do not admit from this result.` |
 | `500`, `501`, or `505` through `599` | `Outcome unknown. Do not admit. Contact an operator.` Access can have committed before the error. |
@@ -1590,12 +1590,40 @@ browser checks after a Chrome update. The owner selects venue devices.
 
 #### Entry rejection instructions
 
-Two readable Entry rejections have their own instruction. The result stays Rejected, and it shows these lines:
+Every readable Entry refusal has the Rejected heading and rejected styling. It ends with
+`Reason: <raw reason>.` The scanner preserves the reason's spelling, case and whitespace and
+renders it as text. The same readable body has the same presentation at `409` and `422`.
 
-- `exit_required` shows `Do not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.` It then shows `Reason: exit_required.`
-- `entry_limit_reached` shows `Do not admit. No entries remain on this pass.` It then shows `Reason: entry_limit_reached.`
+TKT-552 supplied the two pass instructions. TKT-565 adds the remaining instructions:
 
-Every other readable reason, including an unknown value, keeps the generic instruction `Credential is invalid or cannot be redeemed.` and no Reason line. `already_redeemed` keeps its own text. The generic fallback is open-ended. TKT-565 tracks the remaining reason copy.
+| Reason | Lines before the final Reason line |
+|---|---|
+| `already_redeemed` | `Already redeemed.` If Access supplies `original_scan_at`, this becomes `Already redeemed at <time>.` using the existing local date/time display. The next line is `Do not admit. Get an operator.` |
+| `exit_required` | `Do not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.` |
+| `entry_limit_reached` | `Do not admit. No entries remain on this pass.` |
+| `invalid_credential` | `Do not admit. Access did not accept this credential. Get an operator.` |
+| `refunded` | `Do not admit. This ticket was voided by a refund. Get an operator.` |
+| `exchanged` | `Do not admit. This ticket was replaced by an exchange. Ask for the replacement ticket and scan it.` |
+| `integrity_quarantined` | `Do not admit. Access has blocked another admission after an earlier integrity exception. Get an operator.` |
+| `integrity_operator_controlled` | `Do not admit. Access refused this ticket under operator-controlled integrity handling. Get an operator.` |
+| `occurrence_required` | `Do not admit. This scan is missing its required occurrence ID. Get an operator to check the scanner.` |
+| `invalid_occurrence` | `Do not admit. This scan has invalid occurrence data. Get an operator to check the scanner.` |
+| `occurrence_collision` | `Do not admit. This scan's occurrence ID conflicts with an existing record. Get an operator.` |
+| `not_inside`, `exit_not_applicable`, `exit_unverified` received for Entry | `Do not admit. Access returned an Exit refusal for this Entry scan. Get an operator.` |
+| Any other readable reason | `Do not admit. Access refused this scan. Get an operator.` |
+
+Unknown strings remain denials with their exact Reason line. This includes `revoked`, for which
+no current live scan producer was verified. It does not mean the device found a ticket on its
+local revocation list. That separate local refusal keeps the wording and refusal-only sync behavior
+shown above. An unexpected Exit reason in an Entry reply does not switch direction, record Exit,
+start another scan or authorize admission. Tests that inject unusual reason/status combinations
+check client compatibility; they do not establish that Access emits those combinations.
+
+Only `already_redeemed` uses the supplied Access time. No device date, occurrence time or stored
+record time replaces a missing value, and no new timestamp field is stored. A malformed supplied
+time still makes the denial unreadable. The `invalid_credential` reason does not establish that
+signature verification ran: Access can also use it for request validation failures. The integrity
+instructions describe Access's refusal. They add no integrity or containment guarantee.
 
 Confirming that the holder has left is staff judgement, not a system check. Access cannot tell a missing Exit from a passback. If staff accept a claim of departure, record Exit, and then scan Entry, the presenter can be admitted. The `exit_required` instruction adds no guard and does not establish physical presence. This risk exists without the instruction too.
 
@@ -1779,7 +1807,7 @@ created no Exit fact. TKT-551 adds separate aggregate counts. For example, a com
 "Synced 92 offline scan(s). 7 conflicts flagged for the operator. 6 rejected scans were not
 recorded." A rejected result never increases the Synced count. One rejection alone says
 "Synced 0 offline scan(s). 1 rejected scan was not recorded." With no rejection, the existing
-success text is unchanged. Remaining Entry reason copy is tracked by TKT-565.
+success text is unchanged. TKT-565 adds the readable Entry reason instructions listed above.
 
 After each applied batch, the first reconciliation alert reports completed-batch totals. For
 example, "Completed batches: Synced 90 offline scan(s). 6 conflicts flagged for the operator.

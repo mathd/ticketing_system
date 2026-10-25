@@ -108,7 +108,7 @@ it('keeps denial copy during a failed terminal write and repairs with the same o
   fireEvent.click(screen.getByRole('button', { name: 'Retry storage' }))
   await waitFor(async () => expect(await rawGet(dbName, STORE.occurrences, scans[0].occurrence_id as string)).toMatchObject({ state: 'RESOLVED', localOutcome: { cause: 'denied', reason: 'refunded' } }))
   expect(page.coordinator.ownerId).toBe(owner)
-  expect(screen.getByRole('alert', { name: 'Scan result' }).textContent).toBe('RejectedCredential is invalid or cannot be redeemed.')
+  expect(screen.getByRole('alert', { name: 'Scan result' }).textContent).toBe('RejectedDo not admit. This ticket was voided by a refund. Get an operator.Reason: refunded.')
 })
 
 it('stores every feed page and advances the fingerprint only after the final page', async () => {

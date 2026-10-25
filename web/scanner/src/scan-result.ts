@@ -17,25 +17,41 @@ export function presentResult(result: EntryResult, context: ResultContext): Resu
   return presentEntry(result)
 }
 
-/**
- * Core Entry instructions. exit_required and entry_limit_reached have their own copy (TKT-552).
- * already_redeemed keeps its own text. Every other readable reason, including an unknown one, gets
- * the generic fallback. The fallback is open-ended; TKT-565 tracks the remaining reason copy.
- */
+/** Entry denials retain the raw Access reason and never infer admission permission. */
 function presentEntry(result: EntryResult): ResultPresentation {
   const refused = (heading: string | undefined, ...lines: string[]): ResultPresentation => ({ heading, lines, tone: 'rejected' })
   switch (result.kind) {
     case 'accepted': return { heading: 'Accepted', tone: 'accepted', lines: [ACCEPT_INSTRUCTION,
       `Entry recorded at ${readableTime(result.scannedAt)}.`,
       ...(result.replay ? ['This scan was previously recorded. Entry counted once.'] : [])] }
-    case 'rejected':
-      if (result.reason === 'exit_required') return refused('Rejected',
-        'Do not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.',
-        'Reason: exit_required.')
-      if (result.reason === 'entry_limit_reached') return refused('Rejected', 'Do not admit. No entries remain on this pass.', 'Reason: entry_limit_reached.')
-      return refused('Rejected', result.reason === 'already_redeemed'
-      ? result.originalScanAt ? `Already redeemed at ${readableTime(result.originalScanAt)}.` : 'Already redeemed.'
-      : 'Credential is invalid or cannot be redeemed.')
+    case 'rejected': {
+      const reason = `Reason: ${result.reason}.`
+      switch (result.reason) {
+        case 'already_redeemed': return refused('Rejected',
+          result.originalScanAt ? `Already redeemed at ${readableTime(result.originalScanAt)}.` : 'Already redeemed.',
+          'Do not admit. Get an operator.', reason)
+        case 'exit_required': return refused('Rejected',
+          'Do not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.', reason)
+        case 'entry_limit_reached': return refused('Rejected', 'Do not admit. No entries remain on this pass.', reason)
+        case 'invalid_credential': return refused('Rejected', 'Do not admit. Access did not accept this credential. Get an operator.', reason)
+        case 'refunded': return refused('Rejected', 'Do not admit. This ticket was voided by a refund. Get an operator.', reason)
+        case 'exchanged': return refused('Rejected', 'Do not admit. This ticket was replaced by an exchange. Ask for the replacement ticket and scan it.', reason)
+        case 'integrity_quarantined': return refused('Rejected',
+          'Do not admit. Access has blocked another admission after an earlier integrity exception. Get an operator.', reason)
+        case 'integrity_operator_controlled': return refused('Rejected',
+          'Do not admit. Access refused this ticket under operator-controlled integrity handling. Get an operator.', reason)
+        case 'occurrence_required': return refused('Rejected',
+          'Do not admit. This scan is missing its required occurrence ID. Get an operator to check the scanner.', reason)
+        case 'invalid_occurrence': return refused('Rejected',
+          'Do not admit. This scan has invalid occurrence data. Get an operator to check the scanner.', reason)
+        case 'occurrence_collision': return refused('Rejected',
+          "Do not admit. This scan's occurrence ID conflicts with an existing record. Get an operator.", reason)
+        case 'not_inside':
+        case 'exit_not_applicable':
+        case 'exit_unverified': return refused('Rejected', 'Do not admit. Access returned an Exit refusal for this Entry scan. Get an operator.', reason)
+        default: return refused('Rejected', 'Do not admit. Access refused this scan. Get an operator.', reason)
+      }
+    }
     case 'queued': return { heading: 'Offline decision', tone: 'queued', lines: [
       result.status === undefined ? 'No response was received.' : `Server response ${result.status}.`, OFFLINE_INSTRUCTION] }
     case 'stopped-before-send': return refused('Scan stopped', 'Scan took too long or its clock could not be checked. No request was sent. Do not admit from this result. Scan again.')
