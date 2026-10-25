@@ -623,28 +623,36 @@ describe('a failed sync of the offline queue', () => {
     const started = deferred<AbortSignal>()
     const followUp = deferred<void>()
     let calls = 0
-    stubFetch((_, init) => {
+    const releaseResponses: Array<() => void> = []
+    stubFetch((body, init) => {
       calls += 1
       if (calls > 1) {
         followUp.resolve()
-        return new Promise<Response>(() => {})
+        return new Promise<Response>(resolve => { releaseResponses.push(() => resolve(recordedResponse(body))) })
       }
-      return new Promise<Response>((_, reject) => {
+      return new Promise<Response>((resolve, reject) => {
+        releaseResponses.push(() => resolve(recordedResponse(body)))
         init.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
         started.resolve(init.signal!)
       })
     })
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
-    const signal = await started.promise
-    window.dispatchEvent(new Event('online'))
-    await act(async () => { await vi.advanceTimersByTimeAsync(reconcileTimeoutMs) })
-    vi.useRealTimers()
-    expect(await storedRows()).toEqual(before)
-    expect(await screen.findByText(offlineNote)).toBeDefined()
-    expect(signal.aborted).toBe(true)
-    await followUp.promise
-    expect(calls).toBe(2)
+    try {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+      const signal = await boundedReal(started.promise, 'reconcile before deadline')
+      window.dispatchEvent(new Event('online'))
+      await act(async () => { await vi.advanceTimersByTimeAsync(reconcileTimeoutMs) })
+      vi.useRealTimers()
+      expect(await storedRows()).toEqual(before)
+      expect(await screen.findByText(offlineNote)).toBeDefined()
+      expect(signal.aborted).toBe(true)
+      await boundedReal(followUp.promise, 'follow-up after deadline')
+      expect(calls).toBe(2)
+    } finally {
+      cleanup()
+      for (const release of releaseResponses) release()
+      vi.useRealTimers()
+    }
   })
 
   it('a deadline during the response body shows unreadable', async () => {
@@ -654,21 +662,29 @@ describe('a failed sync of the offline queue', () => {
     await readsSettled()
     const before = await storedRows()
     const bodyStarted = deferred<void>()
+    let releaseBody = () => {}
     stubFetch((_, init) => Promise.resolve({
       ok: true,
       status: 200,
-      json: () => new Promise((_, reject) => {
+      json: () => new Promise((resolve, reject) => {
+        releaseBody = () => resolve({ results: [] })
         init.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
         bodyStarted.resolve()
       }),
     } as Response))
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
-    await bodyStarted.promise
-    await act(async () => { await vi.advanceTimersByTimeAsync(reconcileTimeoutMs) })
-    expect(await storedRows()).toEqual(before)
-    vi.useRealTimers()
-    expect(await screen.findByText(unreadableNote)).toBeDefined()
+    try {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+      await boundedReal(bodyStarted.promise, 'response body before deadline')
+      await act(async () => { await vi.advanceTimersByTimeAsync(reconcileTimeoutMs) })
+      expect(await storedRows()).toEqual(before)
+      vi.useRealTimers()
+      expect(await screen.findByText(unreadableNote)).toBeDefined()
+    } finally {
+      cleanup()
+      releaseBody()
+      vi.useRealTimers()
+    }
   })
 
   it('shows no count before the failure queue read settles, then clears it for an empty queue', async () => {
@@ -679,18 +695,23 @@ describe('a failed sync of the offline queue', () => {
     const held = holdReconciles()
     fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
     const first = await held.next()
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const read = holdNextQueueRead()
-    await act(async () => {
-      first.fail(new TypeError('network down'))
-      await read.started
-    })
-    expect(screen.getByText(checkingOfflineNote)).toBeDefined()
-    expect(screen.queryByText(/\d+ scans? (is|are) saved/)).toBeNull()
-    expect(queueReads.finished).toBe(queueReads.started - 1)
-    await act(async () => { read.result.resolve([]) })
-    expect(screen.queryByText(/^Sync failed:/)).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Sync queued scans' })).toBeNull()
+    try {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      await act(async () => {
+        first.fail(new TypeError('network down'))
+        await boundedReal(read.started, 'failure correction read')
+      })
+      expect(screen.getByText(checkingOfflineNote)).toBeDefined()
+      expect(screen.queryByText(/\d+ scans? (is|are) saved/)).toBeNull()
+      expect(queueReads.finished).toBe(queueReads.started - 1)
+      await act(async () => { read.result.resolve([]) })
+      expect(screen.queryByText(/^Sync failed:/)).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Sync queued scans' })).toBeNull()
+    } finally {
+      read.result.resolve([])
+      vi.useRealTimers()
+    }
   })
 
   it('corrects a failure through pairing when its queue read resolves empty', async () => {
@@ -701,32 +722,38 @@ describe('a failed sync of the offline queue', () => {
     const held = holdReconciles()
     fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
     const first = await held.next()
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const read = holdNextQueueRead()
-    await act(async () => {
-      first.fail(new TypeError('network down'))
-      await read.started
-    })
-    expect(screen.getByText(checkingOfflineNote)).toBeDefined()
     const revocation = deferred<Response>()
-    const pullStarted = deferred<void>()
-    vi.stubGlobal('fetch', vi.fn(() => {
-      pullStarted.resolve()
-      return revocation.promise
-    }))
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Refresh revocation list' }))
-      await pullStarted.promise
+    try {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      await act(async () => {
+        first.fail(new TypeError('network down'))
+        await boundedReal(read.started, 'failure correction read')
+      })
+      expect(screen.getByText(checkingOfflineNote)).toBeDefined()
+      const pullStarted = deferred<void>()
+      vi.stubGlobal('fetch', vi.fn(() => {
+        pullStarted.resolve()
+        return revocation.promise
+      }))
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Refresh revocation list' }))
+        await boundedReal(pullStarted.promise, 'revocation request')
+        revocation.resolve(new Response('', { status: 401 }))
+      })
+      expect(screen.getByLabelText(/pairing token/i)).toBeDefined()
+      await act(async () => { read.result.resolve([]) })
+      vi.useRealTimers()
+      stubFetch(() => Promise.reject(new TypeError('must not be called')))
+      fireEvent.change(screen.getByLabelText(/pairing token/i), { target: { value: 'new-device-token' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Pair device' }))
+      expect(await screen.findByRole('button', { name: 'Check ticket' })).toBeDefined()
+      expect(screen.queryByText(/^Sync failed:/)).toBeNull()
+    } finally {
+      read.result.resolve([])
       revocation.resolve(new Response('', { status: 401 }))
-    })
-    expect(screen.getByLabelText(/pairing token/i)).toBeDefined()
-    await act(async () => { read.result.resolve([]) })
-    vi.useRealTimers()
-    stubFetch(() => Promise.reject(new TypeError('must not be called')))
-    fireEvent.change(screen.getByLabelText(/pairing token/i), { target: { value: 'new-device-token' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Pair device' }))
-    expect(await screen.findByRole('button', { name: 'Check ticket' })).toBeDefined()
-    expect(screen.queryByText(/^Sync failed:/)).toBeNull()
+      vi.useRealTimers()
+    }
   })
 
   it('corrects a failure after an intervening render in StrictMode', async () => {
@@ -742,19 +769,24 @@ describe('a failed sync of the offline queue', () => {
     const held = holdReconciles()
     fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
     const first = await held.next()
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     fireEvent.change(screen.getByLabelText('Ticket credential'), { target: { value: 'another-ticket' } })
     // Render with no pending input update to reach React's eager updater path.
     view.rerender(<StrictMode><App /></StrictMode>)
     const read = holdNextQueueRead()
-    await act(async () => {
-      first.fail(new TypeError('network down'))
-      await read.started
-    })
-    expect(screen.getByText(checkingOfflineNote)).toBeDefined()
-    await act(async () => { read.result.resolve([]) })
-    expect(screen.queryByText(/^Sync failed:/)).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Sync queued scans' })).toBeNull()
+    try {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      await act(async () => {
+        first.fail(new TypeError('network down'))
+        await boundedReal(read.started, 'failure correction read')
+      })
+      expect(screen.getByText(checkingOfflineNote)).toBeDefined()
+      await act(async () => { read.result.resolve([]) })
+      expect(screen.queryByText(/^Sync failed:/)).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Sync queued scans' })).toBeNull()
+    } finally {
+      read.result.resolve([])
+      vi.useRealTimers()
+    }
   })
 
   it('a delayed failure correction does not overwrite a newer follow-up failure', async () => {
@@ -1129,11 +1161,12 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
     await failedSyncWithOneRow()
     const rows = await storedRows() as OccurrenceRecord[]
     const read = holdNextQueueRead()
-    const fetchMock = stubFetch(() => new Promise<Response>(() => {}))
+    const answer = deferred<Response>()
+    const fetchMock = stubFetch(() => answer.promise)
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
       fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
-      await bounded(read.started, 'held initial read')
+      await boundedReal(read.started, 'held initial read')
       await act(async () => { await vi.advanceTimersByTimeAsync(999) })
       expect(screen.queryByText(waitingNote)).toBeNull()
       await act(async () => { await vi.advanceTimersByTimeAsync(1) })
@@ -1145,6 +1178,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       expect(reconcileCalls(fetchMock)).toBe(1)
     } finally {
       read.result.resolve(rows)
+      answer.resolve(recordedResponse({ occurrences: rows.map(row => ({ occurrence_id: row.occurrenceId })) }))
       vi.useRealTimers()
     }
   })
@@ -1165,7 +1199,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
     try {
       fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
       // The initial storage work finishes in real time, before any virtual time passes.
-      const request = await sent.promise
+      const request = await boundedReal(sent.promise, 'first reconcile request')
       await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
       expect(screen.queryByText(waitingNote)).toBeNull()
       await act(async () => { await vi.advanceTimersByTimeAsync(2_000) })
@@ -1177,7 +1211,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
     } finally {
       vi.useRealTimers()
       // Release the held response even when an assertion above failed.
-      void sent.promise.then(({ body }) => answer.resolve(recordedResponse(body)))
+      answer.resolve(recordedResponse({ occurrences: [{ occurrence_id: row.occurrenceId }] }))
     }
     await screen.findByText('Synced 1 offline scan(s).', {}, { timeout: BOUND_MS })
     expect(await storedRows()).toStrictEqual([terminalRow(row, 'recorded')])
@@ -1209,7 +1243,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
       fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
-      await bounded(read.started, 'held initial read')
+      await boundedReal(read.started, 'held initial read')
       await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
       expect(screen.getByText(waitingNote)).toBeDefined()
       // A token removal does not end the running prelude or its waiting line.
@@ -1867,7 +1901,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
       try {
         fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
-        await bounded(read.started, 'sync preparation read')
+        await boundedReal(read.started, 'sync preparation read')
         await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
         expect(screen.getByText(waitingNote)).toBeDefined()
         await act(async () => { read.result.reject(new Error('queue read failed')) })
@@ -1875,7 +1909,10 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
         expect(screen.getByText(readAlert)).toBeDefined()
         await act(async () => { await vi.advanceTimersByTimeAsync(0) })
         expect(sentIds(fetchMock)).toStrictEqual([])
-      } finally { vi.useRealTimers() }
+      } finally {
+        read.result.resolve([])
+        vi.useRealTimers()
+      }
     })
 
     it('a sync read that rejects after a pairing change still raises the read source and sends nothing', async () => {
@@ -2325,9 +2362,10 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
         // A token removal does not end the running read. Its settlement clears the wait.
         if (outcome === 'no token') tokenEvent(null)
         expect(screen.getByText(waitingNote)).toBeDefined()
-      } finally { vi.useRealTimers() }
-      if (outcome === 'rejected') read.fail(new Error('queue read failed'))
-      else read.finish(outcome === 'empty' ? [] : rows)
+        vi.useRealTimers()
+        if (outcome === 'rejected') read.fail(new Error('queue read failed'))
+        else read.finish(outcome === 'empty' ? [] : rows)
+      } finally { vi.useRealTimers(); read.finish(rows) }
       await waitFor(() => expect(screen.queryByText(waitingNote)).toBeNull(), { timeout: BOUND_MS })
       await readsSettled()
       expect(sent).toHaveLength(0)
@@ -2351,8 +2389,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
         commitPairing('replacement-token')
         fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
         expect(screen.getByText(waitingNote)).toBeDefined()
-      } finally { vi.useRealTimers() }
-      prelude.release()
+      } finally { vi.useRealTimers(); prelude.release() }
       await waitFor(() => expect(sent).toHaveLength(1), { timeout: BOUND_MS })
       expect(sent[0].waiting).toBe(false)
       sent[0].answer(recordedResponse(sent[0].body))
@@ -2377,8 +2414,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
         expect(screen.queryByText(waitingNote)).toBeNull()
         await act(async () => { await vi.advanceTimersByTimeAsync(1) })
         expect(screen.getByText(waitingNote)).toBeDefined()
-      } finally { vi.useRealTimers() }
-      prelude.release()
+      } finally { vi.useRealTimers(); prelude.release() }
       await readsSettled()
       expect(screen.queryByText(waitingNote)).toBeNull()
     })
@@ -2415,36 +2451,43 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       await readsSettled()
       const repairs = gateMethod(page.coordinator, 'repairAll')
       const oldPrelude = repairs.hold()
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      let newPrelude: ReturnType<typeof repairs.hold> | undefined
       try {
-        fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
-        await boundedReal(oldPrelude.started, 'old prelude')
-        await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+        try {
+          fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+          await boundedReal(oldPrelude.started, 'old prelude')
+          await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+          expect(screen.getByText(waitingNote)).toBeDefined()
+        } finally { vi.useRealTimers() }
+        cleanup()
+        render(<App />)
+        await readsSettled()
+        newPrelude = repairs.hold()
+        const sent: Sent[] = []
+        recordRequests(sent)
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+        try {
+          fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+          await boundedReal(newPrelude.started, 'new prelude')
+          await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+          expect(screen.getByText(waitingNote)).toBeDefined()
+        } finally { vi.useRealTimers() }
+        // The old prelude now settles. Its component is unmounted, so the new wait stays visible and no obsolete request starts.
+        oldPrelude.release()
+        await settle()
         expect(screen.getByText(waitingNote)).toBeDefined()
-      } finally { vi.useRealTimers() }
-      cleanup()
-      render(<App />)
-      await readsSettled()
-      const newPrelude = repairs.hold()
-      const sent: Sent[] = []
-      recordRequests(sent)
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-      try {
-        fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
-        await boundedReal(newPrelude.started, 'new prelude')
-        await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
-        expect(screen.getByText(waitingNote)).toBeDefined()
-      } finally { vi.useRealTimers() }
-      // The old prelude now settles. Its component is unmounted, so the new wait stays visible and no obsolete request starts.
-      oldPrelude.release()
-      await settle()
-      expect(screen.getByText(waitingNote)).toBeDefined()
-      expect(sent).toHaveLength(0)
-      newPrelude.release()
-      await waitFor(() => expect(sent).toHaveLength(1), { timeout: BOUND_MS })
-      expect(sent[0].waiting).toBe(false)
-      sent[0].answer(recordedResponse(sent[0].body))
-      await screen.findByText('Synced 1 offline scan(s).', {}, { timeout: BOUND_MS })
+        expect(sent).toHaveLength(0)
+        newPrelude.release()
+        await waitFor(() => expect(sent).toHaveLength(1), { timeout: BOUND_MS })
+        expect(sent[0].waiting).toBe(false)
+        sent[0].answer(recordedResponse(sent[0].body))
+        await screen.findByText('Synced 1 offline scan(s).', {}, { timeout: BOUND_MS })
+      } finally {
+        oldPrelude.release()
+        newPrelude?.release()
+        vi.useRealTimers()
+      }
     })
 
     // A hidden Activity runs the old effect cleanup. Showing it runs a new setup on the same component, so both
@@ -2459,34 +2502,41 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       recordRequests(sent)
       const repairs = gateMethod(page.coordinator, 'repairAll')
       const oldPrelude = repairs.hold()
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      let newPrelude: ReturnType<typeof repairs.hold> | undefined
       try {
-        fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
-        await boundedReal(oldPrelude.started, 'old prelude')
-        await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+        try {
+          fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+          await boundedReal(oldPrelude.started, 'old prelude')
+          await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+          expect(screen.getByText(waitingNote)).toBeDefined()
+        } finally { vi.useRealTimers() }
+        view.rerender(<Activity mode="hidden"><App /></Activity>)
+        view.rerender(<Activity mode="visible"><App /></Activity>)
+        await readsSettled()
+        newPrelude = repairs.hold()
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+        try {
+          fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+          await boundedReal(newPrelude.started, 'new prelude')
+          await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+          expect(screen.getByText(waitingNote)).toBeDefined()
+        } finally { vi.useRealTimers() }
+        // The old prelude settles after its lifecycle ended. The new wait stays visible, and no obsolete request starts.
+        oldPrelude.release()
+        await settle()
         expect(screen.getByText(waitingNote)).toBeDefined()
-      } finally { vi.useRealTimers() }
-      view.rerender(<Activity mode="hidden"><App /></Activity>)
-      view.rerender(<Activity mode="visible"><App /></Activity>)
-      await readsSettled()
-      const newPrelude = repairs.hold()
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-      try {
-        fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
-        await boundedReal(newPrelude.started, 'new prelude')
-        await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
-        expect(screen.getByText(waitingNote)).toBeDefined()
-      } finally { vi.useRealTimers() }
-      // The old prelude settles after its lifecycle ended. The new wait stays visible, and no obsolete request starts.
-      oldPrelude.release()
-      await settle()
-      expect(screen.getByText(waitingNote)).toBeDefined()
-      expect(sent).toHaveLength(0)
-      newPrelude.release()
-      await waitFor(() => expect(sent).toHaveLength(1), { timeout: BOUND_MS })
-      expect(sent[0].waiting).toBe(false)
-      sent[0].answer(recordedResponse(sent[0].body))
-      await screen.findByText('Synced 1 offline scan(s).', {}, { timeout: BOUND_MS })
+        expect(sent).toHaveLength(0)
+        newPrelude.release()
+        await waitFor(() => expect(sent).toHaveLength(1), { timeout: BOUND_MS })
+        expect(sent[0].waiting).toBe(false)
+        sent[0].answer(recordedResponse(sent[0].body))
+        await screen.findByText('Synced 1 offline scan(s).', {}, { timeout: BOUND_MS })
+      } finally {
+        oldPrelude.release()
+        newPrelude?.release()
+        vi.useRealTimers()
+      }
     })
   })
 
@@ -2534,12 +2584,19 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       await readsSettled()
       const before = await storedRows() as OccurrenceRecord[]
       const instrument: Instrument = instrumentTransactions()
+      const recoveryRead = deferred<IDBTransaction>()
+      const queueRead = deferred<IDBTransaction>()
       const requests: Array<{ tx: IDBTransaction; store: string; method: string }> = []
       const spies = (['getAllKeys', 'getAll'] as const).map(method => {
         const original = IDBObjectStore.prototype[method]
         return vi.spyOn(IDBObjectStore.prototype, method).mockImplementation(function (this: IDBObjectStore, ...args) {
           requests.push({ tx: this.transaction, store: this.name, method })
-          return original.apply(this, args)
+          const request = original.apply(this, args)
+          if (this.name === STORE.legacyClasses) {
+            if (method === 'getAllKeys') recoveryRead.resolve(this.transaction)
+            else queueRead.resolve(this.transaction)
+          }
+          return request
         })
       })
       const base = instrument.calls.length
@@ -2554,34 +2611,50 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
         return Promise.resolve(recordedResponse(body))
       })
       const signature = (tx: IDBTransaction | undefined) => requests.filter(request => request.tx === tx).map(({ store, method }) => `${store}.${method}`)
+      // Date and IndexedDB progress stay real. Only presentation time advances below.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
       try {
         const reads = queueReads.started
         fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
-        const recoveryCall = await bounded(recovery.started, 'held recovery transaction')
+        const recoveryCall = await boundedReal(recovery.started, 'held recovery transaction')
         recoveryAt = instrument.calls.indexOf(recoveryCall)
-        await waitFor(() => expect(signature(recoveryCall.tx)).toStrictEqual([
+        expect(await boundedReal(recoveryRead.promise, 'recovery request signature')).toBe(recoveryCall.tx)
+        expect(signature(recoveryCall.tx)).toStrictEqual([
           'occurrences.getAll', 'legacy_classes.getAllKeys',
-        ]))
+        ])
         expect(queueReads.started).toBe(reads)
         expect(recoveryCall.events).not.toContain('complete')
-        if (waitingStage === 'recovery') await screen.findByText(waitingNote, {}, { timeout: 3_000 })
+        expect(screen.queryByText(waitingNote)).toBeNull()
+        if (waitingStage === 'recovery') {
+          await act(async () => { await vi.advanceTimersByTimeAsync(999) })
+          expect(screen.queryByText(waitingNote)).toBeNull()
+          await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+          expect(screen.getByText(waitingNote)).toBeDefined()
+        }
         expect(reconcileCalls(fetchMock)).toBe(0)
         recovery.release('commit')
-        const queueCall = await bounded(queue.started, 'held production queue transaction')
+        const queueCall = await boundedReal(queue.started, 'held production queue transaction')
         expect(queueCall.tx).not.toBe(recoveryCall.tx)
         if (waitingStage === 'queue') expect(screen.queryByText(waitingNote)).toBeNull()
         expect(queueReads.started).toBe(reads + 1)
-        await waitFor(() => expect(signature(queueCall.tx)).toStrictEqual([
+        expect(await boundedReal(queueRead.promise, 'queue request signature')).toBe(queueCall.tx)
+        expect(signature(queueCall.tx)).toStrictEqual([
           'occurrences.getAllKeys', 'occurrences.getAll', 'legacy_classes.getAll',
-        ]))
+        ])
         const queueAt = instrument.calls.indexOf(queueCall)
         const logged = (entry: string) => instrument.log.findIndex(line => line === entry || line.startsWith(`${entry} `))
         expect(recoveryCall.events).toStrictEqual(['complete'])
         expect(logged(`complete#${recoveryAt}`)).toBeGreaterThanOrEqual(0)
         expect(logged(`complete#${recoveryAt}`)).toBeLessThan(logged(`create#${queueAt}`))
-        await screen.findByText(waitingNote, {}, { timeout: 3_000 })
+        if (waitingStage === 'queue') {
+          await act(async () => { await vi.advanceTimersByTimeAsync(999) })
+          expect(screen.queryByText(waitingNote)).toBeNull()
+          await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+        }
+        expect(screen.getByText(waitingNote)).toBeDefined()
         expect(queueCall.events).not.toContain('complete')
         expect(reconcileCalls(fetchMock)).toBe(0)
+        vi.useRealTimers()
         queue.release('commit')
         await screen.findByText('Synced 1 offline scan(s).', {}, { timeout: BOUND_MS })
         await readsSettled()
@@ -2591,6 +2664,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
         expect(await storedRows()).toStrictEqual(before.map(row => terminalRow(row, 'recorded')))
         expect(instrument.pendingRules()).toBe(0)
       } finally {
+        vi.useRealTimers()
         recovery.release('commit')
         queue.release('commit')
         for (const spy of spies) spy.mockRestore()
