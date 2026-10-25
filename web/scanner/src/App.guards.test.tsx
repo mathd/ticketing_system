@@ -208,7 +208,7 @@ it.each([409, 422].flatMap(status => ['held', 'throw', 'abort'].map(mode => ({st
     else await reached
     await act(async () => { body({decision:'rejected',reason:'refunded'}) })
     await screen.findByRole('heading',{name:'Rejected'})
-    expect(screen.getByRole('alert',{name:'Scan result'}).textContent).toBe('RejectedCredential is invalid or cannot be redeemed.')
+    expect(screen.getByRole('alert',{name:'Scan result'}).textContent).toBe('RejectedDo not admit. This ticket was voided by a refund. Get an operator.Reason: refunded.')
     expect(page.coordinator.latched(id)).toBe(first)
     holding?.release()
     await act(async () => { await page.coordinator.repairAll() })
@@ -237,7 +237,7 @@ it.each([409,422].flatMap(status => ['held','throw','abort'].map(mode => ({statu
     await waitFor(()=>expect(original).toBeDefined())
     const id=scans[0].occurrence_id as string,first=page.coordinator.latched(id)
     expect(original).toMatchObject({state:'RESOLVED',localOutcome:{cause:'denied',reason:null,status}})
-    expect(screen.getByRole('alert',{name:'Scan result'}).textContent).toBe('RejectedCredential is invalid or cannot be redeemed.')
+    expect(screen.getByRole('alert',{name:'Scan result'}).textContent).toBe('RejectedDo not admit. This ticket was voided by a refund. Get an operator.Reason: refunded.')
     if(mode==='held'){const call=await holding!.started;await waitFor(()=>expect(call.events).toContain('write-success'));expect(call.events).not.toContain('complete')}
     else{await reached;expect(await rawGet(dbName,STORE.occurrences,id)).toStrictEqual(original)}
     holding?.release()

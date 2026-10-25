@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { ACCEPT_INSTRUCTION, OFFLINE_INSTRUCTION, presentResult } from './scan-result'
 import type { EntryResult } from './entry-scan'
 
@@ -26,22 +26,39 @@ const cases: Array<[EntryResult, string | undefined, string[]]> = [
   [{ kind: 'server-error' }, 'Operator required', ['Outcome unknown. Do not admit. Contact an operator.']],
   [{ kind: 'local-failure' }, 'Operator required', ['Local scanner failure. Scanner did not open. Do not admit from this result; get an operator.']],
   [{ kind: 'revocation-refused' }, 'Not valid for entry', ["This ticket is on the device's revocation list. Do not admit."]],
-  [{ kind: 'rejected', reason: 'already_redeemed' }, 'Rejected', ['Already redeemed.']],
+  [{ kind: 'rejected', reason: 'already_redeemed' }, 'Rejected', ['Already redeemed.', 'Do not admit. Get an operator.', 'Reason: already_redeemed.']],
 ]
 it.each(cases)('renders the complete %j result', (result, heading, lines) => {
   expect(presentResult(result, { direction: 'entry', requestMayHaveBeenSent: true })).toMatchObject({ heading, lines })
 })
-it.each(['not_inside', 'exit_not_applicable', 'invalid_credential',
-  'revoked', 'refunded', 'exchanged', 'exit_unverified', 'integrity_quarantined', 'integrity_operator_controlled',
-  'occurrence_required', 'unknown_future_reason', 'invalid_occurrence', 'occurrence_collision'])('keeps the scoped generic Entry copy for %s', (reason) => {
-  expect(presentResult({ kind: 'rejected', reason }, { direction: 'entry', requestMayHaveBeenSent: true })).toMatchObject({ heading: 'Rejected', lines: ['Credential is invalid or cannot be redeemed.'] })
-})
-const ownEntryInstructions: Array<[string, string[]]> = [
-  ['exit_required', ['Do not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.', 'Reason: exit_required.']],
-  ['entry_limit_reached', ['Do not admit. No entries remain on this pass.', 'Reason: entry_limit_reached.']],
+const entryDenials: Array<[string, string[]]> = [
+  [" Future_Reason ", ["Do not admit. Access refused this scan. Get an operator.", "Reason:  Future_Reason ."]],
+  ["already_redeemed", ["Already redeemed.", "Do not admit. Get an operator.", "Reason: already_redeemed."]],
+  ["entry_limit_reached", ["Do not admit. No entries remain on this pass.", "Reason: entry_limit_reached."]],
+  ["exit_required", ["Do not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.", "Reason: exit_required."]],
+  ["not_inside", ["Do not admit. Access returned an Exit refusal for this Entry scan. Get an operator.", "Reason: not_inside."]],
+  ["exit_not_applicable", ["Do not admit. Access returned an Exit refusal for this Entry scan. Get an operator.", "Reason: exit_not_applicable."]],
+  ["invalid_credential", ["Do not admit. Access did not accept this credential. Get an operator.", "Reason: invalid_credential."]],
+  ["revoked", ["Do not admit. Access refused this scan. Get an operator.", "Reason: revoked."]],
+  ["refunded", ["Do not admit. This ticket was voided by a refund. Get an operator.", "Reason: refunded."]],
+  ["exchanged", ["Do not admit. This ticket was replaced by an exchange. Ask for the replacement ticket and scan it.", "Reason: exchanged."]],
+  ["exit_unverified", ["Do not admit. Access returned an Exit refusal for this Entry scan. Get an operator.", "Reason: exit_unverified."]],
+  ["integrity_quarantined", ["Do not admit. Access has blocked another admission after an earlier integrity exception. Get an operator.", "Reason: integrity_quarantined."]],
+  ["integrity_operator_controlled", ["Do not admit. Access refused this ticket under operator-controlled integrity handling. Get an operator.", "Reason: integrity_operator_controlled."]],
+  ["occurrence_required", ["Do not admit. This scan is missing its required occurrence ID. Get an operator to check the scanner.", "Reason: occurrence_required."]],
+  ["unknown_future_reason", ["Do not admit. Access refused this scan. Get an operator.", "Reason: unknown_future_reason."]],
+  ["invalid_occurrence", ["Do not admit. This scan has invalid occurrence data. Get an operator to check the scanner.", "Reason: invalid_occurrence."]],
+  ["occurrence_collision", ["Do not admit. This scan's occurrence ID conflicts with an existing record. Get an operator.", "Reason: occurrence_collision."]],
+  ["future_reason", ["Do not admit. Access refused this scan. Get an operator.", "Reason: future_reason."]],
+  ["__proto__", ["Do not admit. Access refused this scan. Get an operator.", "Reason: __proto__."]],
+  ["<b>future_reason</b>", ["Do not admit. Access refused this scan. Get an operator.", "Reason: <b>future_reason</b>."]],
 ]
-it.each(ownEntryInstructions)('renders the complete Entry instruction for %s with its Reason line', (reason, lines) => {
+it.each(entryDenials)('TKT-565 complete Entry denial %s', (reason, lines) => {
   expect(presentResult({ kind: 'rejected', reason }, { direction: 'entry', requestMayHaveBeenSent: true })).toEqual({ heading: 'Rejected', tone: 'rejected', lines })
+})
+it.each(entryDenials.filter(([reason]) => reason !== 'already_redeemed'))('TKT-565 ignores supplied admission time for Entry %s', (reason, lines) => {
+  expect(presentResult({ kind: 'rejected', reason, originalScanAt: '2026-10-18T09:00:01.456Z' },
+    { direction: 'entry', requestMayHaveBeenSent: true })).toEqual({ heading: 'Rejected', tone: 'rejected', lines })
 })
 it('uses validated server times without replacing them with current device time', () => {
   const scannedAt = '2026-10-18T09:00:01.456Z'
@@ -49,7 +66,27 @@ it('uses validated server times without replacing them with current device time'
   expect(presentResult({ kind: 'accepted', scannedAt, replay: true }, { direction: 'entry', requestMayHaveBeenSent: true })).toMatchObject({ heading: 'Accepted', lines: [
     'Entry accepted. Admit.', `Entry recorded at ${localized}.`, 'This scan was previously recorded. Entry counted once.',
   ] })
-  expect(presentResult({ kind: 'rejected', reason: 'already_redeemed', originalScanAt: scannedAt }, { direction: 'entry', requestMayHaveBeenSent: true })).toMatchObject({
-    heading: 'Rejected', lines: [`Already redeemed at ${localized}.`],
+  expect(presentResult({ kind: 'rejected', reason: 'already_redeemed', originalScanAt: scannedAt }, { direction: 'entry', requestMayHaveBeenSent: true })).toEqual({
+    heading: 'Rejected', tone: 'rejected', lines: [`Already redeemed at ${localized}.`, 'Do not admit. Get an operator.', 'Reason: already_redeemed.'],
   })
+})
+
+it('TKT-565 never substitutes the device date for an absent Access time', () => {
+  const NativeDate = Date
+  vi.stubGlobal('Date', class extends NativeDate {
+    constructor(value?: string | number) { super(value ?? '2035-02-03T04:05:06.789Z') }
+  })
+  try {
+    expect(new Date().toISOString()).toBe('2035-02-03T04:05:06.789Z')
+    expect(presentResult({ kind: 'rejected', reason: 'already_redeemed' },
+      { direction: 'entry', requestMayHaveBeenSent: true })).toEqual({ heading: 'Rejected', tone: 'rejected', lines: [
+      'Already redeemed.', 'Do not admit. Get an operator.', 'Reason: already_redeemed.',
+    ] })
+    const originalScanAt = '2026-10-18T09:00:01.456Z'
+    const time = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' }).format(new NativeDate(originalScanAt))
+    expect(presentResult({ kind: 'rejected', reason: 'already_redeemed', originalScanAt },
+      { direction: 'entry', requestMayHaveBeenSent: true })).toEqual({ heading: 'Rejected', tone: 'rejected', lines: [
+      `Already redeemed at ${time}.`, 'Do not admit. Get an operator.', 'Reason: already_redeemed.',
+    ] })
+  } finally { vi.unstubAllGlobals() }
 })

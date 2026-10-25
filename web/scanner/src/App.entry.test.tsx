@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type { TerminalDecision } from './occurrence-coordinator'
 import type { StorageController } from './occurrence-readiness'
 import App from './App'
 import { createTestPage, destroyAllPages, mintOn, type TestPage } from './test/page-fixture'
@@ -18,7 +19,7 @@ let batches: Record<string, unknown>[][]
 let scanReply: () => Promise<Response>
 beforeEach(async () => {
   dbName = `app-entry-${crypto.randomUUID()}`
-  page = createTestPage({ dbName })
+  page = createTestPage({ dbName, now: () => 1000 })
   runtime.storage = page.storage
   await page.ready()
   scans = []; batches = []
@@ -88,24 +89,120 @@ it('publishes an accepted result through the real mark and keeps it stable on re
   expect(batches).toEqual([])
 })
 
-it.each(['already_redeemed', 'entry_limit_reached', 'exit_required', 'not_inside', 'exit_not_applicable', 'invalid_credential', 'revoked', 'refunded', 'exchanged', 'exit_unverified', 'integrity_quarantined', 'integrity_operator_controlled', 'occurrence_required', 'unknown_future_reason', 'invalid_occurrence', 'occurrence_collision'])('keeps the exact denial reason %s and the complete current Entry instruction', async (reason) => {
-  scanReply = async () => new Response(JSON.stringify({ decision: 'rejected', reason }), { status: 422 })
+// Response injection tests client compatibility, including combinations Access does not emit.
+const entryDenials: Array<{ reason: string; lines: string[] }> = [
+  { reason: " Future_Reason ", lines: ["Do not admit. Access refused this scan. Get an operator.", "Reason:  Future_Reason ."] },
+  { reason: "already_redeemed", lines: ["Already redeemed.", "Do not admit. Get an operator.", "Reason: already_redeemed."] },
+  { reason: "entry_limit_reached", lines: ["Do not admit. No entries remain on this pass.", "Reason: entry_limit_reached."] },
+  { reason: "exit_required", lines: ["Do not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.", "Reason: exit_required."] },
+  { reason: "not_inside", lines: ["Do not admit. Access returned an Exit refusal for this Entry scan. Get an operator.", "Reason: not_inside."] },
+  { reason: "exit_not_applicable", lines: ["Do not admit. Access returned an Exit refusal for this Entry scan. Get an operator.", "Reason: exit_not_applicable."] },
+  { reason: "invalid_credential", lines: ["Do not admit. Access did not accept this credential. Get an operator.", "Reason: invalid_credential."] },
+  { reason: "revoked", lines: ["Do not admit. Access refused this scan. Get an operator.", "Reason: revoked."] },
+  { reason: "refunded", lines: ["Do not admit. This ticket was voided by a refund. Get an operator.", "Reason: refunded."] },
+  { reason: "exchanged", lines: ["Do not admit. This ticket was replaced by an exchange. Ask for the replacement ticket and scan it.", "Reason: exchanged."] },
+  { reason: "exit_unverified", lines: ["Do not admit. Access returned an Exit refusal for this Entry scan. Get an operator.", "Reason: exit_unverified."] },
+  { reason: "integrity_quarantined", lines: ["Do not admit. Access has blocked another admission after an earlier integrity exception. Get an operator.", "Reason: integrity_quarantined."] },
+  { reason: "integrity_operator_controlled", lines: ["Do not admit. Access refused this ticket under operator-controlled integrity handling. Get an operator.", "Reason: integrity_operator_controlled."] },
+  { reason: "occurrence_required", lines: ["Do not admit. This scan is missing its required occurrence ID. Get an operator to check the scanner.", "Reason: occurrence_required."] },
+  { reason: "unknown_future_reason", lines: ["Do not admit. Access refused this scan. Get an operator.", "Reason: unknown_future_reason."] },
+  { reason: "invalid_occurrence", lines: ["Do not admit. This scan has invalid occurrence data. Get an operator to check the scanner.", "Reason: invalid_occurrence."] },
+  { reason: "occurrence_collision", lines: ["Do not admit. This scan's occurrence ID conflicts with an existing record. Get an operator.", "Reason: occurrence_collision."] },
+  { reason: "future_reason", lines: ["Do not admit. Access refused this scan. Get an operator.", "Reason: future_reason."] },
+  { reason: "__proto__", lines: ["Do not admit. Access refused this scan. Get an operator.", "Reason: __proto__."] },
+  { reason: "<b>future_reason</b>", lines: ["Do not admit. Access refused this scan. Get an operator.", "Reason: <b>future_reason</b>."] },
+]
+const originalScanAt = '2026-10-18T09:00:01.456Z'
+const deviceDate = '2035-02-03T04:05:06.789Z'
+const decisionDate = '2035-02-03T04:05:07.123Z'
+function fixedPresentationDate() {
+  const NativeDate = Date
+  let valueNow = deviceDate
+  // Date.now and timers remain real so fixture deadlines cannot freeze.
+  vi.stubGlobal('Date', class extends NativeDate {
+    constructor(value?: string | number) { super(value ?? valueNow) }
+  })
+  return (value: string) => { valueNow = value }
+}
+async function submittedDenial(status: 409 | 422, body: unknown, reason: string | null, lines: string[], unreadable = false) {
+  const control = await queueControl()
+  const setPresentationDate = fixedPresentationDate()
+  const latch = page.coordinator.latch.bind(page.coordinator)
+  const decisions: TerminalDecision[] = []
+  vi.spyOn(page.coordinator, 'latch').mockImplementation(proposal => {
+    if (proposal.kind === 'terminal') decisions.push(structuredClone(proposal))
+    const result = latch(proposal)
+    setPresentationDate('2035-02-03T04:05:08.456Z')
+    return result
+  })
+  const mark = vi.spyOn(page.store(), 'reserveActuation')
+  let pending: unknown
+  scanReply = async () => {
+    pending = await rawGet(dbName, STORE.occurrences, scans[0].occurrence_id as string)
+    setPresentationDate(decisionDate)
+    return new Response(unreadable ? '<html>not json</html>' : JSON.stringify(body), { status })
+  }
   render(<App />); await scan()
-  const expected = reason === 'already_redeemed' ? 'RejectedAlready redeemed.'
-    : reason === 'exit_required' ? 'RejectedDo not admit. Access records this pass as inside. Confirm that the holder has left, then record Exit before a new Entry scan.Reason: exit_required.'
-      : reason === 'entry_limit_reached' ? 'RejectedDo not admit. No entries remain on this pass.Reason: entry_limit_reached.'
-        : 'RejectedCredential is invalid or cannot be redeemed.'
-  await waitFor(() => expect(screen.getByRole('alert', { name: 'Scan result' }).textContent).toBe(expected))
-  await waitFor(async () => expect(await rawGet(dbName, STORE.occurrences, scans[0].occurrence_id as string)).toMatchObject({ state: 'RESOLVED', localOutcome: { family: 'terminal', cause: 'denied', status: 422, reason } }))
-  expect((await page.store().queued()).entries).toEqual([])
-})
+  await waitFor(() => expect(document.querySelector('[aria-label="Scan result"]')).not.toBeNull())
+  const result = screen.getByRole('alert', { name: 'Scan result' })
+  expect(result.className).toBe('result rejected')
+  expect(result.textContent).toBe(`Rejected${lines.join('')}`)
+  expect([...result.querySelectorAll('p')].map(p => p.textContent)).toEqual(lines)
+  expect(result.querySelector('b')).toBeNull()
+  expect(scans).toHaveLength(1)
+  const id = scans[0].occurrence_id as string
+  expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+  expect(scans).toStrictEqual([{ occurrence_id: id, occurred_at: deviceDate, qr_payload: 'credential', direction: 'entry' }])
+  const identity = { occurrenceId: id, occurredAt: deviceDate, createdAt: deviceDate, qrPayload: 'credential',
+    ownerId: page.coordinator.ownerId, direction: 'entry', recordFormat: 1, leaseExpiresAt: 31000, actuated: false }
+  expect(pending).toStrictEqual({ ...identity, state: 'PENDING' })
+  expect(decisions).toHaveLength(1)
+  const first = decisions[0]
+  if (first.outcome.cause !== 'denied') throw new Error('expected the original denial latch')
+  const latchId = first.outcome.latchId
+  expect(latchId).toMatch(/^[0-9a-f-]{36}$/)
+  expect(first).toStrictEqual({ kind: 'terminal', occurrenceId: id, decidedAt: decisionDate,
+    outcome: { family: 'terminal', cause: 'denied', status, latchId, reason: null } })
+  const resolved = { ...identity, state: 'RESOLVED', decidedAt: first.decidedAt,
+    localOutcome: { family: 'terminal', cause: 'denied', status, latchId, reason } }
+  await waitFor(async () => expect(await rawGet(dbName, STORE.occurrences, id)).toStrictEqual(resolved))
+  expect(mark).not.toHaveBeenCalled()
+  fireEvent.click(await screen.findByRole('button', { name: 'Sync queued scans' }))
+  await screen.findByText('Synced 1 offline scan(s).')
+  expect(batches).toStrictEqual([[{ occurrence_id: control.occurrenceId, qr_payload: control.qrPayload,
+    occurred_at: control.occurredAt, event_type: 'entry' }]])
+  expect(await rawGet(dbName, STORE.occurrences, id)).toStrictEqual(resolved)
+  expect(screen.getByRole('alert', { name: 'Scan result' }).textContent).toBe(`Rejected${lines.join('')}`)
+  expect(scans).toHaveLength(1)
+  expect(mark).not.toHaveBeenCalled()
+  expect((screen.getByRole('radio', { name: 'Entry' }) as HTMLInputElement).checked).toBe(true)
+}
 
-it.each([409, 422])('retains an unknown denial at status %s when the body is unreadable', async (status) => {
-  scanReply = async () => new Response('<html>not json</html>', { status })
-  render(<App />); await scan()
-  await waitFor(() => expect(screen.getByRole('alert', { name: 'Scan result' }).textContent).toBe('RejectedAccess refused this scan; reason unavailable. Do not admit'))
-  await waitFor(async () => expect(await rawGet(dbName, STORE.occurrences, scans[0].occurrence_id as string)).toMatchObject({ state: 'RESOLVED', localOutcome: { cause: 'denied', reason: null } }))
+it.each(([409, 422] as const).flatMap(status => entryDenials.map(entry => ({ status, ...entry }))))(
+  'TKT-565 submitted Entry $status $reason stores the exact denial and syncs only its control', async ({ status, reason, lines }) => {
+    await submittedDenial(status, { decision: 'rejected', reason }, reason, lines)
+  })
+it.each([409, 422] as const)('TKT-565 submitted Entry %s retains supplied already_redeemed Access time', async status => {
+  const localized = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' }).format(new Date(originalScanAt))
+  await submittedDenial(status, { decision: 'rejected', reason: 'already_redeemed', original_scan_at: originalScanAt }, 'already_redeemed', [
+    `Already redeemed at ${localized}.`, 'Do not admit. Get an operator.', 'Reason: already_redeemed.',
+  ])
 })
+it.each([409, 422] as const)('TKT-565 submitted Entry %s does not display the supplied time for integrity_quarantined', async status => {
+  await submittedDenial(status, { decision: 'rejected', reason: 'integrity_quarantined', original_scan_at: originalScanAt }, 'integrity_quarantined', [
+    'Do not admit. Access has blocked another admission after an earlier integrity exception. Get an operator.', 'Reason: integrity_quarantined.',
+  ])
+})
+const unreadableDenials = [
+  { name: 'malformed time', body: { decision: 'rejected', reason: 'already_redeemed', original_scan_at: 'not-a-time' } },
+  { name: 'missing reason', body: { decision: 'rejected' } },
+  { name: 'wrong-type reason', body: { decision: 'rejected', reason: 7 } },
+  { name: 'unreadable body', body: null, unreadable: true },
+]
+it.each(([409, 422] as const).flatMap(status => unreadableDenials.map(entry => ({ status, ...entry }))))(
+  'TKT-565 submitted Entry $status $name retains null reason and terminal facts', async ({ status, body, unreadable }) => {
+    await submittedDenial(status, body, null, ['Access refused this scan; reason unavailable. Do not admit'], unreadable)
+  })
 
 it.each([502, 503, 504])('publishes the exact offline instruction for %s and retains it through reconciliation', async (status) => {
   scanReply = async () => new Response('<html>unreadable</html>', { status })
