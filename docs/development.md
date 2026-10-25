@@ -1673,8 +1673,11 @@ Waiting. When initial storage work takes longer than 1,000 ms, the sync line sho
 storage to finish before this sync can continue." The wait covers repair, recovery and the queue read
 before the first request. It describes local storage only. It does not mean a failure, a timeout, a
 saved scan, a sent scan or permission to admit. The line clears when that work finishes, when the page
-is closed or unmounted, or before the first request is sent. A pairing change does not clear it while
-the work continues. Application of a batch and the refresh after a batch do not show this line.
+is closed or unmounted, or when the storage used by that attempt stops being ready. The line is
+removed from the page before the first request is sent. A pairing change does not clear it while
+the initial storage work continues. Clearing the line does not cancel an atomic write that already
+started or permit a second sync pass to run alongside it. Application of a batch and the refresh
+after a batch do not show this line.
 
 A failed local write of a sync result shows this message: "The last sync result could not be saved on
 this device, so that batch was not applied. Scans from that batch that are still queued will be retried

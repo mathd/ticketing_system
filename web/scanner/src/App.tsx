@@ -51,7 +51,7 @@ type Lifecycle = {
   live: boolean
   loop: { running: boolean; requested: boolean }
   controller?: AbortController
-  attempt?: { id: number; timer: number }
+  attempt?: { id: number; timer: number; store: OccurrenceStore | null }
 }
 
 const carriedFailure = (note: SyncNote): CarriedFailure | undefined =>
@@ -234,6 +234,7 @@ function App() {
     const update = (state: StorageReadiness) => {
       setReadiness(state)
       diagnostic()
+      if (life.attempt && !applicable(life, life.attempt.store)) endAttempt(life, life.attempt.id)
       if (state.status !== 'ready') {
         stopCamera()
         settleCheckingFailure()
@@ -366,11 +367,11 @@ function App() {
     }
   }
 
-  // The waiting line belongs to one attempt. Only that attempt's timer or finalizer can change it.
-  const startAttempt = (life: Lifecycle) => {
+  // Waiting belongs to one attempt and its captured store.
+  const startAttempt = (life: Lifecycle, store: OccurrenceStore | null) => {
     const id = ++attemptSeq.current
-    const timer = window.setTimeout(() => { if (life.live && life.attempt?.id === id) setWaiting(true) }, waitingDelayMs)
-    life.attempt = { id, timer }
+    const timer = window.setTimeout(() => { if (applicable(life, store) && life.attempt?.id === id) setWaiting(true) }, waitingDelayMs)
+    life.attempt = { id, timer, store }
     return id
   }
   const endAttempt = (life: Lifecycle, id: number) => {
@@ -383,12 +384,13 @@ function App() {
   // One pass of the serial sync owner. Pairing is read after the storage phase, so a replacement token is used for the batches.
   const syncPass = async (life: Lifecycle) => {
     const store = storage.readyStore()
-    const attempt = startAttempt(life)
+    const attempt = startAttempt(life, store)
     let entries: QueuedEntry[] | undefined
     try {
       entries = await observe(life, store)
     } finally {
-      endAttempt(life, attempt)
+      // Commit waiting removal before fetch can observe the DOM. Cleanup and readiness callbacks do not flush.
+      if (life.live && life.attempt?.id === attempt) flushSync(() => endAttempt(life, attempt))
     }
     if (!store || !entries?.length) return
     const plan = planReconcileBatches(entries)

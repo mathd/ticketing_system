@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { Activity, StrictMode } from 'react'
 import App, { reconcileTimeoutMs } from './App'
 import type { CurrentRecord as OccurrenceRecord } from './occurrence-model'
-import type { QueuedEntry } from './occurrence-store'
+import type { OccurrenceStore, QueuedEntry } from './occurrence-store'
 import type { StorageController } from './occurrence-readiness'
 import { BOUND_MS, bounded, createTestPage, destroyAllPages, mintOn, type TestPage } from './test/page-fixture'
 import { rawGetAll, rawPut, seedDatabase, V2_STORES } from './test/raw-db'
@@ -17,7 +17,28 @@ vi.mock('./occurrence-readiness', async (load) => {
 })
 let page: TestPage
 let dbName: string
+type QueueSnapshot = Awaited<ReturnType<OccurrenceStore['queued']>>
+// Keep these deadlines running while a test advances only the presentation timer.
+const realTimeout = globalThis.setTimeout.bind(globalThis)
+const realClearTimeout = globalThis.clearTimeout.bind(globalThis)
+async function boundedReal<T>(promise: Promise<T>, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([promise, new Promise<never>((_, reject) => {
+      timer = realTimeout(() => reject(new Error(`bounded wait expired: ${label}`)), BOUND_MS)
+    })])
+  } finally { realClearTimeout(timer) }
+}
 
+async function readinessIs(status: ReturnType<StorageController['state']>['status']) {
+  let unsubscribe = () => {}
+  try {
+    await boundedReal(new Promise<void>(resolve => {
+      unsubscribe = page.storage.subscribe(state => { if (state.status === status) resolve() })
+      if (page.storage.state().status === status) resolve()
+    }), `storage ${status}`)
+  } finally { unsubscribe() }
+}
 
 // Controls the failure-path read without changing the stored rows.
 const queueReads = vi.hoisted(() => ({
@@ -26,7 +47,8 @@ const queueReads = vi.hoisted(() => ({
   failNext: false,
   failMarkSyncedNext: false,
   onStarted: null as (() => void) | null,
-  holdNext: null as { result: Promise<OccurrenceRecord[]>; started: () => void } | null,
+  holdNext: null as { result: Promise<QueueSnapshot>; started: () => void } | null,
+  captureNext: null as { captured: (read: QueueSnapshot) => void; release: Promise<void> } | null,
 }))
 
 function wrapQueueReads() {
@@ -42,11 +64,18 @@ function wrapQueueReads() {
     queueReads.onStarted?.()
     try {
       if (queueReads.failNext) { queueReads.failNext = false; throw new Error('queue read failed') }
+      const capture = queueReads.captureNext
+      if (capture) {
+        queueReads.captureNext = null
+        const read = await queued()
+        capture.captured(read)
+        await capture.release
+        return read
+      }
       const held = queueReads.holdNext
       if (held) {
         queueReads.holdNext = null; held.started()
-        const records = await held.result
-        return { entries: records.map((record): QueuedEntry => ({ format: 1, key: record.occurrenceId, record })), warnings: [] }
+        return await held.result
       }
       return await queued()
     } finally { queueReads.finished += 1 }
@@ -287,6 +316,7 @@ beforeEach(async () => {
   queueReads.failNext = false
   queueReads.failMarkSyncedNext = false
   queueReads.holdNext = null
+  queueReads.captureNext = null
   queueReads.onStarted = null
   sessionStorage.clear()
   localStorage.setItem('scanner.device-token', 'paired-device-token')
@@ -353,8 +383,20 @@ function holdReconciles() {
 function holdNextQueueRead() {
   const result = deferred<OccurrenceRecord[]>()
   const started = deferred<void>()
-  queueReads.holdNext = { result: result.promise, started: () => started.resolve() }
+  queueReads.holdNext = {
+    result: result.promise.then(records => ({ entries: records.map((record): QueuedEntry => ({ format: 1, key: record.occurrenceId, record })), warnings: [] })),
+    started: () => started.resolve(),
+  }
   return { result, started: started.promise }
+}
+
+// The production strict reader captures both fields on the same live store before this hold.
+// Only delivery to App is delayed. A rejection simulates failure after that read.
+function holdNextQueueSnapshot() {
+  const captured = deferred<QueueSnapshot>()
+  const release = deferred<void>()
+  queueReads.captureNext = { captured: captured.resolve, release: release.promise }
+  return { captured: captured.promise, release: () => release.resolve(), fail: release.reject }
 }
 
 // A valid reconcile answer that records every occurrence the page sent.
@@ -1611,6 +1653,168 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
     })
   })
 
+
+  describe('A2 live-store count and warning order', () => {
+    let capturedStore: OccurrenceStore
+    const formatWarning = 'Local record corrupt-row cannot be read: not a current-format record. It stays on this device and will not sync.'
+    async function seedTwo() {
+      capturedStore = page.store()
+      render(<App />)
+      stubFetch(() => Promise.reject(new TypeError('not yet')))
+      await queueOneScan('warning-a')
+      await queueOneScan('warning-b')
+      const rows = await storedRows() as OccurrenceRecord[]
+      expect(rows).toHaveLength(2)
+      return rows
+    }
+    async function warning(row: OccurrenceRecord, kind: 'direction' | 'format') {
+      await rawPut(dbName, STORE.occurrences, { ...row, occurrenceId: 'corrupt-row',
+        ...(kind === 'direction' ? { direction: 'sideways' } : { recordFormat: 99 }) })
+    }
+    function expectSnapshot(count: number, warnings: string[]) {
+      expect(screen.queryAllByText(/^Local record .* cannot be read:/).map(node => node.textContent)).toStrictEqual(warnings)
+      if (count) expect(screen.getByText(new RegExp(`^${count} queued offline scans? awaiting sync\\.`))).toBeDefined()
+      else expect(screen.queryByRole('button', { name: 'Sync queued scans' })).toBeNull()
+      expect(page.storage.readyStore()).toBe(capturedStore)
+    }
+    async function captured(hold: ReturnType<typeof holdNextQueueSnapshot>, count: number, problem: string) {
+      const snapshot = await bounded(hold.captured, 'production queue snapshot')
+      expect(snapshot.entries).toHaveLength(count)
+      expect(snapshot.warnings).toStrictEqual([{ key: 'corrupt-row', problem }])
+    }
+
+    it.each(['older first', 'newer first', 'older rejects'] as const)('publishes count and strict-reader warnings in accepted order: %s', async order => {
+      const [a, b] = await seedTwo()
+      expectSnapshot(2, [])
+      await warning(a, 'direction')
+      const older = holdNextQueueSnapshot()
+      try {
+        focusWindow()
+        await captured(older, 2, 'record type is not exactly one of entry, exit or refusal')
+        await retireElsewhere([b])
+        await warning(a, 'format')
+        const newer = holdNextQueueSnapshot()
+        try {
+          focusWindow()
+          await captured(newer, 1, 'not a current-format record')
+          if (order === 'older first') {
+            await act(async () => older.release())
+            await settle()
+            expectSnapshot(2, [corruptWarning])
+          }
+          await act(async () => newer.release())
+          await settle()
+          expectSnapshot(1, [formatWarning])
+          await act(async () => {
+            if (order === 'older rejects') older.fail(new Error('late read failed'))
+            else older.release()
+          })
+          await readsSettled()
+          expectSnapshot(1, [formatWarning])
+          expect(screen.queryByText(readAlert)).toBeNull()
+        } finally { newer.release() }
+      } finally { older.release() }
+    })
+
+    it('an accepted ordinary error retains count and warnings, and discards a late correction on the same ready store', async () => {
+      const [a, b] = await seedTwo()
+      await warning(a, 'direction')
+      focusWindow()
+      await readsSettled()
+      expectSnapshot(2, [corruptWarning])
+      const held = holdReconciles()
+      fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+      const request = await bounded(held.next(), 'first sync')
+      const correction = holdNextQueueSnapshot()
+      try {
+        await act(async () => request.fail(new TypeError('network down')))
+        await captured(correction, 2, 'record type is not exactly one of entry, exit or refusal')
+        expect(screen.getByText(checkingOfflineNote)).toBeDefined()
+        await retireElsewhere([b])
+        await warning(a, 'format')
+        focusWindow()
+        await waitFor(() => expect(screen.getByText(offlineNote)).toBeDefined())
+        expectSnapshot(1, [formatWarning])
+        // This read sees a different snapshot, but its error must preserve the last accepted pair.
+        await retireElsewhere([a])
+        await warning(a, 'direction')
+        const failed = holdNextQueueSnapshot()
+        try {
+          focusWindow()
+          await captured(failed, 0, 'record type is not exactly one of entry, exit or refusal')
+          await act(async () => failed.fail(new Error('ordinary read failed')))
+          await settle()
+          expect(screen.getByText(unknownOfflineNote)).toBeDefined()
+          expect(screen.getByText(readAlert)).toBeDefined()
+          expectSnapshot(1, [formatWarning])
+          await act(async () => correction.release())
+          await readsSettled()
+          expectSnapshot(1, [formatWarning])
+          expect(screen.getByText(unknownOfflineNote)).toBeDefined()
+          expect(screen.getByText(readAlert)).toBeDefined()
+        } finally { failed.release() }
+      } finally { correction.release() }
+    })
+
+    it('a rejected direct correction retains the previously accepted count and warnings', async () => {
+      const [a, b] = await seedTwo()
+      await warning(a, 'direction')
+      focusWindow()
+      await readsSettled()
+      expectSnapshot(2, [corruptWarning])
+      const held = holdReconciles()
+      fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+      const request = await bounded(held.next(), 'sync before rejected correction')
+      await retireElsewhere([b])
+      await warning(a, 'format')
+      const correction = holdNextQueueSnapshot()
+      try {
+        await act(async () => request.fail(new TypeError('network down')))
+        await captured(correction, 1, 'not a current-format record')
+        await act(async () => correction.fail(new Error('correction failed')))
+        await readsSettled()
+        expectSnapshot(2, [corruptWarning])
+        expect(screen.getByText(unknownOfflineNote)).toBeDefined()
+        expect(screen.queryByText(readAlert)).toBeNull()
+        focusWindow()
+        await readsSettled()
+        expectSnapshot(1, [formatWarning])
+        expect(screen.getByText(offlineNote)).toBeDefined()
+      } finally { correction.release() }
+    })
+
+    // Failure identity and the publication watermark protect these results together.
+    // Removing only one guard need not make this schedule fail.
+    it.each(['success', 'new failure'] as const)('a late correction cannot replace count or warnings after %s', async outcome => {
+      const [a, b] = await seedTwo()
+      await warning(a, 'direction')
+      const held = holdReconciles()
+      fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+      const first = await bounded(held.next(), 'first sync')
+      const correction = holdNextQueueSnapshot()
+      try {
+        await act(async () => first.fail(new TypeError('network down')))
+        await captured(correction, 2, 'record type is not exactly one of entry, exit or refusal')
+        await retireElsewhere([b])
+        await warning(a, 'format')
+        focusWindow()
+        await waitFor(() => expect(screen.getByText(offlineNote)).toBeDefined())
+        expectSnapshot(1, [formatWarning])
+        fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+        const second = await bounded(held.next(), 'second sync')
+        await act(async () => second.answer(outcome === 'success' ? recordedResponse(second.body) : new Response('', { status: 502 })))
+        await waitFor(() => expect(screen.getByText(outcome === 'success' ? 'Synced 1 offline scan(s).' : unreadableNote)).toBeDefined())
+        const count = outcome === 'success' ? 0 : 1
+        await waitFor(() => expectSnapshot(count, [formatWarning]))
+        await act(async () => correction.release())
+        await readsSettled()
+        expectSnapshot(count, [formatWarning])
+        expect(screen.getByText(outcome === 'success' ? 'Synced 1 offline scan(s).' : unreadableNote)).toBeDefined()
+        expect(screen.queryByText(readAlert)).toBeNull()
+      } finally { correction.release() }
+    })
+  })
+
   describe('T3 error sources and application outcomes', () => {
     it('an ordinary refresh whose queued() rejects keeps the count and raises the read source', async () => {
       render(<App />)
@@ -1973,11 +2177,10 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       return { started: hold.started, finish: (_rows: OccurrenceRecord[]) => hold.release(), fail: (error: Error) => hold.release(error) }
     }
     type Sent = { waiting: boolean; body: ReconcileBody; answer: (response: Response) => void }
-    // Records whether the waiting line was visible when a request was made. The React state update that clears
-    // the line is committed first, so the record reads the committed DOM. Requests stay open until answered.
+    // Sample the DOM at fetch entry, before any await or act can commit a pending render.
+    // Requests stay open until answered.
     function recordRequests(sent: Sent[]) {
-      return stubFetch(async (body) => {
-        await act(async () => {})
+      return stubFetch((body) => {
         return new Promise<Response>((answer) => {
           sent.push({ waiting: screen.queryByText(waitingNote) !== null, body, answer })
         })
@@ -1996,7 +2199,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
       try {
         fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
-        await bounded(hold.started, `held ${phase}`)
+        await boundedReal(hold.started, `held ${phase}`)
         await act(async () => { await vi.advanceTimersByTimeAsync(999) })
         expect(screen.queryByText(waitingNote)).toBeNull()
         await act(async () => { await vi.advanceTimersByTimeAsync(1) })
@@ -2010,6 +2213,100 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       await screen.findByText('Synced 1 offline scan(s).', {}, { timeout: BOUND_MS })
     })
 
+    it.each([500, 1_000])('storage loss at %s ms retires a held wait without releasing the serial owner', async elapsed => {
+      render(<StrictMode><App /></StrictMode>)
+      stubFetch(() => Promise.reject(new TypeError('not yet')))
+      await queueOneScan()
+      await readsSettled()
+      const store = page.store()
+      const rows = await storedRows() as OccurrenceRecord[]
+      const sent: Sent[] = []
+      recordRequests(sent)
+      const read = holdNextQueueRead()
+      const repairs = vi.spyOn(page.coordinator, 'repairAll')
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+        await boundedReal(read.started, 'held read before storage loss')
+        await act(async () => { await vi.advanceTimersByTimeAsync(elapsed) })
+        expect(screen.queryByText(waitingNote) !== null).toBe(elapsed === 1_000)
+        act(() => page.storage.stop())
+        expect(page.storage.readyStore()).toBeNull()
+        expect(screen.queryByText(waitingNote)).toBeNull()
+        await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+        expect(screen.queryByText(waitingNote)).toBeNull()
+        // Readiness can return while the old read remains held. A requested sync must still wait for it.
+        await act(async () => { const ready = readinessIs('ready'); page.storage.retry(); await ready })
+        expect(page.store()).not.toBe(store)
+        const repairsBeforeRequest = repairs.mock.calls.length
+        fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+        await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+        expect(repairs).toHaveBeenCalledTimes(repairsBeforeRequest)
+        expect(sent).toHaveLength(0)
+        expect(screen.queryByText(waitingNote)).toBeNull()
+      } finally { vi.useRealTimers(); read.result.resolve(rows) }
+      await waitFor(() => expect(sent).toHaveLength(1), { timeout: BOUND_MS })
+      expect(sent[0].waiting).toBe(false)
+      await act(async () => { sent[0].answer(recordedResponse(sent[0].body)) })
+      await screen.findByText('Synced 1 offline scan(s).', {}, { timeout: BOUND_MS })
+      expect(await storedRows()).toStrictEqual(rows.map(row => terminalRow(row, 'recorded')))
+    })
+
+    it.each([500, 1_000])('a version-change drain at %s ms retires waiting but lets the started repair commit', async elapsed => {
+      render(<App />)
+      stubFetch(() => Promise.reject(new TypeError('not yet')))
+      await queueOneScan('control')
+      await readsSettled()
+      const instrument = instrumentTransactions()
+      const { scan } = await mintOn(page)
+      page.coordinator.latch({ kind: 'queue', occurrenceId: scan.occurrenceId,
+        outcome: { family: 'queue', cause: 'transport_failure' }, decidedAt: '2026-10-20T12:00:01.000Z' })
+      instrument.inject('abort', { stores: [STORE.occurrences], mode: 'readwrite', durability: 'strict' })
+      expect((await page.coordinator.persist(scan.occurrenceId)).durable).toBe('failed')
+      const pending = (await storedRows() as OccurrenceRecord[]).find(row => row.occurrenceId === scan.occurrenceId)!
+      expect(pending.state).toBe('PENDING')
+      const hold = instrument.hold({ stores: [STORE.occurrences], mode: 'readwrite', durability: 'strict' }, 5_000)
+      const sent: Sent[] = []
+      recordRequests(sent)
+      const upgraded = deferred<IDBDatabase>()
+      let upgradeStarted = false
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
+        const call = await boundedReal(hold.started, 'repair before drain')
+        await act(async () => { await vi.advanceTimersByTimeAsync(elapsed) })
+        expect(screen.queryByText(waitingNote) !== null).toBe(elapsed === 1_000)
+        await act(async () => {
+          const request = indexedDB.open(dbName, 4)
+          upgradeStarted = true
+          request.onsuccess = () => upgraded.resolve(request.result)
+          request.onerror = () => upgraded.reject(new Error('version upgrade failed'))
+          await readinessIs('draining')
+        })
+        expect(page.storage.readyStore()).toBeNull()
+        expect(screen.queryByText(waitingNote)).toBeNull()
+        await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+        expect(screen.queryByText(waitingNote)).toBeNull()
+        expect(call.events).not.toContain('complete')
+        expect(call.events).not.toContain('abort')
+        expect(sent).toHaveLength(0)
+        hold.release()
+        await act(async () => { (await boundedReal(upgraded.promise, 'upgrade after repair')).close() })
+        expect(call.events).toContain('complete')
+        expect(call.events).not.toContain('abort')
+        expect(call.events).not.toContain('hold-watchdog')
+        expect((await storedRows() as OccurrenceRecord[]).find(row => row.occurrenceId === scan.occurrenceId)).toStrictEqual({
+          ...pending, state: 'QUEUED', localOutcome: { family: 'queue', cause: 'transport_failure' }, decidedAt: '2026-10-20T12:00:01.000Z',
+        })
+        expect(sent).toHaveLength(0)
+      } finally {
+        vi.useRealTimers()
+        hold.release()
+        if (upgradeStarted) (await boundedReal(upgraded.promise, 'drain cleanup')).close()
+        instrument.restore()
+      }
+    }, 15_000)
+
     it.each(['empty', 'rejected', 'no token'] as const)('waiting clears when the held queue read settles %s, and no request follows', async (outcome) => {
       render(<App />)
       stubFetch(() => Promise.reject(new TypeError('not yet')))
@@ -2022,7 +2319,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
       try {
         fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
-        await bounded(read.started, 'held queue read')
+        await boundedReal(read.started, 'held queue read')
         await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
         expect(screen.getByText(waitingNote)).toBeDefined()
         // A token removal does not end the running read. Its settlement clears the wait.
@@ -2048,7 +2345,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
       try {
         fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
-        await bounded(prelude.started, 'held prelude')
+        await boundedReal(prelude.started, 'held prelude')
         await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
         expect(screen.getByText(waitingNote)).toBeDefined()
         commitPairing('replacement-token')
@@ -2073,7 +2370,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
       try {
         fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
-        await bounded(prelude.started, 'held prelude')
+        await boundedReal(prelude.started, 'held prelude')
         await act(async () => { await vi.advanceTimersByTimeAsync(500) })
         commitPairing('replacement-token')
         await act(async () => { await vi.advanceTimersByTimeAsync(499) })
@@ -2121,7 +2418,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
       try {
         fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
-        await bounded(oldPrelude.started, 'old prelude')
+        await boundedReal(oldPrelude.started, 'old prelude')
         await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
         expect(screen.getByText(waitingNote)).toBeDefined()
       } finally { vi.useRealTimers() }
@@ -2134,7 +2431,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
       try {
         fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
-        await bounded(newPrelude.started, 'new prelude')
+        await boundedReal(newPrelude.started, 'new prelude')
         await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
         expect(screen.getByText(waitingNote)).toBeDefined()
       } finally { vi.useRealTimers() }
@@ -2165,7 +2462,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
       try {
         fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
-        await bounded(oldPrelude.started, 'old prelude')
+        await boundedReal(oldPrelude.started, 'old prelude')
         await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
         expect(screen.getByText(waitingNote)).toBeDefined()
       } finally { vi.useRealTimers() }
@@ -2176,7 +2473,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
       try {
         fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
-        await bounded(newPrelude.started, 'new prelude')
+        await boundedReal(newPrelude.started, 'new prelude')
         await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
         expect(screen.getByText(waitingNote)).toBeDefined()
       } finally { vi.useRealTimers() }
@@ -2230,32 +2527,75 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       } finally { instrument.restore() }
     }, 15_000)
 
-    it('the recovery list and the queue read each take their own readonly transaction, in that order', async () => {
+    it.each(['recovery', 'queue'] as const)('holds the real recovery and queue transactions separately, with waiting starting during %s', async waitingStage => {
       render(<App />)
       stubFetch(() => Promise.reject(new TypeError('not yet')))
       await queueOneScan('control')
       await readsSettled()
+      const before = await storedRows() as OccurrenceRecord[]
       const instrument: Instrument = instrumentTransactions()
+      const requests: Array<{ tx: IDBTransaction; store: string; method: string }> = []
+      const spies = (['getAllKeys', 'getAll'] as const).map(method => {
+        const original = IDBObjectStore.prototype[method]
+        return vi.spyOn(IDBObjectStore.prototype, method).mockImplementation(function (this: IDBObjectStore, ...args) {
+          requests.push({ tx: this.transaction, store: this.name, method })
+          return original.apply(this, args)
+        })
+      })
+      const base = instrument.calls.length
+      let recoveryAt = -1
+      const recovery = instrument.hold({ stores: [STORE.occurrences, STORE.legacyClasses], mode: 'readonly',
+        when: call => instrument.calls.indexOf(call) >= base }, 5_000)
+      const queue = instrument.hold({ stores: [STORE.occurrences, STORE.legacyClasses], mode: 'readonly',
+        when: call => recoveryAt >= base && instrument.calls.indexOf(call) > recoveryAt }, 5_000)
+      const sent: boolean[] = []
+      const fetchMock = stubFetch(body => {
+        sent.push(screen.queryByText(waitingNote) !== null)
+        return Promise.resolve(recordedResponse(body))
+      })
+      const signature = (tx: IDBTransaction | undefined) => requests.filter(request => request.tx === tx).map(({ store, method }) => `${store}.${method}`)
       try {
-        const base = instrument.calls.length
         const reads = queueReads.started
-        const recovery = instrument.hold({ stores: [STORE.occurrences, STORE.legacyClasses], mode: 'readonly', when: (call) => instrument.calls.indexOf(call) >= base }, 5_000)
         fireEvent.click(screen.getByRole('button', { name: 'Sync queued scans' }))
-        const recoveryCall = await bounded(recovery.started, 'recovery list transaction')
+        const recoveryCall = await bounded(recovery.started, 'held recovery transaction')
+        recoveryAt = instrument.calls.indexOf(recoveryCall)
+        await waitFor(() => expect(signature(recoveryCall.tx)).toStrictEqual([
+          'occurrences.getAll', 'legacy_classes.getAllKeys',
+        ]))
         expect(queueReads.started).toBe(reads)
+        expect(recoveryCall.events).not.toContain('complete')
+        if (waitingStage === 'recovery') await screen.findByText(waitingNote, {}, { timeout: 3_000 })
+        expect(reconcileCalls(fetchMock)).toBe(0)
         recovery.release('commit')
-        await waitFor(() => expect(recoveryCall.events).toContain('complete'), { timeout: BOUND_MS })
-        await waitFor(() => expect(queueReads.started).toBeGreaterThan(reads), { timeout: BOUND_MS })
-        await readsSettled()
-        const recoveryAt = instrument.calls.indexOf(recoveryCall)
-        const queueAt = instrument.calls.findIndex((call, index) => index > recoveryAt && call.mode === 'readonly' && call.storeNames.includes(STORE.legacyClasses))
-        // Log entries are "create#N mode stores" and "complete#N". Find each by its id, in log order.
-        const logged = (entry: string) => instrument.log.findIndex((line) => line === entry || line.startsWith(`${entry} `))
-        expect(recoveryAt).toBeGreaterThanOrEqual(base)
-        expect(queueAt).toBeGreaterThan(recoveryAt)
+        const queueCall = await bounded(queue.started, 'held production queue transaction')
+        expect(queueCall.tx).not.toBe(recoveryCall.tx)
+        if (waitingStage === 'queue') expect(screen.queryByText(waitingNote)).toBeNull()
+        expect(queueReads.started).toBe(reads + 1)
+        await waitFor(() => expect(signature(queueCall.tx)).toStrictEqual([
+          'occurrences.getAllKeys', 'occurrences.getAll', 'legacy_classes.getAll',
+        ]))
+        const queueAt = instrument.calls.indexOf(queueCall)
+        const logged = (entry: string) => instrument.log.findIndex(line => line === entry || line.startsWith(`${entry} `))
+        expect(recoveryCall.events).toStrictEqual(['complete'])
         expect(logged(`complete#${recoveryAt}`)).toBeGreaterThanOrEqual(0)
         expect(logged(`complete#${recoveryAt}`)).toBeLessThan(logged(`create#${queueAt}`))
-      } finally { instrument.restore() }
+        await screen.findByText(waitingNote, {}, { timeout: 3_000 })
+        expect(queueCall.events).not.toContain('complete')
+        expect(reconcileCalls(fetchMock)).toBe(0)
+        queue.release('commit')
+        await screen.findByText('Synced 1 offline scan(s).', {}, { timeout: BOUND_MS })
+        await readsSettled()
+        expect(queueCall.events).toStrictEqual(['complete'])
+        expect(sent).toStrictEqual([false])
+        expect(screen.queryByText(waitingNote)).toBeNull()
+        expect(await storedRows()).toStrictEqual(before.map(row => terminalRow(row, 'recorded')))
+        expect(instrument.pendingRules()).toBe(0)
+      } finally {
+        recovery.release('commit')
+        queue.release('commit')
+        for (const spy of spies) spy.mockRestore()
+        instrument.restore()
+      }
     }, 15_000)
   })
 
