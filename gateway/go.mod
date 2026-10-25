@@ -1,6 +1,6 @@
 module ticketing/gateway
 
-go 1.27.2
+go 1.27.3
 
 require ticketing/shared v0.0.0
 
