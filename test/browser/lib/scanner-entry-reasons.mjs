@@ -117,7 +117,23 @@ async function assertResult(page, lines, direction = 'entry') {
 // The request and mint supply identity; the first attempted terminal write supplies
 // the original latch and decision time. The repaired row never supplies its own expectation.
 async function decisionEvidence(page, request, status) {
-  const writes = await page.evaluate(id => window.__tkt565.writes.filter(write => write.value?.occurrenceId === id), request.occurrence_id);
+  const { row, writes } = await page.evaluate(id => new Promise((resolve, reject) => {
+    const open = indexedDB.open('gate-occurrences');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const tx = db.transaction('occurrences', 'readonly');
+      const get = tx.objectStore('occurrences').get(id);
+      let observation;
+      get.onsuccess = () => {
+        // The active read transaction excludes renewal commits. Clone the log here,
+        // before another transaction can change either the row or its write evidence.
+        observation = { row: get.result, writes: structuredClone(window.__tkt565.writes.filter(write => write.value?.occurrenceId === id)) };
+      };
+      tx.oncomplete = () => { db.close(); resolve(observation); };
+      tx.onabort = () => { db.close(); reject(tx.error); };
+    };
+  }), request.occurrence_id);
   const mint = writes.find(write => write.method === 'add');
   assert.ok(mint?.events.includes('complete'), 'the submitted request must follow mint completion');
   const pending = mint.value;
@@ -146,20 +162,20 @@ async function decisionEvidence(page, request, status) {
   assert.deepEqual(first, { ...pendingAfter(writes.slice(0, firstIndex)), state: 'RESOLVED', decidedAt: first.decidedAt,
     localOutcome: { family: 'terminal', cause: 'denied', status, latchId: first.localOutcome.latchId, reason: null } });
   assert.equal(writes.some(write => write.value?.actuated === true), false);
-  return { pending: pendingAfter(writes), first };
+  return { row, pending: pendingAfter(writes), first };
 }
 
 async function assertResolved(page, request, status, reason) {
   await completedReason(page, request.occurrence_id, reason);
   const evidence = await decisionEvidence(page, request, status);
-  assert.deepEqual(await localRow(page, request.occurrence_id), { ...evidence.pending, state: 'RESOLVED', decidedAt: evidence.first.decidedAt,
+  assert.deepEqual(evidence.row, { ...evidence.pending, state: 'RESOLVED', decidedAt: evidence.first.decidedAt,
     localOutcome: { family: 'terminal', cause: 'denied', status, latchId: evidence.first.localOutcome.latchId, reason } });
   return evidence;
 }
 
 async function assertPending(page, request, status) {
   const evidence = await decisionEvidence(page, request, status);
-  assert.deepEqual(await localRow(page, request.occurrence_id), evidence.pending);
+  assert.deepEqual(evidence.row, evidence.pending);
   return evidence;
 }
 
