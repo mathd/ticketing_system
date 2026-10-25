@@ -4,7 +4,7 @@ import { decodeReconcileResponse, type ReconcileResponse } from './access-contra
 import { createEntryScanner, type EntryResult, type Pairing, type ResultContext } from './entry-scan'
 import { pageStorage, type StorageReadiness } from './occurrence-readiness'
 import type { ScanDirection } from './occurrence-model'
-import { type QueuedEntry } from './occurrence-store'
+import { type OccurrenceStore, type QueuedEntry } from './occurrence-store'
 import { planReconcileBatches } from './reconcile-batch'
 import { OccurrenceRecords } from './OccurrenceRecords'
 import { CANNOT_REPAIR, presentResult, readableTime, REPAIR_NEEDED, STORAGE_UNAVAILABLE, STORAGE_UNREADY } from './scan-result'
@@ -19,6 +19,11 @@ export const reconcileTimeoutMs = 15_000
 const deviceTokenKey = 'scanner.device-token'
 const scannerTokenHeader = 'X-Scanner-Token'
 const QUEUED_CAUSE = { offline: 'No connection', unreadable: 'The server answered but the reply could not be read' } as const
+// The waiting line appears after this much initial storage work. It describes the wait only.
+const waitingDelayMs = 1_000
+const waitingText = 'Waiting for local storage to finish before this sync can continue.'
+const pairingErrorText = 'Pairing could not be completed on this device. Submit the pairing token again to retry.'
+const writeDiagnosticText = 'The last sync result could not be saved on this device, so that batch was not applied. Scans from that batch that are still queued will be retried on a later sync.'
 function readDeviceToken(): string {
   try { return localStorage.getItem(deviceTokenKey)?.trim() ?? '' } catch { return '' }
 }
@@ -29,15 +34,33 @@ async function tokenFingerprint(token: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
+
+type FailureCause = keyof typeof QUEUED_CAUSE
+type FailureCount = { state: 'checking' } | { state: 'unknown' } | { state: 'known'; count: number }
+// A carried failure keeps its identity across pairing changes. Only the observation that captured it can correct its count.
+type CarriedFailure = { id: number; cause: FailureCause; last: string; count: FailureCount }
 type SyncNote =
-  | { kind: 'failure'; id: string; text: string }
+  | { kind: 'failure'; failure: CarriedFailure }
   | { kind: 'success'; text: string }
-  | { kind: 'pairing'; text: string; failure?: { id: string; text: string } }
+  | { kind: 'pairing'; text: string; failure?: CarriedFailure }
   | null
-function withoutStaleFailure(previous: SyncNote): SyncNote {
-  if (previous?.kind === 'failure') return null
-  if (previous?.kind === 'pairing' && previous.failure) return { kind: 'pairing', text: previous.text }
-  return previous
+type BatchDiagnostic = 'write' | null
+type QueueRead = Awaited<ReturnType<OccurrenceStore['queued']>>
+// One mounted page component. Its callbacks publish only while it is live, and never into a newer one.
+type Lifecycle = {
+  live: boolean
+  loop: { running: boolean; requested: boolean }
+  controller?: AbortController
+  attempt?: { id: number; timer: number; store: OccurrenceStore | null }
+}
+
+const carriedFailure = (note: SyncNote): CarriedFailure | undefined =>
+  note?.kind === 'failure' || note?.kind === 'pairing' ? note.failure : undefined
+function failureText({ cause, last, count }: CarriedFailure): string {
+  const lead = `Sync failed: ${QUEUED_CAUSE[cause]}.`
+  if (count.state === 'checking') return `${lead} Checking the scans saved on this device…`
+  if (count.state === 'unknown') return `${lead} Any scans saved on this device will be sent on the next sync. Last successful sync this session: ${last}.`
+  return `${lead} ${count.count} scan${count.count === 1 ? ' is' : 's are'} saved on this device and will be sent on the next sync. Last successful sync this session: ${last}.`
 }
 
 function App() {
@@ -51,13 +74,17 @@ function App() {
   const directionRef = useRef<ScanDirection>('entry')
   const [storageWarnings, setStorageWarnings] = useState<string[]>([])
   const [queuedCount, setQueuedCount] = useState(0)
-  const [syncNote, setSyncNote] = useState<SyncNote>(null)
+  const [syncNote, setSyncNoteState] = useState<SyncNote>(null)
+  const noteRef = useRef<SyncNote>(null)
+  const [waiting, setWaiting] = useState(false)
+  const [batchDiagnostic, setBatchDiagnostic] = useState<BatchDiagnostic>(null)
   const [reconcileWarnings, setReconcileWarnings] = useState<string[]>([])
   const [cameraMessage, setCameraMessage] = useState('')
   const [cameraActive, setCameraActive] = useState(false)
   const [deviceToken, setDeviceToken] = useState(readDeviceToken)
   const [pairingInput, setPairingInput] = useState('')
   const [pairingBusy, setPairingBusy] = useState(false)
+  const [pairingError, setPairingError] = useState(false)
   const [storageFailure, setStorageFailure] = useState<string | null>(null)
   const [hasRevocationPull, setHasRevocationPull] = useState(false)
   const [recordsRefresh, setRecordsRefresh] = useState(0)
@@ -65,10 +92,11 @@ function App() {
   const stream = useRef<MediaStream | null>(null)
   const frame = useRef<number | null>(null)
   const mounted = useRef(true)
+  const lifecycle = useRef<Lifecycle>({ live: false, loop: { running: false, requested: false } })
   const lastSuccessfulSyncAt = useRef<string | null>(null)
-  const syncFailureId = useRef(0)
-  const syncInFlight = useRef(false)
-  const syncRequested = useRef(false)
+  const failureSeq = useRef(0)
+  const attemptSeq = useRef(0)
+  const tickets = useRef({ issued: 0, published: 0 })
   const deviceTokenRef = useRef(deviceToken)
   const pairingGeneration = useRef(0)
   const pairingBusyRef = useRef(false)
@@ -84,6 +112,39 @@ function App() {
     refusalQueued: () => { if (mounted.current) void syncQueued() },
     authRefused: (captured) => clearPairing('This device is not paired. Enter its pairing token before admitting anyone.', captured, true),
   })
+
+  // The only writer of the sync note. The ref answers at once, so a correction can check its failure before it publishes.
+  const updateNote = (next: (previous: SyncNote) => SyncNote) => {
+    const value = next(noteRef.current)
+    noteRef.current = value
+    setSyncNoteState(value)
+  }
+  // Queue observations take tickets in invocation order. A result publishes only if no later one has published.
+  const issueTicket = () => ++tickets.current.issued
+  const claim = (ticket: number) => {
+    if (ticket <= tickets.current.published) return false
+    tickets.current.published = ticket
+    return true
+  }
+  // A result publishes only for its own lifecycle and for the store that produced it.
+  const applicable = (life: Lifecycle, store: OccurrenceStore | null) => !!store && life.live && storage.readyStore() === store
+  const correctFailure = (id: number | undefined, count: FailureCount | null) => updateNote((previous) => {
+    const failure = carriedFailure(previous)
+    if (id === undefined || failure?.id !== id) return previous
+    if (count === null) return previous?.kind === 'pairing' ? { kind: 'pairing', text: previous.text } : null
+    const corrected = { ...failure, count }
+    return previous?.kind === 'pairing' ? { ...previous, failure: corrected } : { kind: 'failure', failure: corrected }
+  })
+  // A committed nonempty pairing drops the pairing instruction. The failure keeps its identity and reads unknown until its refresh.
+  const carryAfterPairing = () => updateNote((previous) => {
+    const failure = carriedFailure(previous)
+    return failure ? { kind: 'failure', failure: { ...failure, count: { state: 'unknown' } } } : null
+  })
+  // A checking count cannot outlive its storage. The live transition settles it, since a correction held on the old store publishes nothing.
+  const settleCheckingFailure = () => {
+    const failure = carriedFailure(noteRef.current)
+    if (failure?.count.state === 'checking') correctFailure(failure.id, { state: 'unknown' })
+  }
 
   const stopCamera = () => {
     generation.current += 1
@@ -116,31 +177,69 @@ function App() {
     if (!store) throw new Error('scanner storage is not ready')
     return store
   }
-  const reportStorageFailure = () => { if (mounted.current) setStorageFailure(STORAGE_UNAVAILABLE) }
-  const reportStorageReady = () => { if (mounted.current && storage.readyStore()) setStorageFailure(null) }
-  const refreshQueued = async () => {
-    try {
-      const store = getStore()
-      await storage.coordinator.repairAll()
-      await store.recoverDeadOwners()
-      const queue = await store.queued()
-      publishStorageWarnings(queue.warnings)
-      if (mounted.current) {
-        setQueuedCount(queue.entries.length)
-        reportStorageReady()
-        diagnostic()
-      }
-    } catch { reportStorageFailure() }
+  // The App read-error source. Only an accepted ordinary read clears it. A readiness notification does not.
+  const raiseReadError = (failure: number | undefined) => {
+    if (mounted.current) setStorageFailure(STORAGE_UNAVAILABLE)
+    correctFailure(failure, { state: 'unknown' })
   }
+  const publishRead = (read: QueueRead, failure: number | undefined) => {
+    publishStorageWarnings(read.warnings)
+    setQueuedCount(read.entries.length)
+    setStorageFailure(null)
+    correctFailure(failure, read.entries.length ? { state: 'known', count: read.entries.length } : null)
+    diagnostic()
+  }
+  // One queue observation: the storage prelude, then one queued() read. The prelude failure uses the failure captured at its start.
+  // The read uses the failure captured at its invocation. Returns the entries the read saw, or undefined when the attempt ended.
+  const observe = async (life: Lifecycle, store: OccurrenceStore | null): Promise<QueuedEntry[] | undefined> => {
+    // An obsolete lifecycle or store starts no repair, recovery or read.
+    if (store ? !applicable(life, store) : !life.live) return undefined
+    if (!store) {
+      const prelude = issueTicket()
+      if (life.live && claim(prelude)) raiseReadError(carriedFailure(noteRef.current)?.id)
+      return undefined
+    }
+    const prelude = issueTicket()
+    const preludeFailure = carriedFailure(noteRef.current)?.id
+    try {
+      await storage.coordinator.repairAll()
+      // A cleanup or store change during the repair wait stops the prelude here, so no recovery or read starts.
+      if (!applicable(life, store)) return undefined
+      await store.recoverDeadOwners()
+      if (!applicable(life, store)) return undefined
+    } catch {
+      if (applicable(life, store) && claim(prelude)) raiseReadError(preludeFailure)
+      return undefined
+    }
+    // The ticket is taken where the read is invoked. Nothing awaits between this check and that call.
+    const ticket = issueTicket()
+    const failure = carriedFailure(noteRef.current)?.id
+    let read: QueueRead
+    try {
+      read = await store.queued()
+    } catch {
+      if (applicable(life, store) && claim(ticket)) raiseReadError(failure)
+      return undefined
+    }
+    if (!applicable(life, store)) return undefined
+    if (claim(ticket)) publishRead(read, failure)
+    return read.entries
+  }
+  const refreshQueued = () => observe(lifecycle.current, storage.readyStore())
 
   useEffect(() => {
     mounted.current = true
+    const life: Lifecycle = { live: true, loop: { running: false, requested: false } }
+    lifecycle.current = life
     const update = (state: StorageReadiness) => {
       setReadiness(state)
       diagnostic()
-      if (state.status !== 'ready') stopCamera()
+      if (life.attempt && !applicable(life, life.attempt.store)) endAttempt(life, life.attempt.id)
+      if (state.status !== 'ready') {
+        stopCamera()
+        settleCheckingFailure()
+      }
       else {
-        reportStorageReady()
         void refreshQueued()
         if (deviceTokenRef.current) void pullRevocations()
       }
@@ -154,6 +253,9 @@ function App() {
       void syncQueued()
       void refreshQueued()
     }
+    // Focus and a visible transition read the shared queue again. They never start a sync or a revocation pull.
+    const onFocus = () => { void refreshQueued() }
+    const onVisibility = () => { if (document.visibilityState === 'visible') void refreshQueued() }
     const onPairingChange = (event: StorageEvent) => {
       if (event.key !== deviceTokenKey || (event.newValue?.trim() ?? '') === deviceTokenRef.current) return
       resetDirection()
@@ -163,14 +265,30 @@ function App() {
       setDeviceToken(deviceTokenRef.current)
       setOutcome(null)
       setHasRevocationPull(false)
+      // A replacement commits pairing. A removal leaves the carried failure as it is.
+      if (deviceTokenRef.current) {
+        setPairingError(false)
+        carryAfterPairing()
+      }
+      void refreshQueued()
     }
     window.addEventListener('online', onOnline)
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisibility)
     window.addEventListener('storage', onPairingChange)
     return () => {
       mounted.current = false
+      life.live = false
+      life.loop.requested = false
+      life.controller?.abort()
+      if (life.attempt) window.clearTimeout(life.attempt.timer)
+      life.attempt = undefined
+      setWaiting(false)
       unsubscribe()
       window.clearInterval(timer)
       window.removeEventListener('online', onOnline)
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisibility)
       window.removeEventListener('storage', onPairingChange)
       scanner.current!.cancel()
       stopCamera()
@@ -226,70 +344,56 @@ function App() {
     if (mounted.current) void refreshQueued()
   }
 
-  const reportSyncFailure = async (cause: 'offline' | 'unreadable') => {
-    const id = String(++syncFailureId.current)
-    if (!mounted.current) return
+  // A failed sync creates its failure, then corrects its count with one direct queue read. That read runs no repair or recovery.
+  // Its result publishes only while the lifecycle and the store it was read from are both current.
+  const reportSyncFailure = async (life: Lifecycle, store: OccurrenceStore, cause: FailureCause) => {
+    if (!applicable(life, store)) return
+    const id = ++failureSeq.current
     const last = (lastSuccessfulSyncAt.current ? readableTime(lastSuccessfulSyncAt.current) : undefined) ?? 'none'
-    const failureText = (count: number) => `Sync failed: ${QUEUED_CAUSE[cause]}. ${count} scan${count === 1 ? ' is' : 's are'} saved on this device and will be sent on the next sync. Last successful sync this session: ${last}.`
-    const failure = { id, text: `Sync failed: ${QUEUED_CAUSE[cause]}. Checking the scans saved on this device…` }
-    setSyncNote((previous) => previous?.kind === 'pairing' ? { ...previous, failure } : { kind: 'failure', ...failure })
-    const correctFailure = (previous: SyncNote, text?: string): SyncNote => {
-      const current = previous?.kind === 'pairing' ? previous.failure : previous?.kind === 'failure' ? previous : null
-      if (current?.id !== id) return previous
-      if (!text) return withoutStaleFailure(previous)
-      const corrected = { id, text }
-      return previous?.kind === 'pairing' ? { ...previous, failure: corrected } : { kind: 'failure', ...corrected }
-    }
+    const failure: CarriedFailure = { id, cause, last, count: { state: 'checking' } }
+    updateNote((previous) => previous?.kind === 'pairing' ? { ...previous, failure } : { kind: 'failure', failure })
+    const ticket = issueTicket()
+    const stillCurrent = () => applicable(life, store) && carriedFailure(noteRef.current)?.id === id
     try {
-      const read = await getStore().queued()
-      publishStorageWarnings(read.warnings)
-      const queue = read.entries
-      if (!mounted.current) return
-      setQueuedCount(queue.length)
-      setSyncNote((previous) => correctFailure(previous, queue.length ? failureText(queue.length) : undefined))
-    } catch {
-      // Leave the storage alert alone.
-      if (!mounted.current) return
-      const text = `Sync failed: ${QUEUED_CAUSE[cause]}. Any scans saved on this device will be sent on the next sync. Last successful sync this session: ${last}.`
-      setSyncNote((previous) => correctFailure(previous, text))
-    }
-  }
-
-  const syncQueued = async () => {
-    if (!mounted.current) return
-    if (syncInFlight.current) {
-      syncRequested.current = true
-      return
-    }
-    syncInFlight.current = true
-    try {
-      do {
-        syncRequested.current = false
-        await syncBatch()
-      } while (syncRequested.current && mounted.current)
-    } finally {
-      syncInFlight.current = false
-    }
-  }
-
-
-  const syncBatch = async () => {
-    let queue: QueuedEntry[]
-    try {
-      const store = getStore()
-      await storage.coordinator.repairAll()
-      await store.recoverDeadOwners()
       const read = await store.queued()
+      if (!stillCurrent() || !claim(ticket)) return
       publishStorageWarnings(read.warnings)
-      queue = read.entries
-      reportStorageReady()
-      diagnostic()
-    } catch { reportStorageFailure(); return }
-    if (!queue.length) {
-      if (mounted.current) { setQueuedCount(0); setSyncNote(withoutStaleFailure) }
-      return
+      setQueuedCount(read.entries.length)
+      correctFailure(id, read.entries.length ? { state: 'known', count: read.entries.length } : null)
+    } catch {
+      // The correction never raises or clears the storage alert.
+      if (!stillCurrent() || !claim(ticket)) return
+      correctFailure(id, { state: 'unknown' })
     }
-    const plan = planReconcileBatches(queue)
+  }
+
+  // Waiting belongs to one attempt and its captured store.
+  const startAttempt = (life: Lifecycle, store: OccurrenceStore | null) => {
+    const id = ++attemptSeq.current
+    const timer = window.setTimeout(() => { if (applicable(life, store) && life.attempt?.id === id) setWaiting(true) }, waitingDelayMs)
+    life.attempt = { id, timer, store }
+    return id
+  }
+  const endAttempt = (life: Lifecycle, id: number) => {
+    if (life.attempt?.id !== id) return
+    window.clearTimeout(life.attempt.timer)
+    life.attempt = undefined
+    if (life.live) setWaiting(false)
+  }
+
+  // One pass of the serial sync owner. Pairing is read after the storage phase, so a replacement token is used for the batches.
+  const syncPass = async (life: Lifecycle) => {
+    const store = storage.readyStore()
+    const attempt = startAttempt(life, store)
+    let entries: QueuedEntry[] | undefined
+    try {
+      entries = await observe(life, store)
+    } finally {
+      // Commit waiting removal before fetch can observe the DOM. Cleanup and readiness callbacks do not flush.
+      if (life.live && life.attempt?.id === attempt) flushSync(() => endAttempt(life, attempt))
+    }
+    if (!store || !entries?.length) return
+    const plan = planReconcileBatches(entries)
     const warnings = plan.unsendable.map((row) => `Pre-upgrade record ${String(row.key)} could not sync. It remains queued and listed in the export.`)
     const captured = pairing()
     if (!captured.token) return
@@ -298,40 +402,79 @@ function App() {
     let rejected = 0
     const aggregateText = () => `Synced ${recorded} offline scan(s).${conflicts ? ` ${conflicts} conflict${conflicts === 1 ? '' : 's'} flagged for the operator.` : ''}${rejected ? ` ${rejected} rejected scan${rejected === 1 ? ' was' : 's were'} not recorded.` : ''}`
     const publishWarnings = () => {
-      if (mounted.current && isPairing(captured)) setReconcileWarnings([
+      if (life.live && isPairing(captured)) setReconcileWarnings([
         ...(recorded + conflicts + rejected > 0 ? [`Completed batches: ${aggregateText()}`] : []), ...warnings,
       ])
     }
     publishWarnings()
-    for (const batch of plan.batches) {
-      if (!mounted.current || !isPairing(captured)) return
+    for (const [index, batch] of plan.batches.entries()) {
+      if (!applicable(life, store) || !isPairing(captured)) return
       const controller = new AbortController()
       const timer = window.setTimeout(() => controller.abort(), reconcileTimeoutMs)
-      let data: ReconcileResponse
+      life.controller = controller
+      // The first request of a nonempty paired pass replaces the write diagnostic before it is sent, even if the request fails.
+      if (index === 0) setBatchDiagnostic(null)
+      let data: ReconcileResponse | undefined
       try {
         let response: Response
         try {
           response = await fetch(reconcileURL, { method: 'POST', headers: scanHeaders(captured.token),
             body: JSON.stringify({ occurrences: batch.occurrences }), signal: controller.signal })
-        } catch { void reportSyncFailure('offline'); return }
+        } catch {
+          if (applicable(life, store) && isPairing(captured)) void reportSyncFailure(life, store, 'offline')
+          return
+        }
+        if (!applicable(life, store)) return
         if (response.status === 401) {
-          clearPairing('This device is not paired. Enter its pairing token to sync the queued scans.', captured)
+          if (isPairing(captured)) clearPairing('This device is not paired. Enter its pairing token to sync the queued scans.', captured)
           return
         }
         if (response.status === 422 && batch.isolated) {
+          if (!isPairing(captured)) return
           warnings.push(`Pre-upgrade record ${String(batch.keys[0])} could not sync. It remains queued and listed in the export.`)
           publishWarnings()
           continue
         }
-        if (!response.ok) { void reportSyncFailure('unreadable'); return }
+        if (!response.ok) {
+          if (isPairing(captured)) void reportSyncFailure(life, store, 'unreadable')
+          return
+        }
         try {
           data = decodeReconcileResponse(await response.json(), new Set(batch.keys.map(String)))
-        } catch { void reportSyncFailure('unreadable'); return }
-      } finally { window.clearTimeout(timer) }
+        } catch {
+          if (applicable(life, store) && isPairing(captured)) void reportSyncFailure(life, store, 'unreadable')
+          return
+        }
+      } finally {
+        window.clearTimeout(timer)
+        if (life.controller === controller) life.controller = undefined
+      }
+      // A decoded response applies even if pairing changed. Only a replaced lifecycle or store stops it.
+      if (!data || !applicable(life, store)) return
+      let applied: Awaited<ReturnType<OccurrenceStore['applyReconcileResults']>>
       try {
-        const applied = await getStore().applyReconcileResults(batch.keys, data.results)
-        if (applied.status !== 'applied') { reportStorageFailure(); return }
-      } catch { reportStorageFailure(); return }
+        applied = await store.applyReconcileResults(batch.keys, data.results)
+      } catch {
+        // A thrown transaction or write applied nothing. Only the current pairing reports it.
+        if (applicable(life, store) && isPairing(captured)) setBatchDiagnostic('write')
+        return
+      }
+      // A started application commits atomically. Its outcome publishes only while its lifecycle and store are current.
+      if (!applicable(life, store)) return
+      if (applied.status === 'invalid') {
+        if (isPairing(captured)) void reportSyncFailure(life, store, 'unreadable')
+        return
+      }
+      // A refused batch changes no row and adds no report. The refresh shows the rows the store holds now.
+      if (applied.status === 'incompatible') {
+        await observe(life, store)
+        return
+      }
+      if (!isPairing(captured)) {
+        // The batch applied under a replaced pairing. It reports nothing new, but the device queue still refreshes.
+        await observe(life, store)
+        return
+      }
       for (const result of data.results) {
         if (result.result === 'recorded' || result.result === 'synced') recorded += 1
         else if (result.result === 'conflict') conflicts += 1
@@ -342,12 +485,32 @@ function App() {
       }
       publishWarnings()
     }
-    if (mounted.current && isPairing(captured)) {
+    if (!applicable(life, store)) return
+    if (isPairing(captured)) {
       setReconcileWarnings(warnings)
       lastSuccessfulSyncAt.current = new Date().toISOString()
-      setSyncNote({ kind: 'success', text: aggregateText() })
+      updateNote(() => ({ kind: 'success', text: aggregateText() }))
     }
-    await refreshQueued()
+    await observe(life, store)
+  }
+
+  // Requests share one loop per lifecycle. A request made during a pass sets one flag, and that flag runs one follow-up.
+  const syncQueued = async () => {
+    const life = lifecycle.current
+    if (!life.live) return
+    if (life.loop.running) {
+      life.loop.requested = true
+      return
+    }
+    life.loop.running = true
+    try {
+      do {
+        life.loop.requested = false
+        await syncPass(life)
+      } while (life.loop.requested && life.live)
+    } finally {
+      life.loop.running = false
+    }
   }
 
   const startCamera = async () => {
@@ -453,10 +616,9 @@ function App() {
     setDeviceToken('')
     setHasRevocationPull(false)
     if (!retainResult) setOutcome(null)
-    setSyncNote((previous) => {
-      if (previous?.kind === 'failure') return { kind: 'pairing', text: reason, failure: { id: previous.id, text: previous.text } }
-      if (previous?.kind === 'pairing' && previous.failure) return { kind: 'pairing', text: reason, failure: previous.failure }
-      return { kind: 'pairing', text: reason }
+    updateNote((previous) => {
+      const failure = carriedFailure(previous)
+      return failure ? { kind: 'pairing', text: reason, failure } : { kind: 'pairing', text: reason }
     })
   }
   const pairDevice = async (event: React.FormEvent) => {
@@ -464,12 +626,13 @@ function App() {
     const token = pairingInput.trim()
     if (!token || pairingBusyRef.current || !storage.readyStore()) return
     const captured = pairing()
+    const life = lifecycle.current
     pairingBusyRef.current = true
     setPairingBusy(true)
     try {
       const fingerprint = await tokenFingerprint(token)
       const pull = await getStore().revocationPull(fingerprint)
-      if (!mounted.current || !isPairing(captured)) return
+      if (!life.live || !isPairing(captured)) return
       resetDirection()
       scanner.current!.cancel()
       pairingGeneration.current += 1
@@ -479,14 +642,15 @@ function App() {
       setHasRevocationPull(!!pull.completedAt)
       setPairingInput('')
       setOutcome(null)
-      setSyncNote((previous) => {
-        if (previous?.kind === 'failure') return previous
-        if (previous?.kind === 'pairing' && previous.failure) return { kind: 'failure', ...previous.failure }
-        return null
-      })
-    } catch { reportStorageFailure() } finally {
+      setPairingError(false)
+      carryAfterPairing()
+      void refreshQueued()
+    } catch {
+      // A failed fingerprint or metadata read ends this pairing attempt only. It is not a storage outage.
+      if (life.live && isPairing(captured)) setPairingError(true)
+    } finally {
       pairingBusyRef.current = false
-      if (mounted.current) setPairingBusy(false)
+      if (life.live) setPairingBusy(false)
     }
   }
   const retryStorage = async () => {
@@ -514,6 +678,7 @@ function App() {
         <input id="pairing-token" type="password" value={pairingInput} onChange={(event) => setPairingInput(event.target.value)} autoComplete="off" placeholder="Paste the token from access enrol-scanner" />
         <button type="submit" disabled={!ready || pairingBusy || !pairingInput.trim()}>Pair device</button>
       </form>
+      {pairingError && <p role="alert">{pairingErrorText}</p>}
       {queuedCount > 0 && <p className="queue-note" role="status">{queuedCount} offline scan{queuedCount === 1 ? '' : 's'} are still saved on this device and will sync once it is paired.</p>}
     </section> : <>
       <p>Scan a ticket QR code or paste its credential {direction === 'entry' ? 'to validate entry.' : 'to record Exit.'}</p>
@@ -539,9 +704,11 @@ function App() {
     {result && <section aria-label="Scan result" className={`result ${result.tone}`} role={result.tone === 'rejected' ? 'alert' : 'status'}>
       {result.heading && <h2>{result.heading}</h2>}{result.lines.map((line) => <p key={line}>{line}</p>)}
     </section>}
-    {syncNote && <p className="sync-note" role="status">{syncNote.text}{syncNote.kind === 'pairing' && syncNote.failure && <><br />{syncNote.failure.text}</>}</p>}
+    {syncNote && <p className="sync-note" role="status">{syncNote.kind === 'failure' ? failureText(syncNote.failure) : syncNote.text}{syncNote.kind === 'pairing' && syncNote.failure && <><br />{failureText(syncNote.failure)}</>}</p>}
+    {waiting && <p role="status">{waitingText}</p>}
     {storageWarnings.map((warning) => <p role="alert" key={warning}>{warning}</p>)}
     {reconcileWarnings.map((warning) => <p role="alert" key={warning}>{warning}</p>)}
+    {batchDiagnostic && <p role="alert">{writeDiagnosticText}</p>}
     {!ready && <p role="alert">{STORAGE_UNREADY}</p>}
     {(storageFailure || readiness.status === 'failed' || readiness.status === 'closed') && <p role="alert">{STORAGE_UNAVAILABLE}</p>}
     {warnings.some((warning) => warning.kind === 'write_needs_repair') && <p role="alert">{REPAIR_NEEDED}</p>}

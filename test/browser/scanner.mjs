@@ -13,6 +13,7 @@ import { timedExit, timedEntry } from './lib/scanner-timing.mjs';
 import { entryCore } from './lib/scanner-entry-core.mjs';
 import { storageCore } from './lib/scanner-storage-core.mjs';
 import { oldReader } from './lib/scanner-old-reader.mjs';
+import { syncLifecycle } from './lib/scanner-sync-lifecycle.mjs';
 import { ORGANIZER, enrolScanner, resultRecorder, sql } from './lib/support.mjs';
 
 const BASE = process.env.BASE ?? 'http://localhost:18080';
@@ -28,7 +29,20 @@ if (!PG || !ACCESS_PORT || !QR_SEED || !QR_KID || !INTERNAL_TOKEN) {
 }
 
 const recorder = resultRecorder('scanner');
-const check = (...args) => { recorder.check(...args); console.log(`${args[1] ? 'PASS' : 'FAIL'} ${args[0]}`); };
+// Names that the TKT-512 journeys must report. The list lives here, outside the helper, so that removing its invocation fails the run.
+const requiredSyncLifecycleChecks = [
+  'TKT-512 native-focus',
+  'TKT-512 visibility-wiring',
+  'TKT-512 local-pairing-refresh',
+  'TKT-512 shared-access-readback',
+  'TKT-512 idb-contention',
+];
+const reportedChecks = new Set();
+const check = (...args) => {
+  reportedChecks.add(args[0]);
+  recorder.check(...args);
+  console.log(`${args[1] ? 'PASS' : 'FAIL'} ${args[0]}`);
+};
 const token = enrolScanner(ACCESS, `browser gate ${Date.now()}`);
 const ticketID = randomUUID();
 const orderID = randomUUID();
@@ -227,6 +241,7 @@ try {
   );
   const shared = { browser, BASE, PG, QR_SEED, QR_KID, token, check, ACCESS_PORT, INTERNAL_TOKEN };
   Object.assign(shared, await entryCore(shared));
+  await syncLifecycle(shared);
   await exitJourneys(shared);
   await timedExit(shared);
   await predecessorExit(shared);
@@ -240,5 +255,8 @@ try {
   process.exitCode = 1;
 } finally {
   await browser.close();
+  for (const name of requiredSyncLifecycleChecks) {
+    if (!reportedChecks.has(name)) check(name, false, 'required check was not reported; its journey did not run to completion');
+  }
   if (!recorder.finish()) process.exitCode = 1;
 }
