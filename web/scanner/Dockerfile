@@ -1,7 +1,7 @@
 # Build context = repo root (see compose.yaml): the pnpm workspace lockfile
 # lives there. Node 25+ dropped the bundled corepack, so pnpm is installed
 # directly, pinned to the root packageManager version (pnpm@11.12.0).
-FROM node:26.5.1-alpine3.23@sha256:2a633e101381371ba148c7c212bf447c00cd267d814b708a9fe52c4984204729 AS build
+FROM node:26.12.1-alpine3.23@sha256:bc2b334006f15c7167bbeb2f08f28c2df883f7594a0470e04454ebe7560cfe68 AS build
 ENV CI=true
 WORKDIR /src
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
