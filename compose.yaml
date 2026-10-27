@@ -138,7 +138,7 @@ services:
   # agree with ACCESS_EVENT_RETRY_BACKOFF; scripts/stack-env.sh selects the
   # .smoke.json variant for the isolated stacks.
   nats-init:
-    image: natsio/nats-box:0.19.7@sha256:ffce8bd103383f179f8c7f11cf645726acf5d17280706c530c3b342dbe16334c
+    image: natsio/nats-box:0.20.1@sha256:dd57687c32199867bfc42823e935174f37754a4281de957d6717469948b5b18b
     depends_on:
       nats:
         condition: service_healthy
