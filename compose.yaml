@@ -92,7 +92,7 @@ services:
       start_period: 30s
 
   nats:
-    image: nats:2.14.4-alpine3.22@sha256:f2123f533c2b0cada0a5c5ec434fb2b8cfe1cf220215ef9d7517e1372917ad66
+    image: nats:2.15.2-alpine3.22@sha256:823e7f1d6d8ffe3b30dbd73d4a06bbb939acf94929f7fdf224404da7a05bafb5
     restart: unless-stopped
     # file-backed JetStream store on a named volume: streams survive
     # container recreation (ADR-007 durability)
