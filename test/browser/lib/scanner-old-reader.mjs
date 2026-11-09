@@ -18,7 +18,7 @@ export async function oldReader({ browser, BASE, token, check, fixture }) {
     return { path, sha256: sha(bytes) };
   });
   assert.equal(manifest.find(row => row.path === 'web/scanner/src/occurrences.ts').sha256, '0b8ea0c89c4f75ece7ce306d27d1a28ec4824365adef154faac172c624413bfc');
-  assert.equal(execFileSync('pnpm',['--version']).toString().trim(),'11.12.0');
+  assert.equal(execFileSync('pnpm',['--version'],{ cwd: source }).toString().trim(),'11.12.0');
   try {
     for (const args of [['install','--offline','--frozen-lockfile'],['--filter','scanner','build']]) {
       try { execFileSync('pnpm',args,{ cwd: source, stdio: 'pipe', timeout: 120000 }); }

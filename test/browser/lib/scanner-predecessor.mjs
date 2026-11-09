@@ -28,7 +28,7 @@ export async function predecessorExit({ browser, BASE, token, fixture, check }) 
     catch (error) { throw new Error(`TKT-399 predecessor prerequisite pnpm ${args.join(' ')}: ${error.stdout?.toString()} ${error.stderr?.toString()}`); }
   };
   try {
-    assert.equal(execFileSync('pnpm', ['--version']).toString().trim(), '11.12.0');
+    assert.equal(execFileSync('pnpm', ['--version'], { cwd: source }).toString().trim(), '11.12.0');
     run(['install', '--offline', '--frozen-lockfile']); run(['--filter', 'scanner', 'build']);
     const app = join(source, 'web/scanner');
     // The App build above is unchanged. This second entry calls the exact extracted modules.
