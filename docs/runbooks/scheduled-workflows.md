@@ -84,7 +84,7 @@ change-both-copies rule above creates. Every assertion is fatal: an earlier vers
 `[ x = y ] && echo ok`, which under `set -e` cannot fail the script, and it printed a success banner
 while the issue body was missing its link to the failed run.
 
-**What it does not cover, and nothing local does:** GitHub's own evaluation of `if:`, `needs:`,
-`permissions:` and matrix aggregation. Nothing in `make check` parses or executes workflow YAML, so a
-green gate says nothing about this mechanism. The wiring is confirmed by watching a real run: on a PR
-touching these files, both notifier jobs must appear as **skipped**.
+Local checks inspect workflow structure, including YAML parsing for security wiring. They do
+not execute GitHub's evaluation of `if:`, `needs:`, `permissions:` or matrix aggregation. A green
+local gate does not prove the notifier's runtime wiring. Confirm it in a real run: on a PR that
+touches these files, both notifier jobs must appear as skipped.

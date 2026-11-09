@@ -6,8 +6,9 @@ Local Docker Compose testbed. Run commands from the repo root.
 
 Use the versions selected in [go.work](../go.work), [package.json](../package.json), and
 [CI](../.github/workflows/check.yaml). At this revision, Go requires 1.27.3; CI selects
-Node 24.18.0, and the package manager is pnpm 11.12.0. A newer local Go can run because the
-`go` directive is a minimum. See [dependency policy](conventions/dependencies-and-versions.md)
+Node 24.18.0, and the package manager is pnpm 11.12.0. The gate requires the active Go minor version to match the declared
+1.27 line and the pinned linter to read its export data. Patch compatibility still needs the lint
+stage. See [toolchain check](../scripts/check-go-toolchain.sh). See [dependency policy](conventions/dependencies-and-versions.md)
 for holds and tool upgrades. For Node 24 with Corepack, use `corepack enable pnpm` and `corepack install`. The web images
 use the Node 26 pins in their Dockerfiles and install pnpm with npm. If the host has no Corepack,
 install the pinned pnpm with `npm install -g pnpm@11.12.0` or your approved package-manager method.
@@ -127,9 +128,17 @@ See [Back-office sign-in (TKT-190)](runbooks/staff-accounts.md).
 
 See [NATS publisher ACLs and credential operations (ADR-072)](runbooks/nats.md).
 
+### Pre-provisioned service durables (TKT-327)
+
+For a durable-configuration drift error, use [durable reconciliation](runbooks/nats.md#pre-provisioned-service-durables-tkt-327).
+
 ## Customer accounts (TKT-220)
 
 See [Customer accounts (TKT-220)](runbooks/customer-accounts.md).
+
+### Password recovery
+
+See [password recovery](runbooks/customer-accounts.md#password-recovery-and-the-mail-path-tkt-226).
 
 ## Cache kill-switch (TKT-210)
 
@@ -138,6 +147,21 @@ See [Cache kill-switch (TKT-210)](runbooks/caches.md).
 ## Scanner device enrolment (ai-review S1)
 
 See [Scanner device enrolment (ai-review S1)](runbooks/scanner.md).
+
+### Scanner Entry outcomes and local records
+
+TKT-559 checks both wall and monotonic elapsed time from submission. Mint and send must finish
+before 3 s; an admission decision must finish before 30 s. Equality is late.
+A gateway-hidden refusal cannot select the offline fallback at or after 30 s.
+A failed terminal write followed by actual page loss can still recover as a false admission.
+Reconciliation records facts and does not decide permission. A local reservation does not prove
+physical passage. Keep the page open and retry storage when a repair warning appears.
+Read [the scanner runbook](runbooks/scanner.md#scanner-entry-outcomes-and-local-records) for the
+complete outcome table, deadline behavior and residual limits.
+
+### Entry rejection instructions
+
+See [current Entry refusal instructions](runbooks/scanner.md#entry-rejection-instructions).
 
 ## Finding misconfigured rule currencies (TKT-243)
 
@@ -154,7 +178,3 @@ See [The browser-submit gate (TKT-228)](runbooks/browser-forms.md).
 ## Conventions
 
 See [engineering rules](conventions/engineering-rules.md) and [PR conventions](conventions/pull-requests.md).
-
-### Entry rejection instructions
-
-See [current Entry refusal instructions](runbooks/scanner.md#entry-rejection-instructions).

@@ -110,12 +110,12 @@ also run inside the Compose network. They do not pass through the public gateway
 | Commerce → Payments | Payment/refund operations and money evidence | `PAYMENTS_INTERNAL_TOKEN` |
 | Commerce → Access | Void and replace tickets for post-purchase operations | `INTERNAL_SERVICE_TOKEN` |
 | Inventory → Catalog | Resolve publications and seat identity/pins | `INTERNAL_SERVICE_TOKEN` |
-| Access → Commerce | Resolve a delivery address at dispatch time | `INTERNAL_SERVICE_TOKEN` |
+| Access → Commerce | Resolve delivery addresses and order seats; acknowledge committed ticket switches | `INTERNAL_SERVICE_TOKEN` |
 | Access → Catalog | Resolve performance time zones for ticket bundles | `INTERNAL_SERVICE_TOKEN` |
 
 These service clients use `X-Internal-Token`. See each service's `cmd/<service>/main.go`,
 Commerce's `internal/api/server.go`, Inventory's `internal/consumer/catalog.go`, and Access's
-`internal/delivery/redelivery.go` and `internal/catalog/zones.go`. Commerce can boot without
+`internal/delivery/redelivery.go`, `internal/catalog/zones.go` and `internal/consumer/`. Commerce can boot without
 `ACCESS_URL`, but its `/readyz` refuses readiness until that variable is set. This check proves
 configuration, not Access reachability.
 

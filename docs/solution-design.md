@@ -40,7 +40,7 @@ must begin from an accepted product spec or ticket context.
 - OpenAPI source files live at `services/*/api/openapi.yaml`; all twelve generated outputs
   are drift-checked by `make check`; see the [contract map](contracts.md).
 - Configuration and operational recovery procedures live in
-  [`configuration.md`](./configuration.md) and [`development.md`](./development.md).
+  [`configuration.md`](./configuration.md) and the [runbook index](runbooks/README.md).
 
 ## Quality and evolution
 

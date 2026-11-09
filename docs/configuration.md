@@ -72,6 +72,9 @@ equivalent sweep for outstanding exchange obligations. Both are plain defaults w
 marker — they are tuning knobs, not credentials. Operator surface and the meaning of each state:
 [order recovery](runbooks/order-recovery.md#exchange-obligation-sweep).
 
+Base Compose does not forward these Commerce worker variables. Setting them only in `.env`
+has no effect. Pass them explicitly with a local overlay; see the [worker register](configuration-reference.md#commerce-worker-settings).
+
 ## Compose host ports (dev defaults / smoke)
 
 Published ports bind to `127.0.0.1`. The dev overlay defaults are gateway 8080, PostgreSQL 5432,

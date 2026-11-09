@@ -1,0 +1,11 @@
+path	decision_references	same_identity_and_source_ticket
+docs/adr/ADR-085-scanner-local-outcome-model.md	44	true
+docs/adr/scanner-outcomes/baseline-evidence.md	3	true
+docs/adr/scanner-outcomes/outcome-tables.md	26	true
+docs/adr/scanner-outcomes/finding-map.md	16	true
+docs/adr/scanner-outcomes/delivery-plan.md	51	true
+docs/adr/scanner-outcomes/storage-upgrade.md	20	true
+docs/adr/scanner-outcomes/invariants.md	11	true
+docs/adr/scanner-outcomes/state-model.md	48	true
+docs/adr/scanner-outcomes/decision-log.md	82	true
+docs/adr/scanner-outcomes/tests-and-mutations.md	15	true

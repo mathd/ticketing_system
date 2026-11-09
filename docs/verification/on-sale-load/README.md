@@ -4,6 +4,10 @@ The sustained no-oversell gate: methodology and the published per-pool throughpu
 Harness: `smoke/onsale_load_test.go` + `smoke/internal/loadtest`; profiles and assertions:
 `docs/testing.md` §Concurrency proofs.
 
+Correction, 2026-11-09: aligned the cited commit and `claim_history` INSERT statistics with the
+existing raw `full-profile.json`. The earlier summary cited `4c6f2ec`; the raw record says
+`ed2ed47a`. The evidence was not rerun or changed.
+
 ## What TKT-20 consumes
 
 > **Per-pool ceiling (2026-07-17, owner workstation / local compose, git ed2ed47a):**

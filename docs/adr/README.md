@@ -29,7 +29,7 @@ this register when adding an ADR or changing its status. Preserve existing decis
 
 | ID | Decision | Status and qualification |
 |---|---|---|
-| ADR-001 | [Go backend services, TypeScript/React frontends](ADR-001-go-typescript-stack.md) | Accepted |
+| ADR-001 | [Go backend services, TypeScript/React frontends](ADR-001-go-typescript-stack.md) | Accepted; amended by ADR-006 |
 | ADR-002 | [Services from day one, in a coarse five-service cut](ADR-002-services-from-day-one.md) | Accepted |
 | ADR-003 | [Append-only audit trail for money and ticket lifecycles (NF525-ready)](ADR-003-append-only-audit-trail.md) | Accepted |
 | ADR-004 | [Cache-first read path with volatility-tiered TTLs](ADR-004-cache-first-read-path.md) | Accepted; read-cache amendments ADR-044/045 and image-cache change ADR-079 |
@@ -48,12 +48,12 @@ this register when adding an ADR or changing its status. Preserve existing decis
 | ADR-017 | [Domain-event schema evolution — when additive stops being safe](ADR-017-domain-event-schema-evolution.md) | Accepted |
 | ADR-018 | [Catalog slot transition concurrency and grouped-member lifecycle ownership](ADR-018-catalog-slot-transition-concurrency.md) | Accepted |
 | ADR-019 | [Catalog read-path scoping and the evidence a scoping fix owes](ADR-019-catalog-read-path-scoping.md) | Accepted |
-| ADR-020 | [Catalog index builds stay non-concurrent until migrations leave startup](ADR-020-catalog-index-build-concurrency.md) | Accepted |
+| ADR-020 | [Catalog index builds stay non-concurrent until migrations leave startup](ADR-020-catalog-index-build-concurrency.md) | Accepted; TKT-249 amendment; ADR-022 alone does not permit concurrent builds |
 | ADR-021 | [The ticket lifecycle trail is chained per ticket and checkpointed per organizer](ADR-021-ticket-lifecycle-trail-integrity.md) | Accepted; implemented by TKT-67; rollback residual remains |
 | ADR-022 | [Service migrations run out-of-band, as one-shot jobs](ADR-022-out-of-band-service-migrations.md) | Accepted |
 | ADR-023 | [Operational holds are claims; conversion swaps under the pool lock](ADR-023-operational-holds-and-conversion.md) | Accepted |
 | ADR-024 | [Channel Allocations as Derived-Usage Rows Inside the Pool Lock](ADR-024-channel-allocations.md) | Accepted |
-| ADR-025 | [Admission lifecycle events and offline reconciliation](ADR-025-admission-events-and-offline-reconciliation.md) | Accepted |
+| ADR-025 | [Admission lifecycle events and offline reconciliation](ADR-025-admission-events-and-offline-reconciliation.md) | Accepted; amended by ADR-085 |
 | ADR-026 | [Inventory Capacity Adjustment — Derived Clamp with a Pending Target](ADR-026-inventory-capacity-adjustment-clamp.md) | Accepted |
 | ADR-027 | [Group Reservations as Expiring Claims; Draw-Down Reuses the Conversion Carve](ADR-027-group-agency-reservations.md) | Accepted |
 | ADR-028 | [Response-schema drift fails closed with 500](ADR-028-response-drift-fail-closed.md) | Accepted |
@@ -70,7 +70,7 @@ this register when adding an ADR or changing its status. Preserve existing decis
 | ADR-039 | [An exchange settles the difference — one provider movement, two gross facts](ADR-039-exchange-settles-the-difference.md) | Accepted |
 | ADR-040 | [A cancellation refund is a durable run with a per-order ledger, and the refund key does not know about the run](ADR-040-event-cancellation-bulk-refund-runs.md) | Accepted |
 | ADR-041 | [Where an orphan-seat rule is arbitrated](ADR-041-orphan-seat-arbitration.md) | Accepted |
-| ADR-042 | [Staff identity lives in catalog; the back office holds the session](ADR-042-staff-identity-and-backoffice-sessions.md) | Accepted |
+| ADR-042 | [Staff identity lives in catalog; the back office holds the session](ADR-042-staff-identity-and-backoffice-sessions.md) | Accepted; TKT-191/194/197 amendments |
 | ADR-043 | [Where a service's auth guard lives — declared security vs inline check](ADR-043-where-a-service-auth-guard-lives.md) | Accepted |
 | ADR-044 | [Inventory serves public availability from memory](ADR-044-inventory-availability-cache.md) | Accepted |
 | ADR-045 | [Catalog serves its public reads from memory](ADR-045-catalog-public-read-cache.md) | Accepted |

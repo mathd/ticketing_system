@@ -33,6 +33,19 @@ drops fragments from file links. Separately check moved headings and inline-code
 Use the same heading text for redirects, or check each incoming fragment against the new file.
 The full gate verifies the application tree, not the truth of every prose claim.
 
+Search non-Markdown consumers before moving a path or heading:
+
+```bash
+git grep -n 'docs/development.md' -- ':!*.md'
+```
+
+Review tests, source comments, runtime messages, migrations, and Compose comments in those hits.
+Use the actual old path for another move. `web/scanner/test/doc-namespace.test.ts` reads a fixed
+scanner subsection and safety sentences from `development.md`; it also checks added ADR decision
+references. Keep that synopsis and its safety limits, namespace references without changing their
+source authority, and run the test after moves. Password-recovery browser comments and durable
+configuration errors also cite development headings. A Markdown link scan cannot see these contracts.
+
 Read source before changing a technical claim. Record the inspected files and limits in review
 evidence. Check malformed input classes and failure paths before writing guarantees. Refer to
 manifest/configuration files for exact versions rather than repeating a version in many pages.

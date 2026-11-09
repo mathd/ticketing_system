@@ -1,7 +1,8 @@
 # Ticketing system
 
 This is the owner's AI-assisted development testbed. The owner has built three ticketing
-platforms and sold tens of millions of tickets. Treat them as the domain expert. Follow the
+platforms and sold tens of millions of tickets. Treat them as the domain expert. Do not explain
+ticketing basics; surface non-obvious engineering trade-offs. Follow the
 selected delivery process so the experiment remains valid.
 
 ## Read for this task
@@ -30,7 +31,7 @@ Start at [docs/README.md](docs/README.md). Load only relevant task references.
 - Follow the current request's scope. Investigation and review do not authorize source fixes.
 - Write or refine the spec before implementation. Record design decisions in `docs/adr/`.
 - Keep five Go services behind the Go gateway, TypeScript frontends, per-service PostgreSQL
-  databases, NATS JetStream, and Docker Compose. A stack deviation needs an ADR.
+  databases, React, NATS JetStream, and Docker Compose. A stack deviation needs an ADR.
 - Money uses integer minor units and an ISO currency code. Never use floats on money paths.
 - Enforce organizer scope on writes, reads, and failure paths. Derive protected identity from
   authenticated server state. Review every producer when a request value starts deciding access,

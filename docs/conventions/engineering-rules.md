@@ -43,7 +43,9 @@ Incident details stay in [learnings](../LEARNINGS.md).
   distinguishing input class. State an input where the mechanism changes the result.
 - Distinguish structural unreachability from temporary policy. Delete a structurally inert guard.
   Keep a guard shadowed by a policy planned for removal, and reach it by varying the unpoliced
-  input. Before deleting an exported symbol, check the sentinels and classifications it produces.
+  input. A test that pins the currently observed refusal can bless a temporary limitation and fail
+  when the guard starts working. Derive its expected behavior from the requirement. Before deleting
+  an exported symbol, check the sentinels and classifications it produces.
 - Compare accepted input classes before calling guards redundant. For malformed input, enumerate
   syntax, type, absence, identity, and range. A type error can populate a partially decoded value.
 - For redaction, fill every generated position with the forbidden value. Sanitize secret shapes,
@@ -92,6 +94,8 @@ Incident details stay in [learnings](../LEARNINGS.md).
 - Append every ticket lifecycle event through `store.appendLifecycle`. Direct inserts break
   one-to-one verifier coverage. Golden canonical bytes require a canonical-version migration,
   not an expected-value update. Read the [lifecycle runbook](../runbooks/ticket-lifecycle.md).
+
+New tests receive the same implementation and review scrutiny as production changes.
 
 ## Evidence references
 

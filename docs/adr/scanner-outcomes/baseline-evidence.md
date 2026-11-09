@@ -12,10 +12,13 @@ remain bound to their stated baselines; operator behavior is in the [scanner run
   and "main" mean that commit.
 - `B:` means the failed TKT-399 reference branch `TKT-399-pass-exit-mode` at
   `24f1c2096c0213db21500deca59c39ea9e02ecfc`. Existing B behavior is not approved because it exists.
-- "TKT-399 thread" means the TKT-399 ticket thread on the sdlc board. A TKT-399 decision is always
-  written "TKT-399 Dn". A bare "Dn" or "owner Dn" is a TKT-556 decision on the TKT-556 ticket. D13-1
-  to D13-4 and D14-1 to D14-4 are the parts of owner decisions D13 and D14. TKT-556 D30 does not
-  exist any more; D32 replaced it. The owner time rule is TKT-399 D30.
+- "TKT-399 thread" means the TKT-399 ticket thread on the sdlc board.
+  `ADR-085 Dn` identifies a decision cited by this ADR. Its source is the TKT-556 ticket
+  unless an explicit `of TKT-399` or other ticket qualifier follows it. `TKT-558 Dn`
+  remains a separate ticket namespace. The ADR prefix does not transfer decision authority.
+  ADR-085 D13-1 to ADR-085 D13-4 and ADR-085 D14-1 to ADR-085 D14-4 are parts of the
+  corresponding TKT-556 owner decisions. ADR-085 D30 of TKT-556 was replaced by ADR-085 D32.
+  The owner time rule is ADR-085 D30 of TKT-399.
 - F1-F4, P2-1 to P7-1, A-1, A-2, A6-1, A7-1, plan findings 1-21 and N1-N9 are TKT-399 review
   findings. DR1-x to DR4-x and DA1-x to DA4-x are TKT-556 plan-review findings.
 - Citations into `net/http`, `net/http/httputil`, nethttp-middleware v1.2.0 (`oapi_validate.go`) and
@@ -74,7 +77,7 @@ operators the same list.
 4. **Refusals are minted QUEUED.** `web/scanner/src/occurrences.ts:270-281`. No time check follows
    the refusal mint, `web/scanner/src/App.tsx:287-293`. Ticket 2 mints them PENDING first; ticket 3
    adds the time check.
-5. **No TKT-399 D30 checks.** Main has no elapsed-time guard, `web/scanner/src/App.tsx:275-372`, E12.
+5. **No ADR-085 D30 of TKT-399 checks.** Main has no elapsed-time guard, `web/scanner/src/App.tsx:275-372`, E12.
    It publishes the offline result after the queue write, `web/scanner/src/App.tsx:356-367`.
    Ticket 3.
 6. **Queue and sync transitions accept any prior state.** `markQueued` and `markSynced`,
@@ -91,5 +94,5 @@ operators the same list.
    lose a response, U/A.
 
 One more item is an accepted residual, not a gap that a ticket closes. After ticket 2, rows that main
-queued before the upgrade keep syncing as on main, owner D31 and row M02. They have no cause field.
-Some can be false admission facts that nobody can tell apart. Their ids go into the D25 export.
+queued before the upgrade keep syncing as on main, owner ADR-085 D31 and row M02. They have no cause field.
+Some can be false admission facts that nobody can tell apart. Their ids go into the ADR-085 D25 export.
