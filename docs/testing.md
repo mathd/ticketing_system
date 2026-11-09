@@ -1,8 +1,9 @@
 # Testing
 
 Run `make check`. The wrapper locks the tree and writes `.gate.verdict`; never edit tracked
-files while it runs or call `make check-all` directly. CI calls the same target plus the gate
-self-test. [Makefile](../Makefile) is the executable stage order. At this revision it is:
+files while it runs or call `make check-all` directly. CI runs the same stages as parallel parts,
+plus the gate self-test (see [Parallel parts in CI](#parallel-parts-in-ci)).
+[Makefile](../Makefile) is the executable stage order. At this revision it is:
 
 ```text
 deps -> check-generate -> check-dep-drift -> check-build-list-lag
@@ -43,7 +44,38 @@ persist).
 The **hermetic** in-Docker build path (`build/go.Dockerfile` and each web application's
 `Dockerfile`) is still what `make up` uses. `.github/workflows/hermetic.yaml` exercises it
 end-to-end with `make smoke-hermetic`, weekly on main and on any PR touching the build files
-(Dockerfiles, Compose files, `.dockerignore`, or `go.work*`).
+(Dockerfiles, Compose files, `.dockerignore`, or `go.work*`). `make smoke-hermetic` runs only the
+`e2e` and `e2e-slow` parts. The `services-*` parts run `go test` on the host and use no image built
+in Docker, so `make check` already covers them on the same commit.
+
+## Parallel parts in CI
+
+[ADR-086](adr/ADR-086-parallel-ci-gate-parts.md). `scripts/smoke.sh` has four parts, listed in
+`SMOKE_ALL_PARTS` and selected by `SMOKE_PARTS` (default `all`):
+
+| Part | What it runs |
+|---|---|
+| `services-inventory` | inventory's DB-backed service tests |
+| `services-rest` | the DB-backed service tests of commerce, access, catalog and payments, and the `payments_store_smoke` journal checks |
+| `e2e` | the `smoke/` module with `-skip` of `SMOKE_SLOW_TESTS`, then the post-suite integrity checks |
+| `e2e-slow` | the `smoke/` module with `-run` of `SMOKE_SLOW_TESTS` |
+
+The local `make check` runs all four on one stack, and the `smoke/` module once with no filter. CI
+runs `gate-static` (`make check-all` with no smoke part) and one job per part, each on its own
+stack, and the `check` job fails unless all five succeeded. `-run R` and `-skip R` with one `R`
+select complementary sets of tests. The `e2e-slow` part fails unless each name in
+`SMOKE_SLOW_TESTS` reports `--- PASS`, so a renamed slow test cannot make it pass empty.
+
+Two differences from the local run, both deliberate:
+
+- The coverage gate in `TestMain` runs only when `-run` is unset. In CI it runs in the `e2e` part,
+  over the operations that part drives. An operation that only a slow test drives fails it.
+- The post-suite integrity checks run in the `e2e` part, over the data of its stack only. The slow
+  tests use GA venues and write no seat map, so `reconcile-pins` cannot run over their stack alone.
+  Their journal and lifecycle data is not verified in CI. The local and hermetic runs share one
+  stack, so there the checks still read the data of the whole suite.
+
+To run one part locally: `SMOKE_PARTS=e2e-slow make smoke`. Its result is not a gate verdict.
 
 Gate timings measured on TKT-42 (before → after):
 

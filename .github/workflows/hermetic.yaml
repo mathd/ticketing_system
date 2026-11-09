@@ -3,6 +3,8 @@
 # cadence. Per-PR `make check` uses the fast host-built path
 # (TKT-42), so this workflow keeps the hermetic builds honest: weekly on
 # main, and on any PR that touches the build files themselves.
+# `make smoke-hermetic` runs only the e2e smoke parts (ADR-086): the DB-backed
+# service tests use no image built in Docker, and `make check` runs them.
 name: hermetic-smoke
 
 on:

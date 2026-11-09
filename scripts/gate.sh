@@ -52,6 +52,32 @@ tree_digest() {
 # front of it, so the definition lives in one place. Runs before any locking.
 if [ "${1:-}" = "--digest" ]; then tree_digest; exit 0; fi
 
+# --part runs ONE part of the gate, for a CI job that runs beside the other parts
+# (ADR-086): `static` is all of check-all with no smoke part, `smoke-<part>` is
+# one smoke part (scripts/smoke.sh SMOKE_ALL_PARTS). Only the full run can write a
+# verdict that starts with `PASS `, which is the only verdict the merge guard
+# accepts: a passing part writes `PART-PASS`, so no part alone can unlock a merge.
+#
+# SMOKE_PARTS is always set HERE, never read from the caller: the full gate with a
+# stray SMOKE_PARTS in the environment would otherwise run some parts and still
+# write `PASS`.
+PART=""
+TARGET=check-all
+SMOKE_PARTS=all
+case "${1:-}" in
+  "") ;;
+  --part)
+    PART="${2:-}"
+    case "$PART" in
+      static) SMOKE_PARTS=none ;;
+      smoke-?*) TARGET=check-smoke-part; SMOKE_PARTS="${PART#smoke-}" ;;
+      *) echo "gate: unknown part '$PART'; use static or smoke-<part>" >&2; exit 2 ;;
+    esac
+    ;;
+  *) echo "gate: unknown argument '$1'; use no argument, --digest, or --part <part>" >&2; exit 2 ;;
+esac
+export SMOKE_PARTS
+
 TOKEN="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 owns_lock() { [ -e "$LOCK" ] && [ "$(cut -d' ' -f1 < "$LOCK" 2>/dev/null)" = "$TOKEN" ]; }
 
@@ -77,14 +103,14 @@ rm -f "$VERDICT"
 # read, so a parallel run reads them mid-write.
 set +e
 set -o pipefail
-GATE_TOKEN="$TOKEN" make -j1 check-all 2>&1 | tee "$LOG"
+GATE_TOKEN="$TOKEN" make -j1 "$TARGET" 2>&1 | tee "$LOG"
 code=$?
 set +o pipefail
 set -e
 
 AFTER="$(tree_digest)"
 
-verdict() { echo "$1 exit=$code head=$HEAD_SHA tree=$BEFORE log=$LOG" > "$VERDICT"; cat "$VERDICT"; }
+verdict() { echo "$1 exit=$code head=$HEAD_SHA tree=$BEFORE log=$LOG${PART:+ part=$PART}" > "$VERDICT"; cat "$VERDICT"; }
 
 # The exit code alone is not trusted, and neither is the log alone.
 if grep -qE 'Error [0-9]+|^FAIL|--- FAIL|drifted' "$LOG"; then body=FAIL; else body=PASS; fi
@@ -105,10 +131,10 @@ if [ "$body" = FAIL ]; then
 fi
 
 if [ "$BEFORE" != "$AFTER" ]; then
-  echo "FAIL exit=$code head=$HEAD_SHA tree=changed-during-run log=$LOG" > "$VERDICT"
+  echo "FAIL exit=$code head=$HEAD_SHA tree=changed-during-run log=$LOG${PART:+ part=$PART}" > "$VERDICT"
   cat "$VERDICT"
   echo "The tree changed while the gate read it — this PASS describes no revision. Re-run." >&2
   exit 1
 fi
 
-verdict PASS
+if [ -n "$PART" ]; then verdict PART-PASS; else verdict PASS; fi

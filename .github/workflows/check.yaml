@@ -1,4 +1,4 @@
-# CI = the local gate (`make check`), plus the gate self-test.
+# CI = the local gate (`make check`), run as parallel parts, plus the gate self-test.
 # Per-PR smoke runs against host-built artifacts (compose.smoke.yaml);
 # the hermetic in-Docker build path is covered by hermetic.yaml
 # (scheduled + triggered on PRs touching the build files).
@@ -9,6 +9,15 @@
 # skipped workflow leaves a required check pending forever. Docs-only diffs can
 # also fail `make check` (`check-markdown-links`, `check-adr-numbers`).
 # `make check-check-workflow-trigger` refuses a path filter here.
+#
+# Parts (ADR-086). The gate runs as five jobs at the same time: `gate-static` is
+# `make check-all` with no smoke part, and each `gate-smoke-<part>` runs one part of
+# scripts/smoke.sh on its own stack. `check` is the required context: it needs every
+# part, runs with `if: always()` (GitHub counts a SKIPPED required check as passed,
+# so without it one failed part would skip `check` and the PR would merge green),
+# and fails unless every part succeeded. `make check-check-workflow-trigger` refuses
+# any other shape, and a part list that does not match SMOKE_ALL_PARTS.
+# YAML anchors are not used: the guard reads this file line by line and refuses them.
 name: check
 
 on:
@@ -23,7 +32,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
+  gate-static:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -52,7 +61,79 @@ jobs:
           path: ~/.cache/golangci-lint
           key: golangci-${{ steps.golangci-version.outputs.v }}-${{ runner.os }}-${{ hashFiles('**/go.sum', 'go.work.sum') }}
           restore-keys: golangci-${{ steps.golangci-version.outputs.v }}-${{ runner.os }}-
-      - run: make check
+      - run: make check-ci-static
+
+  gate-smoke-services-inventory:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.3"
+          cache-dependency-path: "**/go.sum"
+      # pnpm via corepack: see gate-static.
+      - run: corepack enable pnpm && corepack install
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26.13.0"
+          cache: pnpm
+      - run: make check-ci-smoke-services-inventory
+
+  gate-smoke-services-rest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.3"
+          cache-dependency-path: "**/go.sum"
+      # pnpm via corepack: see gate-static.
+      - run: corepack enable pnpm && corepack install
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26.13.0"
+          cache: pnpm
+      - run: make check-ci-smoke-services-rest
+
+  gate-smoke-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.3"
+          cache-dependency-path: "**/go.sum"
+      # pnpm via corepack: see gate-static.
+      - run: corepack enable pnpm && corepack install
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26.13.0"
+          cache: pnpm
+      - run: make check-ci-smoke-e2e
+
+  gate-smoke-e2e-slow:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.3"
+          cache-dependency-path: "**/go.sum"
+      # pnpm via corepack: see gate-static.
+      - run: corepack enable pnpm && corepack install
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26.13.0"
+          cache: pnpm
+      - run: make check-ci-smoke-e2e-slow
+
+  check:
+    needs: [gate-static, gate-smoke-services-inventory, gate-smoke-services-rest, gate-smoke-e2e, gate-smoke-e2e-slow]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: ./scripts/gate-parts-verdict.sh '${{ toJSON(needs) }}'
 
   gate-selftest:
     runs-on: ubuntu-latest

@@ -19,7 +19,7 @@ number; a gap does not imply a missing implementation.
 | Staff, customer, partner, or credential boundary | ADR-042, 043, 049–053, 056–059, 068 |
 | Ticket issuance, lifecycle, scanner | ADR-003, 012, 021, 025, 066, 074, 083, 085 |
 | Read cache or image cache | ADR-004, 044, 045, 079 |
-| Dependency/gate/security maintenance | ADR-028, 030, 035, 081 |
+| Dependency/gate/security maintenance | ADR-028, 030, 035, 081, 086 |
 | Future waitlist, rotating credentials, mail transport | ADR-075/076 are proposed; ADR-078 is accepted requirements, adapter unimplemented |
 
 ## Status register
@@ -113,6 +113,7 @@ this register when adding an ADR or changing its status. Preserve existing decis
 | ADR-083 | [Access reads performance time zones from Catalog](ADR-083-access-reads-performance-time-zones-from-catalog.md) | Accepted |
 | ADR-084 | [Promotion storage and redemption contract](ADR-084-promotion-storage-and-redemption-contract.md) | Proposed; no implementation authority |
 | ADR-085 | [Scanner local outcome model](ADR-085-scanner-local-outcome-model.md) | Accepted model; staged delivery and venue qualification limits |
+| ADR-086 | [Parallel CI gate parts](ADR-086-parallel-ci-gate-parts.md) | Accepted |
 
 Use [the ADR template](<[template].md>) for a new decision. Record current implementation and
 future requirements separately. Historical context inside an ADR is not an operator procedure.

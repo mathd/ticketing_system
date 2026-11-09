@@ -9,6 +9,50 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# ---- Parts (ADR-086) ----
+# The stage has four parts. SMOKE_PARTS selects them; the default `all` runs every
+# part on ONE stack, which is what the local `make check` does. CI runs each part in
+# its own job, on its own stack, so the parts run at the same time (check.yaml).
+#   services-inventory  inventory's DB-backed service tests
+#   services-rest       the DB-backed service tests of commerce, access, catalog and
+#                       payments, and the payments_store_smoke journal checks
+#   e2e                 the smoke/ module, without the tests in SMOKE_SLOW_TESTS, then
+#                       the post-suite integrity checks (journal, lifecycle trail,
+#                       pin reconciliation)
+#   e2e-slow            only the tests in SMOKE_SLOW_TESTS
+# Both e2e parts provision the stack credentials first.
+# `none` starts no stack: CI's static job runs `make check-all` with it.
+#
+# SMOKE_ALL_PARTS is the one list. scripts/check-check-workflow-trigger.sh reads it
+# and refuses a check.yaml that does not run every part in a job of its own.
+SMOKE_ALL_PARTS="services-inventory services-rest e2e e2e-slow"
+# The slow tests: they wait on Grafana evaluation intervals, Prometheus rate()
+# windows or a timed load window, and must not share a stack with other traffic.
+# They are a filter on test NAMES, so the two e2e parts are exact complements:
+# `-run R` and `-skip R` with one R select disjoint sets whose union is every test.
+# A name here that matches no test would make e2e-slow run nothing and pass, so the
+# part refuses to pass unless each name below reports `--- PASS`.
+SMOKE_SLOW_TESTS=(
+  TestCheckoutAlertFiresAndResolves
+  TestCheckoutDashboardProvisionedAndLive
+  TestOnsaleLoadProof
+  TestNATSServiceCannotWidenItsOwnPluralDurable
+)
+SMOKE_SLOW_PATTERN="^($(IFS='|'; echo "${SMOKE_SLOW_TESTS[*]}"))\$"
+
+case "${SMOKE_PARTS:=all}" in
+  all) SMOKE_PARTS=$SMOKE_ALL_PARTS ;;
+  none) echo "smoke: SMOKE_PARTS=none, no stack started"; exit 0 ;;
+esac
+for part in $SMOKE_PARTS; do
+  case " $SMOKE_ALL_PARTS " in
+    *" $part "*) ;;
+    *) echo "smoke: unknown part '$part' in SMOKE_PARTS; the parts are: $SMOKE_ALL_PARTS, all, none" >&2; exit 2 ;;
+  esac
+done
+smoke_part() { case " $SMOKE_PARTS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+echo "smoke: parts: $SMOKE_PARTS"
+
 # Project name, ports and runtime credentials, isolated per checkout.
 # Shared with scripts/browser.sh so the two stacks cannot pick the same ports —
 # the browser gate's first, per-ticket copy of these lines hardcoded 18099,
@@ -69,6 +113,9 @@ if ! compose up -d --build --wait; then
   exit 1
 fi
 
+# ---- Part services-rest (commerce, access, catalog; payments is further down) ----
+# The part blocks are not indented, so that their history stays readable.
+if smoke_part services-rest; then
 cd "$ROOT/services/commerce"
 # The commerce store tests claim and retire completion_outbox rows directly, and the
 # live commerce service runs an outbox drainer that polls the same table. Pointed at
@@ -175,7 +222,10 @@ cd "$ROOT/services/catalog"
 # would otherwise silently not run.
 CATALOG_MIGRATION_TEST_DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/postgres" \
 go test -tags smoke -count=1 ./internal/...
+fi # part services-rest (commerce, access, catalog)
 
+# ---- Part services-inventory ----
+if smoke_part services-inventory; then
 cd "$ROOT/services/inventory"
 # No -run filter, for the same reason as commerce, catalog and access above: an allowlist
 # means a newly added test silently never runs while the gate still passes green. This
@@ -187,7 +237,10 @@ cd "$ROOT/services/inventory"
 # command smoke tests drive the production command registry against a real schema.
 INVENTORY_MIGRATION_TEST_DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/postgres" \
 go test -tags smoke -count=1 ./internal/... ./cmd/inventory
+fi # part services-inventory
 
+# ---- Part services-rest (payments and the payments_store_smoke journal checks) ----
+if smoke_part services-rest; then
 cd "$ROOT/services/payments"
 # The journal fault-injection matrix (TKT-56 Slice 4). Its own database, for the same
 # reason commerce has one and then some: the packaged-binary checks further down
@@ -294,6 +347,14 @@ case "$retired_out" in
   *) echo "smoke: verify-journal failed, but not because of the retired key: $retired_out" >&2
      exit 1 ;;
 esac
+fi # part services-rest (payments)
+
+# ---- Parts e2e and e2e-slow: everything from here to the end of the file ----
+if ! smoke_part e2e && ! smoke_part e2e-slow; then
+  echo "smoke: parts $SMOKE_PARTS passed (no e2e part selected)"
+  exit 0
+fi
+cd "$ROOT"
 
 # TKT-190: provision the back-office staff account the sign-in smoke tests use,
 # through the REAL CLI against the REAL migrated schema — the same path an
@@ -415,6 +476,17 @@ fi
 cd "$ROOT/smoke"
 status=0
 suite_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# Both e2e parts: no filter, so TestMain also enforces the coverage gate over the
+# whole suite. One part: an exact complement filter (see SMOKE_SLOW_TESTS). With
+# -skip, TestMain still enforces the coverage gate, over the e2e part alone; with
+# -run it does not, because a filtered run exercises a few operations by design.
+suite_filter=()
+if smoke_part e2e && ! smoke_part e2e-slow; then
+  suite_filter=(-skip "$SMOKE_SLOW_PATTERN")
+elif smoke_part e2e-slow && ! smoke_part e2e; then
+  suite_filter=(-run "$SMOKE_SLOW_PATTERN")
+fi
+suite_out=$(mktemp)
 SMOKE_STAFF_IDENTIFIER="$SMOKE_STAFF_IDENTIFIER" \
 SMOKE_STAFF_PASSWORD="$SMOKE_STAFF_PASSWORD" \
 SMOKE_BOXOFFICE_IDENTIFIER="$SMOKE_BOXOFFICE_IDENTIFIER" \
@@ -457,7 +529,20 @@ SMOKE_COMMERCE_URL=http://localhost:${COMMERCE_PORT} \
 SMOKE_PAYMENTS_URL=http://localhost:${PAYMENTS_PORT} \
 SMOKE_ACCESS_URL=http://localhost:${ACCESS_PORT} \
 SMOKE_COMPOSE_PROJECT="$PROJECT" \
-go test -tags smoke -count=1 -v -timeout "${SMOKE_TEST_TIMEOUT:-10m}" ./... || status=$?
+go test -tags smoke -count=1 -v -timeout "${SMOKE_TEST_TIMEOUT:-10m}" "${suite_filter[@]}" ./... 2>&1 \
+  | tee "$suite_out" || status=$?
+# `|| status=$?` reads the status of the pipeline, which pipefail makes go test's.
+# A slow test that no longer exists, or that was renamed, matches nothing: `-run`
+# then runs no test and passes. So the e2e-slow part requires each name to pass.
+if [ "$status" -eq 0 ] && smoke_part e2e-slow; then
+  for name in "${SMOKE_SLOW_TESTS[@]}"; do
+    if ! grep -q -- "--- PASS: $name (" "$suite_out"; then
+      echo "smoke: slow test $name did not report --- PASS; SMOKE_SLOW_TESTS names a test that did not run" >&2
+      status=1
+    fi
+  done
+fi
+rm -f "$suite_out"
 
 # TKT-149 captures logs when the smoke module's Go tests fail.
 # A generic 500 hides its cause in the service log. Keep the whole suite window
@@ -482,6 +567,15 @@ if [ "$status" -ne 0 ]; then
   echo "--- last 50 lines per service ---"
   compose logs --no-color --timestamps --tail 50 || true
   exit "$status"
+fi
+
+# The post-suite integrity checks below run in part e2e, not in e2e-slow alone.
+# They need data that only the e2e tests write (reconcile-pins needs a published
+# seat map; the slow tests use GA venues). On the local and hermetic runs both e2e
+# parts share one stack, so the checks still read the data of the whole suite.
+if ! smoke_part e2e; then
+  echo "smoke: parts $SMOKE_PARTS passed (the post-suite integrity checks run in part e2e)"
+  exit 0
 fi
 
 # QUIESCE THE ONLY LIVE WRITER BEFORE ANY JOURNAL VERIFICATION (TKT-254).

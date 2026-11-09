@@ -12,8 +12,8 @@ GitHub Actions workflows live in `.github/workflows/`:
 
 | Workflow | Trigger | Responsibility |
 |---|---|---|
-| `check.yaml` | every PR and push to `main` | `make check` plus the gate self-test |
-| `hermetic.yaml` | weekly and build-surface PR changes | in-Docker `make smoke-hermetic` |
+| `check.yaml` | every PR and push to `main` | `make check` as five parallel part jobs and one verdict job, plus the gate self-test |
+| `hermetic.yaml` | weekly and build-surface PR changes | in-Docker `make smoke-hermetic` (the e2e parts) |
 | `security.yaml` | every PR, weekly, and manual | Go/pnpm advisories plus repository misconfiguration and secret scanning |
 
 Workflow actions are pinned to full commit SHAs with release comments; action-installed tools are
@@ -25,7 +25,17 @@ automation should only be extracted after real repetition appears.
 `make check` is the merge gate and runs generation drift checks, Go/TypeScript lint and tests,
 builds, and the isolated Compose smoke suite. `gate-selftest` independently confirms the gate fails
 when lint, test, or build defects are seeded. A GitHub ruleset on `main` requires the `check` job;
-see [Main ruleset](#main-ruleset). `gate-selftest` and the security workflow are not required
+see [Main ruleset](#main-ruleset).
+
+CI runs `make check` as parallel parts
+([ADR-086](../adr/ADR-086-parallel-ci-gate-parts.md)). `gate-static` runs `make check-ci-static`,
+which is `make check-all` with no smoke part. Each `gate-smoke-<part>` job runs
+`make check-ci-smoke-<part>`, one part of `scripts/smoke.sh` on its own Compose stack. Every part goes
+through `scripts/gate.sh` and its lock. The `check` job needs all five parts, runs with
+`if: always()`, and runs `scripts/gate-parts-verdict.sh`, which fails unless every part succeeded.
+GitHub counts a skipped required check as passed, so `if: always()` is what stops one failed part
+from merging green. A part writes `PART-PASS` in `.gate.verdict`. The merge guard accepts only
+`PASS`, so only a full local `make check` unlocks an agent merge. `gate-selftest` and the security workflow are not required
 checks. The security workflow is a separate blocking signal for review: Go findings are
 reachability-aware, while pnpm and Trivy fail on high or critical findings. A finding that a bump
 cannot fix yet goes in the reviewed, expiring allowlist `.trivyignore.yaml`, not in a per-PR
@@ -94,11 +104,18 @@ and it refuses as unsupported anything it cannot read plainly:
   is no workflow-level `defaults:` or `env:`.
 - Each required context is the reported name of a `check.yaml` job: its `name:` when set, else its
   job id.
-- That job holds only `name`, `runs-on`, `steps`, `permissions` and `timeout-minutes`. Its steps
-  hold only `name`, `uses`, `with`, `run` and `id`, so `if:`, `continue-on-error`, `shell:` and
-  `env:` are refused. Each step key's own value is one plain line. The guard does not read the
-  inputs below `with:`, so it accepts any action input (see the threat model below). At least one
-  step is exactly `run: make check`.
+- That job is the verdict job. It holds only `name`, `runs-on`, `steps`, `permissions`,
+  `timeout-minutes`, `needs` and `if`. Its `if:` is exactly `always()`. Its `needs:` is one flow
+  list on one line that names exactly the part jobs. At least one step is exactly
+  `run: ./scripts/gate-parts-verdict.sh '${{ toJSON(needs) }}'`.
+- The part jobs are `gate-static`, with a step exactly `run: make check-ci-static`, and one
+  `gate-smoke-<part>` for each part in `SMOKE_ALL_PARTS` in `scripts/smoke.sh`, with a step exactly
+  `run: make check-ci-smoke-<part>`. Each holds only `name`, `runs-on`, `steps`, `permissions` and
+  `timeout-minutes`.
+- The steps of the verdict and part jobs hold only `name`, `uses`, `with`, `run` and `id`, so
+  `if:`, `continue-on-error`, `shell:` and `env:` are refused. Each step key's own value is one
+  plain line. The guard does not read the inputs below `with:`, so it accepts any action input (see
+  the threat model below).
 - In `check.yaml`, flow style, quoted keys, duplicate keys, merge keys, a second YAML document, and
   a multi-line or block scalar in a step are refused as unsupported.
 - No other job in any workflow reports the same name. In the other workflows the guard reads only
@@ -109,8 +126,9 @@ and it refuses as unsupported anything it cannot read plainly:
   `name:` is refused only if its literal prefix could still make it a required context.
 
 Threat model: the guard is a tripwire against accidental or careless edits to `check.yaml` and the
-ruleset. It does not, and cannot, stop a writer who changes the Makefile `check` target,
-`scripts/gate.sh`, a step that writes `$GITHUB_ENV`, or the guard itself. It does not read action
+ruleset. It does not, and cannot, stop a writer who changes the Makefile `check` or `check-ci-*`
+targets, `scripts/gate.sh`, `scripts/smoke.sh`, `scripts/gate-parts-verdict.sh`, a step that
+writes `$GITHUB_ENV`, or the guard itself. It does not read action
 inputs either. An input that changes the checked-out ref (for example `ref: main` on
 `actions/checkout`, which makes the gate run `main`'s code instead of the PR's) or the environment
 passes the guard. Those changes are reviewed in the PR like any other code.
