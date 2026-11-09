@@ -63,7 +63,12 @@ State the mode in the **claim comment** ("running gateless per `config.gates: au
 
 **Epics:** if the ticket is an epic, decompose it per `references/decomposition.md`, then run each child story Ready → Done **one at a time, in dependency order** — full pipeline per story, no batching.
 
-**Drive style:** no ask — continuous run. Report at the end (and at each story boundary when running an epic).
+**Drive style:** continuous run without routine confirmations. Resolve decisions within existing
+authorization yourself. If required information or an owner-only decision is missing, ask a
+focused question with a concrete recommendation and its main trade-off. Continue useful
+independent work while waiting; do not treat silence as approval. Report at the end and at each
+story boundary when running an epic. A short sprint run request supplies scope and priority
+approval under `sdlc-sprint/SKILL.md` § Short run requests; it does not override `config.gates`.
 
 **⛔ STOP and report to the human instead of proceeding only if:**
 

@@ -79,10 +79,17 @@ Never present the sprint as complete while its required review or report is miss
 
 ## Gate 1 from a named owner decision
 
-The owner may approve priorities for the exact brief and member scope once. `sdlc-sprint` records
-it as `sprint-priority`. This exception was approved by the owner on October 18, 2026. It lets the
+The owner may approve priorities for the exact brief and member scope once. A short run request
+can supply that approval by reference under `sdlc-sprint/SKILL.md` § Short run requests.
+`sdlc-sprint` resolves and records the exact targets as `sprint-priority` before any Ready move.
+The named-scope exception was approved by the owner on October 18, 2026. It lets the
 agent record the owner's Ready transition, not choose or expand the priorities. Preparation does
 not approve them. Re-read the approval and current scope before each such transition. Each member,
 including the closure task, still waits until its DoR and blockers pass. Then record the reference,
 transition through the legal board path and read Ready back before claim. A full automatic run
 needs this approval for members that will become eligible later.
+
+The short request does not override `config.gates`. Human gates still pause for their decisions;
+autonomous gates follow the existing review and acceptance rules. If required information or an
+owner-only decision is missing, ask with a concrete recommendation. Continue independent work
+within existing authorization while waiting; do not treat the recommendation as approval.

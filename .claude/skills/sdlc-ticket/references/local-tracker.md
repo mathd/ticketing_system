@@ -217,7 +217,9 @@ switcher appears once there is more than one.
 ## Recording an owner sprint-priority decision
 
 The owner may approve Gate 1 once for the exact named sprint scope. This is a priority decision,
-not an agent waiver. `sdlc-sprint/references/records.md` defines `sprint-priority`. Read its returned
+not an agent waiver. A short run request can supply it under `sdlc-sprint/SKILL.md` § Short run
+requests, after resolving the prepared brief and matching scope. The owner need not type hashes.
+`sdlc-sprint/references/records.md` defines `sprint-priority`. Read its returned
 body and verify its digest, sprint, approved brief digest, scope digest and member list. Before each
 Backlog or unblocked BLOCKED member moves to Ready, read the ticket again, check all DoR items and
 all blocked-by links, and confirm the approved scope still matches. Record the approval reference

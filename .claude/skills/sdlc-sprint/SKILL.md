@@ -13,7 +13,8 @@ start and the close. A finished ticket or an end date never triggers one of them
 
 1. Read `sdlc-ticket/SKILL.md` and its `references/local-tracker.md`. They hold the shared rules:
    the board API, `role`, append-only comments, the gates. Read `sdlc-sprint-review/SKILL.md` during preparation and before final validation. All three skills are in `.claude/skills/`.
-2. Read `.claude/sdlc.config.json`. Check these values and stop if one is wrong:
+2. Read `.claude/sdlc.config.json`. Check these values. If one is missing or wrong, ask for the
+   needed correction with a recommendation before dependent work:
    - `tracker` is `local`.
    - `sprints.vault` names the vault.
    - `sprints.reportLanguage` is `fr` or `en`. The default is `en`.
@@ -38,14 +39,44 @@ start and the close. A finished ticket or an end date never triggers one of them
 - A human approval names the exact targets. Preparing a sprint does not authorize its start. A
   close approval authorizes the exact close targets. Validation starts under the continuation policy below, before that approval.
 
+## Short run requests
+
+The owner can say `Run sprint 3` or `Run sprint 3 in autonomous mode`. Resolve the sprint key and
+the latest unambiguous prepared brief from the board. If that brief's scope matches the complete
+current member list and scope digest, the request approves that brief and the priorities of all
+its members, including the closure task. Record the exact targets under
+[lifecycle](references/lifecycle.md) and [records](references/records.md). The owner need not copy
+hashes or ticket keys into the prompt. Show the resolved scope and gate mode in a progress update,
+then proceed without another confirmation. Start a planned sprint or resume an active one.
+
+The request authorizes scoped commits, pushes and PRs needed for the members. Merge and acceptance
+still follow `config.gates`. Model routing follows the current config and owner instructions;
+exceptions from another sprint do not carry over. Scope additions, deployment, tag publication
+and final close are not authorized by this request.
+
+`config.gates` controls ticket decisions: `human`, also the default when absent, pauses at the
+human gates; `autonomous` lets the agent take gates 2–4 under `sdlc-ticket`. The brief's
+`continuation` controls whether final validation starts automatically after the functional work.
+An explicit autonomous run request approves `continuation: "autonomous"`; record that choice in
+the approved brief. It does not change `config.gates` or waive a human gate. Follow any explicit
+owner instruction to pause for an additional decision, even with autonomous gates.
+
+If a required fact, approval or owner decision is missing, ask a focused question with a concrete
+recommendation and its main trade-off. Bundle related gaps into one question. Complete useful
+independent checks while waiting, but do not treat the recommendation, silence or elapsed time as
+approval. For a missing or ambiguous brief, propose a bounded brief for approval. For changed
+scope, show the difference and recommend a disposition. Preserve the normal stop conditions and
+ask only for what cannot be resolved within existing authorization.
+
 ## Phases
 
 - **Prepare.** Choose a bounded outcome, the stories, the dates, and the review policy and the tag plan. Default to `review: "full"`. Choose the baseline, the named approver and the verification budget. `release: false` disables tag publication only. Look at dependency updates. Propose a maintenance ticket only for a justified
   one. Create the planned sprint and assign its members only inside the scope the human gave you.
   Get the human's approval of the brief and of its scope digest.
-- **Start.** The human's request names the sprint and the digest. Check the approved brief and the
-  members. Then start the sprint and read back `active`. Starting does not prioritize the stories
-  and does not approve their plans.
+- **Start.** Resolve the named sprint's prepared brief and exact scope from the short run request,
+  or use the explicit targets in a longer request. Record the approvals before starting and read
+  back `active`. A bare start request does not approve priorities; a run request does under the
+  rule above. Neither pre-approves ticket plans.
 - **Track and resume.** Show the accepted and the total members, the remaining and the blocked
   tickets, the scope changes and the state of the closure task. Show the stories apart from the
   closure task. Counts describe tickets, not effort. Rebuild every approval and digest from the

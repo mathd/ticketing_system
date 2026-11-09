@@ -73,7 +73,8 @@ current brief.
 `members` is the approved member list, sorted. `scopeDigest` is the digest the human approved. It
 is the `scopeDigest` that the board reported, and that `sprint_state.py progress` matched. `review: "full"` requires a member closure task even with `release: false`. For the explicit `review: "none"` exception, set `closureTask: null`, `release: false` and a nonempty owner-approved `reviewReason`. New briefs always name a review policy and `continuation: "autonomous"|"manual"`. Only an approved autonomous continuation starts final validation automatically.
 
-**`sprint-start`.** The human asked to start the sprint and named it and the digest.
+**`sprint-start`.** The human asked to start the sprint with explicit targets, or a short run
+request resolved to its prepared brief and matching scope. Store the resolved digests below.
 
 ```json
 {"sprint": "S-3", "briefDigest": "<digest of the current brief comment>",
@@ -107,10 +108,19 @@ is the `scopeDigest` that the board reported, and that `sprint_state.py progress
 - An approval names a real human and the exact targets. A marker, a `role` value and an agent
   comment are not an approval. `role` is chosen by the caller. The board never treats `role=human`
   or a metrics comment as an authenticated approval.
-- Record what the human said, in the human's terms. If the human gave no name, ask for it. Never
-  write `human` or a model name as the approver.
-- A request to start or to close names the sprint. A request to start also names the digest. Reuse a
-  request that already names the target. Ask only for what is missing.
+- Record what the human said, in the human's terms. Reuse an owner identity established by the
+  session or a prior explicit owner approval. A proposed approver alone does not establish it.
+  If the identity is unknown, ask for it. Never write `human` or a model name as the approver.
+- A request to start or to close names the sprint. A short run request can approve the prepared
+  brief and matching scope by reference under `sdlc-sprint/SKILL.md` § Short run requests. In the
+  approved brief, include the owner's exact words, request time, source brief key and body digest,
+  resolved scope digest and members. Read back and hash that approved brief; reference its digest
+  from the priority and start or resume records, never from inside its own body. The owner need
+  not type the hashes. Reuse a request that already covers the targets. Ask only for missing
+  information, with a recommendation.
+- Bind a short request to the targets read for that request before any execution. Re-read them
+  before a write. Later scope changes require a new owner decision; the original request never
+  approves additions by following a newer board state. Keep exact snapshot digest checks intact.
 - Keep these facts apart: review result, technical readiness, human approval, tag publication and
   board close. One never proves another.
 - A ticket's Done is the pipeline's acceptance in this project. The human decision that covers a
@@ -209,8 +219,9 @@ The closure checker does not re-evaluate the review cap or author independence. 
 
 ## `sprint-priority`
 
-Post only after the owner explicitly prioritizes the named members. A start request alone is not
-this decision. It can be given in the same prompt. Store `sprint`, `briefDigest`, `scopeDigest`,
+Post after explicit named-member priority approval or a short run request resolved under
+`sdlc-sprint/SKILL.md` § Short run requests. A bare start request alone is not this decision.
+Store `sprint`, `briefDigest`, `scopeDigest`,
 sorted `members`, `approvedBy` and `approvedAt`. Reference the returned body by key and SHA-256.
 The snapshot field `priorityApproval` carries this block plus its `digest`.
 

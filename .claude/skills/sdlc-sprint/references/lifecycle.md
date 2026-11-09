@@ -1,8 +1,9 @@
 # Sprint lifecycle
 
 Start and close are human requests in both gate modes. The agent runs one only when the human's
-request names the sprint. A request to start also names the scope digest. Dates, the last Done
-ticket and a label never start or close a sprint.
+request names the sprint. A short run request can approve the prepared brief and scope by
+reference, under `sdlc-sprint/SKILL.md` § Short run requests. Record the exact digests even when the
+owner does not type them. Dates, the last Done ticket and a label never start or close a sprint.
 
 ## Choose review and publication separately
 
@@ -44,27 +45,52 @@ Start from the human's theme and from the outcome that people can observe.
 8. Read `GET /sprint` again. Check the members against the plan. Build a snapshot and run
    `sprint_state.py progress`. Take `scopeDigest` from its output.
 9. Write the brief from [the template](../assets/brief.md). Show it to the human with the digest.
-   The human approves the exact brief and the exact digest. Then post the `sprint-brief` record.
-   Reuse an approval that already names this target. Ask only for what is missing.
+   The human can approve those exact targets explicitly or by a short run request that resolves
+   to this prepared brief and matching scope. Then post the `sprint-brief` record. Reuse an
+   approval that already names this target. Ask only for missing information, with a recommendation.
 
 The human prioritizes every member, including the closure task. The owner may approve the exact named scope once with `sprint-priority`; the agent records each Ready transition only when the DoR and blockers pass.
 Preparing the sprint does not start it.
 
 ## Start and track
 
-1. The human asks to start, and names the sprint and the digest.
-2. Check that no other sprint is `active`.
-3. Read `GET /sprint`. Build the snapshot. Run `progress`. If its `scopeDigest` is not the digest
-   in the request, stop. The scope changed after the approval. Ask the human.
-4. If this request also approves the brief, post the whole `sprint-brief` and read its returned body and digest. Reuse an existing approval only if it names the exact same brief and scope. If the request approves the named priorities, then post `sprint-priority` bound to that returned brief digest, scope and member list. Read it back before continuing.
-5. Post the `sprint-start` record bound to the approved brief digest. Read the sprint again for the new `rev`.
-6. If the approved continuation is autonomous and any member is Backlog or BLOCKED, require a matching `sprint-priority` record. This does not move that member yet. Build the snapshot again, with the `sprint-start` record in it. Run `sprint_state.py start`. It
+1. Read the named sprint and resolve the request. For a short run request, select the latest
+   unambiguous current prepared or approved brief on its note, including a clearly identified
+   preparation summary. Respect amendments and supersession; never use an older proposal in
+   place of a newer approved brief.
+   Retain that comment's returned body and digest. It must contain enough information to form the
+   approved brief; do not invent missing choices. Ask with a recommended resolution for gaps.
+2. Check that no other sprint is `active`. If the named sprint is already active, resume it using
+   its actual state and records; do not call start again. A closed sprint cannot be restarted.
+3. Build the snapshot and run `progress`. Compare the complete members and scope digest with the
+   prepared brief and any explicit targets in the request. A mismatch needs an owner decision.
+   Do not silently approve the board's changed scope. Report the difference and recommend what to do.
+4. Record the owner's words, identity and request time, the source brief reference and the exact
+   resolved targets. A run request approves the prepared brief and all listed member priorities.
+   Post the whole `sprint-brief`, including the requested continuation, and read its returned body
+   and digest. Reuse an existing approval only if it covers the same effective brief and scope.
+   Post `sprint-priority` bound to that brief digest, scope and sorted member list, and read it back.
+   A bare start request still needs explicit priority approval. State the scope, continuation and
+   `config.gates` in commentary; a matching short run request needs no second confirmation.
+5. For a planned sprint, post `sprint-start` bound to the approved brief digest. Read the sprint
+   again for the new `rev`. For an active sprint, record this run or resume authorization in a
+   `sprint` / `summary` comment and preserve the original start record and timestamps. If earlier
+   approval records are missing, record only what this request now approves; do not backdate them.
+6. For a planned sprint, if the approved continuation is autonomous and any member is Backlog or
+   BLOCKED, require a matching `sprint-priority` record. This does not move that member yet.
+   Build the snapshot again, with the `sprint-start` record in it. Run `sprint_state.py start`. It
    must print `START`. `START` is not proof that anything started.
-7. Send `POST /sprint/start` with the digest from the request. Read the sprint again. Check
+7. Send `POST /sprint/start` only for a planned sprint, with the approved resolved scope digest.
+   Read the sprint again. Check
    `state: active`, `startedAt`, and that `startScope` is the approved member list.
 
-Run the stories through `sdlc-ticket`, one at a time, in dependency order. Preparation alone is not Gate 1 approval. If the start prompt approves the priorities of the exact named scope, record a `sprint-priority` approval. Reuse it only for those members after fresh readiness and blocker checks. Otherwise the human moves each member to Ready. While the vault is in
+Run the stories through `sdlc-ticket`, one at a time, in dependency order. Preparation alone is not
+Gate 1 approval. An explicit named-scope priority approval or a resolved short run request supplies
+that decision; record `sprint-priority`. Reuse it only for those members after fresh readiness and
+blocker checks. Otherwise ask for the missing priority decision with a recommendation. While the vault is in
 sprint mode, `sdlc-ticket` claims only from the active sprint. A sprint does not waive a gate.
+`config.gates` still controls who takes ticket gates, including the closure task's gates. A run
+request does not turn human gates into autonomous gates.
 
 On a progress request, and on resume, read the sprint and every member. Report:
 
