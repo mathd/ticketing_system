@@ -7,10 +7,10 @@ release**, looked up at implementation time — never assumed from memory. Appli
 TypeScript, Vite, PostgreSQL, Redis, NATS, GitHub Actions, linters, everything. Pinning behind
 latest requires a stated compatibility reason, recorded next to the pin.
 
-Current anchors (update as they move): Go 1.27.3 · Node 24.18.0 · pnpm 11 (pinned via `packageManager`,
-which also enforces pnpm's supply-chain `minimumReleaseAge` policy) · PostgreSQL 18.4 · Vite 8 ·
+Current anchors (update as they move): Go 1.27.3 · Node 24.22.2 · pnpm 12 (pinned via `packageManager`,
+which also enforces pnpm's supply-chain `minimumReleaseAge` policy) · PostgreSQL 18.6 · Vite 8 ·
 React 19. The three web apps select TypeScript `~7.0.2`; the root API-generation toolchain
-selects `~6.0.2`. The TS 7 compiler has no JavaScript compiler API for `openapi-typescript`.
+selects `~6.0.3`. The TS 7 compiler has no JavaScript compiler API for `openapi-typescript`.
 Read the manifests and lockfile for exact resolutions. CI uses Node 24 with Corepack; web images
 use their Node 26 Dockerfile pins and install pnpm with npm. Do not assume Corepack on Node 25+.
 

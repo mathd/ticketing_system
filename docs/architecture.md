@@ -33,7 +33,7 @@ flowchart TB
     end
 
     subgraph Data
-        PG[(PostgreSQL 18.4<br/>one DB + role per service, ADR-007)]
+        PG[(PostgreSQL 18.6<br/>one DB + role per service, ADR-007)]
         NATS[[NATS JetStream<br/>PLATFORM stream, publisher ACLs, ADR-072]]
     end
 

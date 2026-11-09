@@ -59,7 +59,7 @@ x-go-service: &go-service
 
 services:
   postgres:
-    image: postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
+    image: postgres:18.6-trixie@sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42
     restart: unless-stopped
     environment:
       # No committed password (ai-review S11). The superuser's was the literal
@@ -92,7 +92,7 @@ services:
       start_period: 30s
 
   nats:
-    image: nats:2.14.4-alpine3.22@sha256:f2123f533c2b0cada0a5c5ec434fb2b8cfe1cf220215ef9d7517e1372917ad66
+    image: nats:2.15.2-alpine3.22@sha256:afae2fdbe2e326c65e1246cb83b9d05d319188734f3bd577ac8072daae78a10f
     restart: unless-stopped
     # file-backed JetStream store on a named volume: streams survive
     # container recreation (ADR-007 durability)
@@ -138,7 +138,7 @@ services:
   # agree with ACCESS_EVENT_RETRY_BACKOFF; scripts/stack-env.sh selects the
   # .smoke.json variant for the isolated stacks.
   nats-init:
-    image: natsio/nats-box:0.19.7@sha256:ffce8bd103383f179f8c7f11cf645726acf5d17280706c530c3b342dbe16334c
+    image: natsio/nats-box:0.20.2@sha256:5162fca0f56ebe6f78e612e1ded143ce978e088393476033020e6251358dba6f
     depends_on:
       nats:
         condition: service_healthy
@@ -174,7 +174,7 @@ services:
         --filter "platform.access.admission-policy-conflict.alarm" --pull --deliver all --ack explicit --defaults
 
   lgtm:
-    image: grafana/otel-lgtm:0.30.0@sha256:46ca028e294bd728e8e930a28e887f640a8f2a9533cc283f79bcc6ab73d2ffd8
+    image: grafana/otel-lgtm:0.40.0@sha256:72e05804790e6e0d8c0b70a6d5ff1f721ef7b203463374631e99aa3429bd0cf6
     restart: unless-stopped
     # TKT-337: the versioned checkout-path dashboard. Mount the provider as ONE
     # file: a directory mount over the image's provisioning/dashboards would

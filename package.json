@@ -1,11 +1,11 @@
 {
   "name": "ticketing-web",
   "private": true,
-  "packageManager": "pnpm@11.12.0",
+  "packageManager": "pnpm@12.18.0",
   "devDependencies": {
-    "openapi-typescript": "^7.10.1",
-    "playwright-core": "^1.62.1",
-    "typescript": "~6.0.2",
-    "yaml": "2.9.0"
+    "openapi-typescript": "^7.13.0",
+    "playwright-core": "^1.65.0",
+    "typescript": "~6.0.3",
+    "yaml": "2.9.1"
   }
 }
