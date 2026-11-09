@@ -501,8 +501,10 @@ func TestResponseHeaderCardinality(t *testing.T) {
 		{name: "one comma value is one field value", path: "/headers", header: "X-Optional", status: 200, headers: func(h http.Header) { h.Set("X-Optional", "one, two") }, want: []string{"one, two"}},
 		{name: "array accepts multiple field values", path: "/headers", header: "X-Array", status: 200, headers: func(h http.Header) { h.Add("X-Array", "alpha"); h.Add("X-Array", "beta") }, want: []string{"alpha", "beta"}},
 		{name: "array accepts one comma-separated field value", path: "/headers", header: "X-Array", status: 200, headers: func(h http.Header) { h.Set("X-Array", "alpha,beta") }, want: []string{"alpha,beta"}},
-		{name: "array validates first field and leaves later field alone", path: "/headers", header: "X-Array", status: 200, headers: func(h http.Header) { h.Add("X-Array", "alpha"); h.Add("X-Array", "forbidden") }, want: []string{"alpha", "forbidden"}},
-		{name: "integer array ignores invalid later field as before", path: "/headers", header: "X-Integer-Array", status: 200, headers: func(h http.Header) { h.Add("X-Integer-Array", "1"); h.Add("X-Integer-Array", "invalid") }, want: []string{"1", "invalid"}},
+		// kin-openapi v0.153.0 decodes every field value of an array header, not
+		// only the first. An invalid later field now fails closed (ADR-004).
+		{name: "invalid later array field fails ordinary validation", path: "/headers", header: "X-Array", status: 200, wantStatus: http.StatusInternalServerError, headers: func(h http.Header) { h.Add("X-Array", "alpha"); h.Add("X-Array", "forbidden") }},
+		{name: "invalid later integer array field fails ordinary validation", path: "/headers", header: "X-Integer-Array", status: 200, wantStatus: http.StatusInternalServerError, headers: func(h http.Header) { h.Add("X-Integer-Array", "1"); h.Add("X-Integer-Array", "invalid") }},
 		{name: "untyped optional declaration with no value remains unchanged", path: "/headers", status: 200, headers: func(http.Header) {}},
 		{name: "untyped header preserves duplicate values on not modified response", path: "/headers", header: "X-Untyped", status: http.StatusNotModified, headers: func(h http.Header) { h.Add("X-Untyped", "one"); h.Add("X-Untyped", "two") }, want: []string{"one", "two"}},
 		{name: "single noncanonical key retains value validation limitation", path: "/headers", header: "X-Canonical", status: 200, headers: func(h http.Header) { h["x-canonical"] = []string{"invalid"} }, want: []string{"invalid"}},
