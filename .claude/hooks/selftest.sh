@@ -55,7 +55,15 @@ echo "-- the gate cannot run without its lock (the Makefile boundary)"
 grep -qE '^check-all: gate-lock-held ' "$ROOT/Makefile" \
   && echo "ok: check-all is wired to the lock assertion" \
   || { echo "FAIL: check-all no longer requires gate-lock-held"; fail=1; }
-grep -qE 'make -j1 check-all' "$ROOT/scripts/gate.sh" \
+# ADR-086: CI runs one part per job, so the smoke-part target is a second entry
+# to the stages and needs the same lock.
+grep -qE '^check-smoke-part: gate-lock-held ' "$ROOT/Makefile" \
+  && echo "ok: check-smoke-part is wired to the lock assertion" \
+  || { echo "FAIL: check-smoke-part no longer requires gate-lock-held"; fail=1; }
+# gate.sh runs `make -j1 "$TARGET"`, and TARGET is check-all unless --part names
+# a smoke part. Both halves are checked: -j1 on the one make call, and the default.
+grep -qE '^GATE_TOKEN="\$TOKEN" make -j1 "\$TARGET" ' "$ROOT/scripts/gate.sh" \
+  && grep -qE '^TARGET=check-all$' "$ROOT/scripts/gate.sh" \
   && echo "ok: the gate forces serial stages" \
   || { echo "FAIL: gate.sh no longer passes -j1 — generate can race lint/test"; fail=1; }
 # GATE_LOCK points at the throwaway repo, so a real gate running here cannot have

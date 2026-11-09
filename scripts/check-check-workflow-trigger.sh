@@ -20,9 +20,21 @@
 #            empty `pull_request`. No workflow-level `defaults:` or `env:`.
 #   Context: every required context is the reported name (the `name:` if set,
 #            else the job id) of a check.yaml job, and the ruleset has one.
-#   Job:     that job holds only `name`, `runs-on`, `steps`, `permissions` and
-#            `timeout-minutes`. Its steps hold only `name`, `uses`, `with`, `run`
-#            and `id`. At least one step is exactly `run: make check`.
+#   Verdict: CI runs the gate as parallel parts (ADR-086), so that job is the
+#            aggregator. It holds only `name`, `runs-on`, `steps`, `permissions`,
+#            `timeout-minutes`, `needs` and `if`. `if:` is exactly `always()`:
+#            GitHub counts a SKIPPED required check as passed, so without it one
+#            failed part would skip the verdict and the PR would merge green.
+#            `needs:` is one flow list of exactly the part jobs below. At least
+#            one step is exactly the VERDICT_RUN line, which fails unless every
+#            needed job succeeded.
+#   Parts:   the part jobs are `gate-static`, with a step exactly
+#            `run: make check-ci-static`, and one `gate-smoke-<part>` for each part
+#            in scripts/smoke.sh SMOKE_ALL_PARTS, with a step exactly
+#            `run: make check-ci-smoke-<part>`. Each holds only `name`, `runs-on`,
+#            `steps`, `permissions` and `timeout-minutes`.
+#   Steps:   every step of the verdict and part jobs holds only `name`, `uses`,
+#            `with`, `run` and `id`, each written on one line.
 #   Unique:  no other job in any workflow reports the same name. In the other
 #            workflows only job ids and names are inspected: a job must be block
 #            style, and its `name:` must be a plain one-line scalar or a simply
@@ -33,15 +45,20 @@ set -euo pipefail
 workflow=${1:-.github/workflows/check.yaml}
 ruleset=${2:-.github/rulesets/main.json}
 workflows_dir=${3:-.github/workflows}
+smoke_script=${4:-scripts/smoke.sh}
 
-python3 - "$workflow" "$ruleset" "$workflows_dir" <<'PY'
+python3 - "$workflow" "$ruleset" "$workflows_dir" "$smoke_script" <<'PY'
 import json
 import re
 import sys
 from pathlib import Path
 
-workflow, ruleset, workflows_dir = (Path(arg) for arg in sys.argv[1:4])
+workflow, ruleset, workflows_dir, smoke_script = (Path(arg) for arg in sys.argv[1:5])
 failures: list[str] = []
+
+VERDICT_RUN = "./scripts/gate-parts-verdict.sh '${{ toJSON(needs) }}'"
+STATIC_JOB, STATIC_RUN = "gate-static", "make check-ci-static"
+SMOKE_JOB_PREFIX, SMOKE_RUN_PREFIX = "gate-smoke-", "make check-ci-smoke-"
 
 KEY = re.compile(
     r"""^(?P<indent> *)(?P<key>"[^"]*"|'[^']*'|[A-Za-z0-9_.-]+)[ \t]*:(?:[ \t]+(?P<value>.*))?$"""
@@ -51,6 +68,7 @@ WORKFLOW_KEY_REASONS = {
     "env": "an environment variable such as MAKEFLAGS can change what `make check` does",
 }
 JOB_KEYS = {"name", "runs-on", "steps", "permissions", "timeout-minutes"}
+VERDICT_JOB_KEYS = JOB_KEYS | {"needs", "if"}
 JOB_KEY_REASONS = {
     "if": "a job-level `if:` can skip it",
     "needs": "a skipped or failed dependency skips it",
@@ -285,13 +303,16 @@ def check_workflow(lines: list[Line]) -> None:
             )
 
 
-def check_job(job: dict, context: str) -> None:
+def check_job(job: dict, what: str, allowed: set[str], required_run: str) -> None:
+    """The job keys, the step keys, and at least one step that is exactly
+    `run: <required_run>`."""
     lines, props = job["lines"], job["props"]
     for key, index in props.items():
-        if key not in JOB_KEYS:
-            reason = JOB_KEY_REASONS.get(key, "only `name`, `runs-on`, `steps`, `permissions` and `timeout-minutes` are allowed")
-            failures.append(f"{lines[index].where}: job `{job['id']}` reports required context `{context}` and has `{key}`; {reason}")
-    make_check = 0
+        if key not in allowed:
+            listed = ", ".join(f"`{name}`" for name in sorted(allowed))
+            reason = JOB_KEY_REASONS.get(key, f"only {listed} are allowed")
+            failures.append(f"{lines[index].where}: job `{job['id']}` {what} and has `{key}`; {reason}")
+    found = 0
     if "steps" in props:
         block_value(lines, props["steps"], f"job `{job['id']}`'s `steps:`")
         for keys in steps(lines, props["steps"]):
@@ -305,10 +326,77 @@ def check_job(job: dict, context: str) -> None:
                         f"{line.where}: `{key}: {line.value}` in a step of job `{job['id']}` "
                         "continues on more lines; write it as one plain line"
                     )
-            if "run" in keys and keys["run"].value == "make check":
-                make_check += 1
-    if make_check == 0:
-        failures.append(f"{job['where']}: job `{job['id']}` has no step that is exactly `run: make check`")
+            if "run" in keys and keys["run"].value == required_run:
+                found += 1
+    if found == 0:
+        failures.append(f"{job['where']}: job `{job['id']}` has no step that is exactly `run: {required_run}`")
+
+
+NEEDS_LIST = re.compile(r"\[[ \t]*([A-Za-z0-9_-]+(?:[ \t]*,[ \t]*[A-Za-z0-9_-]+)*)[ \t]*\]")
+
+
+def check_verdict_job(job: dict, context: str, part_jobs: list[str]) -> None:
+    """The job that reports a required context: it needs exactly the part jobs,
+    always runs, and runs the verdict script over what they did."""
+    check_job(job, f"reports required context `{context}`", VERDICT_JOB_KEYS, VERDICT_RUN)
+    lines, props = job["lines"], job["props"]
+    if "if" not in props:
+        failures.append(
+            f"{job['where']}: job `{job['id']}` reports required context `{context}` and has no "
+            "`if: always()`; without it a failed part skips this job, and GitHub counts a "
+            "skipped required check as passed"
+        )
+    else:
+        line = lines[props["if"]]
+        if line.value != "always()" or deeper(lines, props["if"]):
+            failures.append(
+                f"{line.where}: job `{job['id']}` has `{line.text}`; it must be exactly "
+                "`if: always()`, so that no part result can skip the verdict"
+            )
+    if "needs" not in props:
+        failures.append(
+            f"{job['where']}: job `{job['id']}` reports required context `{context}` and has no "
+            f"`needs:`; it must need every gate part: {', '.join(part_jobs)}"
+        )
+        return
+    line = lines[props["needs"]]
+    match = NEEDS_LIST.fullmatch(line.value)
+    if not match or deeper(lines, props["needs"]):
+        raise Unsupported(
+            f"{line.where}: `{line.text}` is not one flow list of job ids on one line, "
+            "such as `needs: [a, b]`"
+        )
+    needed = [name.strip() for name in match.group(1).split(",")]
+    for name in sorted({name for name in needed if needed.count(name) > 1}):
+        failures.append(f"{line.where}: job `{name}` is listed twice in `needs:`")
+    for name in part_jobs:
+        if name not in needed:
+            failures.append(
+                f"{line.where}: job `{job['id']}` does not need gate part `{name}`, so the "
+                "required check can pass without that part"
+            )
+    for name in needed:
+        if name not in part_jobs:
+            failures.append(
+                f"{line.where}: job `{job['id']}` needs `{name}`, which is not a gate part; "
+                f"the parts are: {', '.join(part_jobs)}"
+            )
+
+
+def smoke_parts() -> list[str]:
+    """SMOKE_ALL_PARTS from scripts/smoke.sh: the one list of smoke parts."""
+    try:
+        text = smoke_script.read_text()
+    except OSError as error:
+        fail(f"smoke script not readable: {smoke_script}: {error}")
+    assignments = re.findall(r"^SMOKE_ALL_PARTS=.*$", text, re.M)
+    plain = re.findall(r'^SMOKE_ALL_PARTS="([a-z0-9 -]*)"$', text, re.M)
+    if len(assignments) != 1 or len(plain) != 1 or not plain[0].split():
+        fail(
+            f"{smoke_script}: must assign SMOKE_ALL_PARTS exactly once, as a plain "
+            'double-quoted list of part names (SMOKE_ALL_PARTS="a b")'
+        )
+    return plain[0].split()
 
 
 def main() -> None:
@@ -329,6 +417,9 @@ def main() -> None:
     if not contexts:
         fail(f"{ruleset}: names no required status check context")
 
+    parts = smoke_parts()
+    part_runs = {STATIC_JOB: STATIC_RUN, **{SMOKE_JOB_PREFIX + part: SMOKE_RUN_PREFIX + part for part in parts}}
+
     own_jobs = jobs(workflow, contexts, strict=True)
     producers = {}
     for context in contexts:
@@ -339,7 +430,14 @@ def main() -> None:
                 f"in {workflow} (the `name:` when set, else the job id)"
             )
         for job in producers[context]:
-            check_job(job, context)
+            check_verdict_job(job, context, list(part_runs))
+
+    by_id = {job["id"]: job for job in own_jobs}
+    for job_id, run in part_runs.items():
+        if job_id not in by_id:
+            failures.append(f"{workflow}: no job `{job_id}`; it is a gate part and must run `{run}`")
+        else:
+            check_job(by_id[job_id], "is a gate part", JOB_KEYS, run)
 
     all_jobs = []
     for path in sorted([*workflows_dir.glob("*.yaml"), *workflows_dir.glob("*.yml")]):
@@ -357,8 +455,9 @@ def main() -> None:
     # No indexing here: a crash would make a disabled refusal above look like a pass.
     for context in contexts:
         ids = ", ".join(f"`{job['id']}`" for job in producers[context])
-        print(f"check workflow trigger: every PR runs {ids}, "
-              f"the only job that reports required context `{context}`")
+        print(f"check workflow trigger: every PR runs {ids}, the only job that reports required "
+              f"context `{context}`; it always runs and needs the {len(part_runs)} gate parts "
+              f"({', '.join(part_runs)})")
 
 
 try:

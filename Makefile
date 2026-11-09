@@ -19,7 +19,7 @@ GOLANGCI := $(BIN)/golangci-lint-$(GOLANGCI_VERSION)
 # The smoke stack runs isolated (own compose project + shifted ports);
 # lifecycle and env live in scripts/smoke.sh.
 
-.PHONY: env-bootstrap check lint test build smoke smoke-hermetic browser onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate check-dep-drift check-build-list-lag check-go-standalone check-security-workflow-trigger check-scan-allowlist check-hermetic-workflow-trigger check-check-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain check-astro-image-premise check-all gate-lock-held check-required-env up down clean
+.PHONY: env-bootstrap check lint test build smoke smoke-hermetic browser onsale-load-full lint-go lint-ts test-go test-ts build-go build-ts build-gate-linux generate check-generate check-dep-drift check-build-list-lag check-go-standalone check-security-workflow-trigger check-scan-allowlist check-hermetic-workflow-trigger check-check-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain check-astro-image-premise check-all check-ci-static check-smoke-part gate-lock-held check-required-env up down clean
 
 # `make check` IS the wrapper. It holds .gate.lock so nothing edits the tree
 # mid-run (TKT-240), captures the log, and writes .gate.verdict from the exit
@@ -31,6 +31,20 @@ check:
 	@./scripts/gate.sh
 
 check-all: gate-lock-held deps check-generate check-dep-drift check-build-list-lag check-security-workflow-trigger check-scan-allowlist check-hermetic-workflow-trigger check-check-workflow-trigger check-adr-numbers check-markdown-links check-hooks check-go-toolchain lint check-astro-image-premise check-go-standalone test build smoke
+
+# CI runs the gate as parallel jobs (ADR-086). Each job runs one part through the
+# same wrapper and lock. `static` is check-all itself with SMOKE_PARTS=none, so it
+# cannot drift from the local gate; each smoke part is one part of scripts/smoke.sh.
+# A passing part writes PART-PASS, which the merge guard does not accept. Locally,
+# run `make check`.
+check-ci-static:
+	@./scripts/gate.sh --part static
+
+check-ci-smoke-%:
+	@./scripts/gate.sh --part smoke-$*
+
+# Internal, like check-all: gate.sh sets SMOKE_PARTS to the one part.
+check-smoke-part: gate-lock-held deps smoke
 
 # The lock must be THIS run's, not merely present: a hand-made or stale lock is
 # not evidence that a wrapper is holding the tree still. GATE_LOCK is a variable
@@ -222,8 +236,11 @@ build-gate-linux:
 smoke: build-gate-linux build-ts
 	./scripts/smoke.sh
 
+# The hermetic run skips the two services-* parts (ADR-086): those tests run
+# `go test` on the host against PostgreSQL and never use an image built in
+# Docker, so they would repeat what `make check` already ran on the same commit.
 smoke-hermetic:
-	SMOKE_HERMETIC=1 ./scripts/smoke.sh
+	SMOKE_HERMETIC=1 SMOKE_PARTS="e2e e2e-slow" ./scripts/smoke.sh
 
 ## ---- browser-submit gate (AGENTS.md) ----
 # Deliberately NOT part of `make check`: it drives the host's real Chrome, so CI

@@ -700,8 +700,12 @@ SEED
 expect_fail "hermetic workflow trigger (smoke failure ignored)" check-hermetic-workflow-trigger
 
 # 13b. The main ruleset requires the `check` context (TKT-324). That context must
-#      report on every PR, come from check.yaml's `check` job, run `make check`, and
-#      have exactly one producer. The guard reads YAML line by line, so it accepts
+#      report on every PR, come from check.yaml's `check` job, and have exactly one
+#      producer. Since ADR-086 that job is the verdict over the parallel gate parts:
+#      it always runs, needs exactly the part jobs, and runs the verdict script; each
+#      part job runs its `make check-ci-*` target with nothing that can skip it. The
+#      job-rule seeds below break the `gate-static` part; the verdict and part seeds
+#      follow them. The guard reads YAML line by line, so it accepts
 #      only an allowlisted block-style shape and refuses every other shape (fail
 #      closed). Each seed breaks one refusal. A YAML spelling that the guard
 #      silently misread would pass, so the spelling seeds (flow style, quoted keys,
@@ -720,9 +724,13 @@ SEED
 }
 CW=.github/workflows/check.yaml
 HW=.github/workflows/hermetic.yaml
-CJOB='  check:\n    runs-on: ubuntu-latest\n'
-MAKE_STEP='      - run: make check\n'
+CJOB='  gate-static:\n    runs-on: ubuntu-latest\n'
+MAKE_STEP='      - run: make check-ci-static\n'
 LAST_STEP='      - run: ./scripts/gate-selftest.sh\n'
+VJOB='  check:\n'
+VNEEDS='    needs: [gate-static, gate-smoke-services-inventory, gate-smoke-services-rest, gate-smoke-e2e, gate-smoke-e2e-slow]\n'
+VIF='    if: always()\n'
+VSTEP="      - run: ./scripts/gate-parts-verdict.sh '\${{ toJSON(needs) }}'\n"
 HJOB='  hermetic-smoke:\n'
 expect_pass "check workflow trigger (clean baseline)" check-check-workflow-trigger
 
@@ -783,14 +791,14 @@ expect_fail "check workflow trigger (flow-style push)" check-check-workflow-trig
 # and no step that can be skipped or ignored. Any of these lets the required
 # check read success without `make check` deciding it.
 check_seed $CW "$CJOB" "${CJOB}    if: github.event_name == 'push'\n"
-expect_fail "check workflow trigger (check job made conditional)" check-check-workflow-trigger
+expect_fail "check workflow trigger (part job made conditional)" check-check-workflow-trigger
 check_seed $CW "$CJOB" "${CJOB}    needs: gate-selftest\n"
-expect_fail "check workflow trigger (check job needs another job)" check-check-workflow-trigger
+expect_fail "check workflow trigger (part job needs another job)" check-check-workflow-trigger
 check_seed $CW "$CJOB" "${CJOB}    continue-on-error: true\n"
-expect_fail "check workflow trigger (check job ignores failure)" check-check-workflow-trigger
+expect_fail "check workflow trigger (part job ignores failure)" check-check-workflow-trigger
 check_seed $CW "$CJOB" "${CJOB}    <<: *defaults\n"
-expect_fail "check workflow trigger (merge key in check job)" check-check-workflow-trigger
-check_seed $CW "$CJOB" '  check-old:\n    runs-on: ubuntu-latest\n'
+expect_fail "check workflow trigger (merge key in part job)" check-check-workflow-trigger
+check_seed $CW "$VJOB" '  check-old:\n'
 check_seed $CW '  check-old:\n' '  check: {runs-on: ubuntu-latest, if: false, steps: [{run: make check}]}\n  check-old:\n'
 expect_fail "check workflow trigger (flow-style check job)" check-check-workflow-trigger
 check_seed $CW "$MAKE_STEP" "${MAKE_STEP}        if: false\n"
@@ -803,7 +811,7 @@ check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'      - { run: echo extra, if: false 
 expect_fail "check workflow trigger (flow-style step)" check-check-workflow-trigger
 check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'        "if": false\n'
 expect_fail "check workflow trigger (quoted key in a step)" check-check-workflow-trigger
-check_seed $CW "$MAKE_STEP" '      - run: make lint\n        run: make check\n'
+check_seed $CW "$MAKE_STEP" '      - run: make lint\n        run: make check-ci-static\n'
 expect_fail "check workflow trigger (duplicate key in a step)" check-check-workflow-trigger
 check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'        <<: *step\n'
 expect_fail "check workflow trigger (merge key in a step)" check-check-workflow-trigger
@@ -828,9 +836,9 @@ expect_fail "check workflow trigger (shell on the make check step)" check-check-
 check_seed $CW "$MAKE_STEP" "${MAKE_STEP}"'        env:\n          MAKEFLAGS: --just-print\n'
 expect_fail "check workflow trigger (env on the make check step)" check-check-workflow-trigger
 check_seed $CW "$CJOB" "${CJOB}"'    env:\n      MAKEFLAGS: --just-print\n'
-expect_fail "check workflow trigger (env on the check job)" check-check-workflow-trigger
+expect_fail "check workflow trigger (env on the part job)" check-check-workflow-trigger
 check_seed $CW "$CJOB" "${CJOB}"'    defaults:\n      run:\n        shell: bash -n {0}\n'
-expect_fail "check workflow trigger (defaults on the check job)" check-check-workflow-trigger
+expect_fail "check workflow trigger (defaults on the part job)" check-check-workflow-trigger
 check_seed $CW 'jobs:\n' 'defaults:\n  run:\n    shell: bash -n {0}\n\njobs:\n'
 expect_fail "check workflow trigger (workflow-level defaults)" check-check-workflow-trigger
 check_seed $CW 'jobs:\n' 'env:\n  MAKEFLAGS: --just-print\n\njobs:\n'
@@ -838,21 +846,103 @@ expect_fail "check workflow trigger (workflow-level env)" check-check-workflow-t
 # The OPPOSITE failure: keys that cannot make the check pass without the gate
 # must not be refused.
 check_seed $CW "$CJOB" "${CJOB}"'    permissions:\n      contents: read\n'
-expect_pass "check workflow trigger (permissions on the check job)" check-check-workflow-trigger
+expect_pass "check workflow trigger (permissions on the part job)" check-check-workflow-trigger
 check_seed $CW "$CJOB" "${CJOB}"'    timeout-minutes: 30\n'
-expect_pass "check workflow trigger (timeout-minutes on the check job)" check-check-workflow-trigger
+expect_pass "check workflow trigger (timeout-minutes on the part job)" check-check-workflow-trigger
 check_seed $CW "$MAKE_STEP" "${MAKE_STEP}${MAKE_STEP}"
-expect_pass "check workflow trigger (two make check steps)" check-check-workflow-trigger
+expect_pass "check workflow trigger (two make check-ci-static steps)" check-check-workflow-trigger
 # A comment after `with:` leaves its value empty; the mapping below it is not a
 # continued scalar.
 check_seed $CW '        with:\n          path: ~/.cache/golangci-lint\n' '        with: # tool cache\n          path: ~/.cache/golangci-lint\n'
 expect_pass "check workflow trigger (comment after with:)" check-check-workflow-trigger
 
+# The verdict job (ADR-086). GitHub counts a SKIPPED required check as passed, so
+# `if: always()` is what keeps one failed part from merging green; the needs list
+# is what makes the verdict about every part.
+check_seed $CW "$VIF" ''
+expect_fail "check workflow trigger (verdict job without if: always())" check-check-workflow-trigger
+check_seed $CW "$VIF" '    if: success()\n'
+expect_fail "check workflow trigger (verdict job if: success())" check-check-workflow-trigger
+check_seed $CW "$VIF" "    if: \${{ github.event_name == 'push' }}\n"
+expect_fail "check workflow trigger (verdict job made conditional)" check-check-workflow-trigger
+check_seed $CW "$VNEEDS" ''
+expect_fail "check workflow trigger (verdict job without needs)" check-check-workflow-trigger
+check_seed $CW 'gate-smoke-e2e, gate-smoke-e2e-slow]' 'gate-smoke-e2e]'
+expect_fail "check workflow trigger (a part dropped from needs)" check-check-workflow-trigger
+check_seed $CW 'gate-smoke-e2e, gate-smoke-e2e-slow]' 'gate-smoke-e2e, gate-smoke-e2e-slow, gate-selftest]'
+expect_fail "check workflow trigger (a job that is not a part in needs)" check-check-workflow-trigger
+check_seed $CW 'gate-smoke-e2e, gate-smoke-e2e-slow]' 'gate-smoke-e2e, gate-smoke-e2e-slow, gate-static]'
+expect_fail "check workflow trigger (a part listed twice in needs)" check-check-workflow-trigger
+check_seed $CW "$VNEEDS" '    needs:\n      - gate-static\n'
+expect_fail "check workflow trigger (needs as a block list)" check-check-workflow-trigger
+check_seed $CW "$VJOB" "${VJOB}    continue-on-error: true\n"
+expect_fail "check workflow trigger (verdict job ignores failure)" check-check-workflow-trigger
+check_seed $CW "$VSTEP" '      - run: "true"\n'
+expect_fail "check workflow trigger (verdict step replaced)" check-check-workflow-trigger
+check_seed $CW "$VSTEP" "${VSTEP}"'        continue-on-error: true\n'
+expect_fail "check workflow trigger (verdict step ignores failure)" check-check-workflow-trigger
+# The part jobs: one per SMOKE_ALL_PARTS entry, each running its own target.
+check_seed $CW 'make check-ci-smoke-e2e-slow\n' 'make check-ci-smoke-e2e\n'
+expect_fail "check workflow trigger (a part job runs another part)" check-check-workflow-trigger
+check_seed $CW '  gate-smoke-e2e-slow:\n' '  gate-smoke-slow:\n'
+check_seed $CW 'gate-smoke-e2e, gate-smoke-e2e-slow]' 'gate-smoke-e2e, gate-smoke-slow]'
+expect_fail "check workflow trigger (a part job renamed)" check-check-workflow-trigger
+check_seed $CW '  gate-smoke-e2e-slow:\n    runs-on: ubuntu-latest\n' '  gate-smoke-e2e-slow:\n    if: false\n    runs-on: ubuntu-latest\n'
+expect_fail "check workflow trigger (a smoke part job made conditional)" check-check-workflow-trigger
+check_seed scripts/smoke.sh 'SMOKE_ALL_PARTS="services-inventory services-rest e2e e2e-slow"\n' 'SMOKE_ALL_PARTS="services-inventory services-rest e2e e2e-slow e2e-extra"\n'
+expect_fail "check workflow trigger (a smoke part with no job)" check-check-workflow-trigger
+check_seed scripts/smoke.sh 'SMOKE_ALL_PARTS="services-inventory services-rest e2e e2e-slow"\n' 'SMOKE_ALL_PARTS="services-inventory services-rest e2e e2e-slow"\nSMOKE_ALL_PARTS="e2e"\n'
+expect_fail "check workflow trigger (SMOKE_ALL_PARTS assigned twice)" check-check-workflow-trigger
+
+# The runtime half: gate-parts-verdict.sh reads what GitHub ran. It is not a make
+# target, so these seeds call it directly.
+# needs_json JOB=RESULT ...: every part `success`, then each JOB=RESULT applied;
+# RESULT `-` removes JOB. A job that is not a part is added.
+needs_json() {
+  python3 - "$@" <<'NEEDS'
+import json
+import sys
+
+needs = {job: {"result": "success"} for job in (
+    "gate-static", "gate-smoke-services-inventory", "gate-smoke-services-rest",
+    "gate-smoke-e2e", "gate-smoke-e2e-slow")}
+for change in sys.argv[1:]:
+    job, result = change.split("=", 1)
+    if result == "-":
+        del needs[job]
+    else:
+        needs[job] = {"result": result}
+print(json.dumps(needs))
+NEEDS
+}
+expect_verdict() {
+  local name="$1" want="$2" needs="$3" status=0
+  echo "=== selftest: gate parts verdict ($name) (expect: $want) ==="
+  ./scripts/gate-parts-verdict.sh "$needs" >/dev/null 2>&1 || status=$?
+  if { [ "$want" = pass ] && [ "$status" -eq 0 ]; } || { [ "$want" = fail ] && [ "$status" -ne 0 ]; }; then
+    echo "ok: gate parts verdict ($name) exited $status"
+  else
+    echo "FAIL: gate parts verdict ($name) exited $status, want $want"
+    fail_count=$((fail_count + 1))
+  fi
+}
+expect_verdict "every part succeeded" pass "$(needs_json)"
+expect_verdict "a part failed" fail "$(needs_json gate-smoke-e2e=failure)"
+expect_verdict "a part skipped" fail "$(needs_json gate-static=skipped)"
+expect_verdict "a part cancelled" fail "$(needs_json gate-smoke-e2e-slow=cancelled)"
+expect_verdict "a part missing" fail "$(needs_json gate-smoke-services-rest=-)"
+expect_verdict "a job that is not a part" fail "$(needs_json gate-selftest=success)"
+expect_verdict "no needs" fail '{}'
+# The verdict reads its part list from smoke.sh: a new part with no result fails.
+sed -i 's/^SMOKE_ALL_PARTS="services-inventory services-rest e2e e2e-slow"$/SMOKE_ALL_PARTS="services-inventory services-rest e2e e2e-slow e2e-extra"/' scripts/smoke.sh
+expect_verdict "a smoke part with no result" fail "$(needs_json)"
+git checkout -- scripts/smoke.sh
+
 # Ruleset: the context is the job's reported name, which is the job id, or its
 # `name:` when one is set. A rename and an added name both orphan it.
-check_seed $CW "$CJOB" '  gate:\n    runs-on: ubuntu-latest\n'
+check_seed $CW "$VJOB" '  gate:\n'
 expect_fail "check workflow trigger (check job renamed)" check-check-workflow-trigger
-check_seed $CW "$CJOB" '  check:\n    name: gate\n    runs-on: ubuntu-latest\n'
+check_seed $CW "$VJOB" '  check:\n    name: gate\n'
 expect_fail "check workflow trigger (check job given another name)" check-check-workflow-trigger
 # A ruleset that names no required check makes that comparison vacuous.
 python3 - <<'SEED'
@@ -872,10 +962,10 @@ expect_fail "check workflow trigger (ruleset file missing)" check-check-workflow
 
 # One producer: no other job, in any workflow, may report the same name. It
 # could satisfy the requirement without `make check`.
-# The renamed job also runs `make check`, so it passes every job rule and only
-# the duplicate refusal can fail this seed.
-check_seed $CW '  gate-selftest:\n' '  gate-selftest:\n    name: check\n'
-check_seed $CW '      - run: make deps\n' "$MAKE_STEP"
+# The renamed job is also a complete verdict job (needs, always(), the verdict
+# step), so it passes every job rule and only the duplicate refusal can fail this seed.
+check_seed $CW '  gate-selftest:\n' "  gate-selftest:\n    name: check\n${VNEEDS}${VIF}"
+check_seed $CW '      - run: make deps\n' "$VSTEP"
 expect_fail "check workflow trigger (second job named check)" check-check-workflow-trigger
 check_seed $HW "$HJOB" '  check:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n\n'"$HJOB"
 expect_fail "check workflow trigger (job id check in another workflow)" check-check-workflow-trigger
