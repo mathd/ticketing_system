@@ -19,7 +19,7 @@ routine database restart answer 500, and after TKT-558 every gate would stop. Th
 removed the extra child.
 
 The fix was to make production match the evidence, not to widen the rule: Access now requires an
-explicit `sslmode=disable` and refuses to start without it (ADR-085 D21). The TLS-refusal error
+explicit `sslmode=disable` and refuses to start without it (TKT-557 decision D21, recorded in ADR-085). The TLS-refusal error
 has no exported type, so the only alternative was message matching, which is banned.
 
 ## The rule

@@ -2,7 +2,8 @@
 
 Binding review and test rules. Read the sections that apply to the change. Project context,
 gate operation, workflow authority, and required ADR triggers are in [AGENTS.md](../../AGENTS.md).
-Incident details stay in [learnings](../LEARNINGS.md).
+Incident details stay in [learnings](../LEARNINGS.md). Code comments that cite AGENTS.md for
+a test or review rule refer to the rules in this file.
 
 ## Test placement and assertions
 

@@ -51,6 +51,15 @@ configuration errors also cite development headings. A Markdown link scan cannot
 Preserve that wording or review each dependent quote when changing it. A path-only search misses
 quoted rules and embedded section text.
 
+Check for missing decision sources after an ADR-085 edit. This command must produce no hits;
+`git grep` exits 1 when there is no match. It does not verify that the named ticket is correct.
+The gate's namespace test does not enforce this stronger rule.
+
+```bash
+git grep -nP '(?<!TKT-558 )(?<![\w-])D[1-9][0-9]*+(?:-[0-9]+)?+[a-z]?+(?!\w)(?! of TKT-)' \
+  -- docs/adr/ADR-085-scanner-local-outcome-model.md docs/adr/scanner-outcomes
+```
+
 Read source before changing a technical claim. Record the inspected files and limits in review
 evidence. Check malformed input classes and failure paths before writing guarantees. Refer to
 manifest/configuration files for exact versions rather than repeating a version in many pages.

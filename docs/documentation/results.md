@@ -8,7 +8,8 @@ Its SHA-256 is `3ee6fb7a083781d31009693c44c79bce1cc91b6dadb159bdcf3b65e693b83c00
 ## Ratings
 
 Both models use M1–M10 and the same evidence requirements. Each metric must reach 8 from both
-models. An average cannot satisfy this rule. Revisions 1 and 2 failed. Their scores remain below. Revision 3 is pending review.
+models. An average cannot satisfy this rule. Revisions 1 and 2 failed. Their scores remain below.
+Both models meet the bar at revision 3, `1c49ddd3`.
 
 | ID | Metric | Opus baseline | Sol baseline | Opus revision 1 | Sol revision 1 |
 |---|---|---:|---:|---:|---:|
@@ -44,6 +45,24 @@ used the same incorrect default as the rewrite.
 | M8 | 8 | 8 |
 | M9 | 8 | 9 |
 | M10 | 8 | 7 |
+
+Revision 3: [Opus](reviews/opus-revision-3.md), [Sol](reviews/sol-revision-3.md).
+Both independently award at least 8 on every metric. These are documentation judgments within
+the stated coverage. The final bookkeeping commit records these reports and the small corrections
+below; it is not a separately scored candidate.
+
+| ID | Opus revision 3 | Sol revision 3 |
+|---|---:|---:|
+| M1 | 8 | 8 |
+| M2 | 8 | 8 |
+| M3 | 9 | 9 |
+| M4 | 8 | 8 |
+| M5 | 9 | 9 |
+| M6 | 8 | 8 |
+| M7 | 8 | 9 |
+| M8 | 8 | 8 |
+| M9 | 8 | 9 |
+| M10 | 8 | 8 |
 
 ## Scope and provenance
 
@@ -153,6 +172,9 @@ must name their ticket. Ordered decision/source pairs match. Normalized text als
 removing citation spelling and heading aliases, excluding the separately rewritten citation
 guide and two explicit routing corrections to the scanner runbook. This is a bounded notation
 check, not a general authority parser or a proof that every decision was correctly summarized.
+The generator was a temporary review script, not a committed tool. Its exact text hashes cannot
+be reproduced from this repository alone. The manual check in maintenance reproduces the
+explicit-source scan, not the full comparison or source-body verification.
 
 As a separate check, ten ambiguous decision identities were read from the configured board's
 TKT-399 and TKT-557 records. [Decision receipts](decision-sources.tsv) record ticket, ID,
@@ -180,8 +202,25 @@ for 293 Markdown files, the 84-ADR uniqueness check, and a separate scan of 1,30
 file/heading references with no reported issue. The latter uses a heading-slug approximation;
 external links and renderer behavior are excluded. Revision 3 contains 318 text documents
 and 3,197,601 bytes before this bookkeeping update. New review records account for some
-corpus growth. Independent revision-3 scores remain pending. No completion claim yet. Browser forms were not changed; no new
+corpus growth. Both final model reviews pass all ten metrics. Browser forms were not changed; no new
 `make browser` run was performed for this documentation change.
+
+## Final low-priority findings
+
+Opus found five low findings after awarding passing scores. The learning's TLS citation now names
+TKT-557. Maintenance includes a repeatable missing-source scan and states that the gate does not
+enforce it. The temporary generator limit is disclosed above. Engineering rules explain older
+AGENTS citations from code comments. The dense decision ranges remain a readability cost.
+Source comments retain some older shorthand; application and test files were outside this change.
+No material, High or Critical finding remains in either final review. After recording both
+reports, local checks pass for 295 Markdown files, 1,310 file/heading references and 84 unique
+ADRs. The documented missing-source scan has no hits and detects both missing qualifiers in
+a sample. The full reference comparison still passes.
+
+The baseline design problem is resolved by task routing and separate historical records. The
+later citation-proof defect is resolved by explicit sources and independent checks of ambiguous
+decisions. Stronger automatic source enforcement remains future work. Manual source review is
+still required; the missing-source scan cannot detect a confidently wrong ticket.
 
 Maintain rules and indexes using [maintenance](maintenance.md). Preserve this review's date,
 baseline and limits when future changes invalidate a size or implementation claim.
