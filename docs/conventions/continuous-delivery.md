@@ -1,4 +1,4 @@
-# Continuous Delivery
+# Continuous integration
 
 ## Current scope
 

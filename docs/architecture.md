@@ -62,6 +62,7 @@ flowchart TB
     BO -.->|credentialed operator calls| CAT
     BO -.->|credentialed operator calls| INV
     BO -.->|credentialed refund calls| COM
+    BO -.->|credentialed redelivery calls| ACC
     SC -.->|scan API via gateway<br/>scanner token + QR credential| GW
 
     CAT -->|platform.catalog.performance.published| NATS
@@ -95,12 +96,43 @@ edge-denied.
 | `storefront` | buyer discovery, account, reservation, checkout, and ticket-bundle UI; SSR page-data cache | `web/storefront` |
 | `backoffice` | staff sessions, role-gated authoring, order lookup/refund, channel allocation administration | `web/backoffice` |
 | `scanner` | browser UI for connected and offline admission workflows | `web/scanner` |
-| `shared/go` | shared health, observability, cache-tier, rate-limit, mail, and event-consumer packages; additions require an ADR | `shared/go` |
+| `shared/go` | shared runtime, observability, cache-tier, rate-limit, mail, and event-consumer packages; additions require an ADR | `shared/go` |
+
+## Synchronous service calls
+
+The diagram emphasizes public entry points and event delivery. These direct HTTP dependencies
+also run inside the Compose network. They do not pass through the public gateway.
+
+| Caller → service | Purpose | Credential |
+|---|---|---|
+| Commerce → Catalog | Resolve products, prices, fees, and rules | `INTERNAL_SERVICE_TOKEN` |
+| Commerce → Inventory | Hold, claim, release, and exchange inventory | `INTERNAL_SERVICE_TOKEN` |
+| Commerce → Payments | Payment/refund operations and money evidence | `PAYMENTS_INTERNAL_TOKEN` |
+| Commerce → Access | Void and replace tickets for post-purchase operations | `INTERNAL_SERVICE_TOKEN` |
+| Inventory → Catalog | Resolve publications and seat identity/pins | `INTERNAL_SERVICE_TOKEN` |
+| Access → Commerce | Resolve a delivery address at dispatch time | `INTERNAL_SERVICE_TOKEN` |
+| Access → Catalog | Resolve performance time zones for ticket bundles | `INTERNAL_SERVICE_TOKEN` |
+
+These service clients use `X-Internal-Token`. See each service's `cmd/<service>/main.go`,
+Commerce's `internal/api/server.go`, Inventory's `internal/consumer/catalog.go`, and Access's
+`internal/delivery/redelivery.go` and `internal/catalog/zones.go`. Commerce can boot without
+`ACCESS_URL`, but its `/readyz` refuses readiness until that variable is set. This check proves
+configuration, not Access reachability.
+
+Back-office SSR calls use distinct `X-Catalog-Staff-Write-Token`,
+`X-Inventory-Staff-Write-Token`, `X-Commerce-Staff-Write-Token`, or
+`X-Access-Staff-Write-Token` headers. Tenant-scoped calls also carry a server-minted organizer
+assertion. The back office receives no shared `INTERNAL_SERVICE_TOKEN`. Read the matching
+`web/backoffice/src/lib/{catalog,inventory,commerce,access}.ts` client and receiving router before
+changing a route's authorization. [Configuration](configuration.md) describes credential setup.
 
 ## Cross-cutting invariants
 
 - Every entity carries a tenant/organizer id (ADR-002).
-- Money: integer minor units + ISO currency; floats banned on money paths (ADR-001).
+- Money uses integer minor units and ISO currency; floats are banned on money paths (ADR-001).
+  Commerce currently refuses non-EUR prices. Catalog can store other ISO codes. Multi-currency
+  selling remains a requirement tracked by TKT-10, not implemented checkout behavior.
+  See `services/commerce/internal/api/catalog_pricing.go`, the resolved-price validation.
 - Payments records money facts in its append-only journal. Access records ticket lifecycle events
   through its chained append path (ADR-003, ADR-021).
 - Commerce commits a completed order before publishing the identifier-only event consumed by
@@ -136,4 +168,16 @@ exists; GitHub Actions runs `make check`.
 
 ## Decisions
 
-See [`adr/`](./adr/) for architecture decision records.
+See the [decision status and topic index](adr/README.md).
+
+## Component and shared-package entry points
+
+This page owns the service/frontend map; separate service READMEs are not required. Each service's
+`cmd/<service>/main.go` dispatches server and CLI commands; `internal/api/` handles HTTP,
+`internal/store/` owns persistence, and `api/openapi.yaml` defines its declared contract.
+[Contract map](contracts.md) lists all generated consumers.
+
+`shared/go/` contains `cachetier`, `cmdline`, `contract`, `domainevent`, `durableconsumer`,
+`fakepsp`, `httpx`, `mail`, `obs`, `organizerassertion`, `ratelimit`, and `runtimecfg`.
+Verify current package directories before adding shared policy. A new shared package needs an ADR
+under the working agreement.

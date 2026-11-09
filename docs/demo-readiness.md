@@ -1,5 +1,7 @@
 # Demo readiness — findings
 
+Historical assessment of 2026-08-08 at `4c995e8`. The findings below describe that run only. Use [current demo preparation](runbooks/demo.md) for present setup and [known limits](known-limits.md) for current boundaries. No new live demo was run for this documentation review.
+
 Assessment run on 2026-08-08 against `main` @ `4c995e8`, on this WSL2 box, by driving the real
 stack (`make up`) rather than reading tests. Investigation only: no source was changed.
 

@@ -1,5 +1,7 @@
 # A gitignore rule can outlive its reason — and predate its victim
 
+Historical paths under `docs/reviews/` refer to records removed in `e3744ccd`; use git history to read them.
+
 **TKT-139, PR #136.** A finished architecture review sat on disk for five days, cited by an ADR,
 invisible to the repository. The question "was this ignored deliberately?" looked like a judgement
 call the owner had to make. `git log` narrowed it to one that could be answered.

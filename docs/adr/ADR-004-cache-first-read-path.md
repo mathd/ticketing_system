@@ -25,6 +25,11 @@ Catalog's five public reads move from a free-form `CacheControl` component to si
 components, so a drifted or missing tier header is a 500 with the payload withheld rather than a wrong
 header served. No tier assignment changes. See § Amendment (TKT-209).
 
+Current implementation references: [ADR-044](ADR-044-inventory-availability-cache.md),
+[ADR-045](ADR-045-catalog-public-read-cache.md), and the superseded image-cache direction in
+[ADR-079](ADR-079-persisted-image-cache-without-stale-if-error.md). ADR-079's status points to
+the actual accepted risk and guard.
+
 ## Context
 
 High-contention on-sales are a core v1 requirement (brief). Correct atomic claims (ADR-002's inventory hot path) solve oversell, but an on-sale's load is overwhelmingly **reads** — event lists, event pages, price displays, remaining-capacity checks — and an uncached read path melts the database long before the write path is stressed. The owner directed (2026-07-12): endpoints should be cacheable wherever possible with TTLs matched to data volatility, hot events should be served from in-memory structures to shed database reads, and the web frontends should minimize API calls and refresh on TTL-appropriate cadences.
@@ -123,7 +128,7 @@ the page response and one stops at the data layer. Ownership of the minutes tier
 
 **What honors nothing.** The gateway is a bare `httputil.ReverseProxy` per route
 (`gateway/cmd/gateway/main.go`, `apiProxy`) — it forwards responses and caches none of them. The back
-office reads through plain `fetch` (`web/backoffice/src/lib/api.ts`) and discards the hours-tier
+office reads through plain `fetch` (`web/backoffice/src/lib/catalog.ts`) and discards the hours-tier
 `Cache-Control` its venue and seat-map reads receive; that is the clearest instance of a declared tier
 with no consumer. Service-to-service HTTP clients neither cache nor read TTLs. The Compose topology
 (`compose.yaml`) contains no CDN, reverse-proxy cache, or shared cache of any kind. **The scanner is
@@ -192,7 +197,7 @@ table and records why.
 **`no-store` chosen over a short private tier.** These responses carry no validator — the handlers set
 `Cache-Control` and nothing else, no `ETag` or `Last-Modified` — so `private, max-age=0` costs the same
 full round trip and buys nothing, and any positive `public` TTL keeps the exact defect. The only
-consumer today reads through plain uncached `fetch` (`web/backoffice/src/lib/api.ts`), so nothing loses
+consumer today reads through plain uncached `fetch` (`web/backoffice/src/lib/catalog.ts`), so nothing loses
 a cache it was using.
 
 **Declared, not just emitted.** The TKT-128 amendment established that an emitted-but-undeclared header
@@ -381,7 +386,7 @@ TKT-128 amendment argued, a tier is cheap to correct before a cache honors it an
   [ADR-009](./ADR-009-contract-first-apis.md) (the TTLs as contract);
   `web/storefront/src/lib/cache.ts` (`PageDataCache`), `web/storefront/src/lib/api.ts` (`pageRead`),
   `web/storefront/src/middleware.ts` (`EVENT_PAGE`), `gateway/cmd/gateway/main.go` (`apiProxy`),
-  `web/backoffice/src/lib/api.ts` (`getVenues`, `listVenueSeatMaps`), `compose.yaml`;
+  `web/backoffice/src/lib/catalog.ts` (`getVenues`, `listVenueSeatMaps`), `compose.yaml`;
   `services/catalog/api/openapi.yaml` (the declared tiers) vs
   `services/inventory/internal/api/server.go` (`availability`) and `services/inventory/api/openapi.yaml`
   (`getAvailability`) — the emitted-but-undeclared seconds tier

@@ -1,4 +1,4 @@
-# Commits & Branching
+# Commits and branching
 
 ## Commit messages
 

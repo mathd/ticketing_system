@@ -1,6 +1,19 @@
-# Docker & Compose
+# Docker and Compose
 
-One stack file at the repo root (`compose.yaml`, project `ticketing`):
+Base stack: [compose.yaml](../compose.yaml), project `ticketing`. It publishes only the gateway.
+`make up` bootstraps local credentials and adds the direct-port overlay.
+
+| Overlay | Role |
+|---|---|
+| `compose.direct-ports.yaml` | Loopback infrastructure and service diagnostics, added by make up and test harnesses |
+| `compose.smoke.yaml` | Package host-built artifacts for fast smoke/browser checks |
+| `compose.onsale-load.yaml` | Real load-proof database instrumentation |
+| `compose.smoke-cadence.yaml` | Accelerated isolated-stack worker cadence |
+
+The harness determines its exact overlay list; see `scripts/smoke.sh` and `scripts/browser.sh`.
+
+## Containers
+
 
 | Service | Image / build | Notes |
 |---|---|---|
@@ -13,7 +26,7 @@ One stack file at the repo root (`compose.yaml`, project `ticketing`):
 | catalog…access | `build/go.Dockerfile` (arg `PKG`) | distroless static; healthcheck = `/app healthcheck` subcommand (no shell in image) |
 | gateway | `build/go.Dockerfile` | only published app port (:8080) |
 | storefront | `web/storefront/Dockerfile` | Astro 7 SSR standalone build on Node, `/healthz` |
-| backoffice | `web/backoffice/Dockerfile` | Astro 7 SSR back-office shell behind `/admin/` (ADR-006); root build context for the pnpm lockfile |
+| backoffice | `web/backoffice/Dockerfile` | Astro 7 SSR back-office shell behind `/admin/` (ADR-042); root build context for the pnpm lockfile |
 | scanner | `web/scanner/Dockerfile` | pnpm build stage → nginx under `/scanner/`, `/healthz` |
 
 Published host ports are env-overridable (`GATEWAY_PORT`, `POSTGRES_PORT`, `NATS_PORT`,

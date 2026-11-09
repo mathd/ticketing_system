@@ -1,0 +1,275 @@
+path	family	baseline_bytes	baseline_sha256	revision
+.claude/skills/sdlc-sprint-review/SKILL.md	workflow	13362	262ccbad800b75796ee46da29c204ebaec178df774a3b40d311342c1a23fc060	unchanged
+.claude/skills/sdlc-sprint-review/references/documentation.md	workflow	2779	b270e63a4fdb7ee390a4370407bfc814a4b259003127ee928cfc648e922f4314	unchanged
+.claude/skills/sdlc-sprint-review/references/implementation.md	workflow	2352	dc18ddcf48aa8b73e5edbc4660e0bbce10b23bf09ce704cdcd11c3f66cb74648	unchanged
+.claude/skills/sdlc-sprint-review/references/publication.md	workflow	8387	bbfd1a69300bbd51f1fca677cc105ba8f22438c8cca4f3d7d449364b433d1138	unchanged
+.claude/skills/sdlc-sprint-review/references/report-format.md	workflow	24362	4c77c6ea60ef2c91dc5b6c379b65f5e4617a0b8a19493d75ec65b7c0b93f904e	unchanged
+.claude/skills/sdlc-sprint-review/references/retrospective.md	workflow	3065	48ac1e34a0e6fb6d317cbaffdcd1514d01180d9161e3884108b98705eb7e0201	unchanged
+.claude/skills/sdlc-sprint-review/references/simplification.md	workflow	3848	976117adb411eb21e83b088a6b8dd569e8b77d7360b62fe8291af9781d4b2c65	unchanged
+.claude/skills/sdlc-sprint-review/references/verification.md	workflow	2678	03cfa7957646c4b0aeafc2f2d0e9a54d692ebe78afee1e5cccd9fcdd77d1b484	unchanged
+.claude/skills/sdlc-sprint/SKILL.md	workflow	8769	6840b5b3f15c0b27fc238d177020cec350e51bb81333076136c3436b2c234665	unchanged
+.claude/skills/sdlc-sprint/assets/brief.md	workflow	2434	6c0a17f824c8004ec5f2bcff9fbf1a2d62401f7cdc024b258f7eaf5ab9a48eee	unchanged
+.claude/skills/sdlc-sprint/references/board.md	workflow	14058	28e987ca6ce07f76a67eadc18b47bc04dfbc0372b3e198d777e72340592d9af3	unchanged
+.claude/skills/sdlc-sprint/references/lifecycle.md	workflow	13679	e16bba90965fc3cd6306f6d590be2ef3d9b922e732472bfd6cd8e786c9ee8d2d	unchanged
+.claude/skills/sdlc-sprint/references/records.md	workflow	16189	afad1d017c5520f99f9f8c8160b1359bafd055f410ff348921c36467c13d9fe9	unchanged
+.claude/skills/sdlc-sprint/references/release.md	workflow	3834	c57321bae6b1451ae0d15f59bf13f157b3323dace41d1f93b6ee6ac6f780849f	unchanged
+.claude/skills/sdlc-ticket/SKILL.md	workflow	65275	4ec2dc8782ebdaeb74dd2c3c4d23e96f0a40a9a40db50e3247c151932ca7e1e4	unchanged
+.claude/skills/sdlc-ticket/references/ab-stages.md	workflow	5247	78580753533c7c9482c47c0023f6508b388f144cf73fe255382538a9a7f9d2e1	unchanged
+.claude/skills/sdlc-ticket/references/codex-runner.md	workflow	6346	df847fad736955c722c3eda46314941176dbd72738c1b5c3eb0d76fc0b39aa47	unchanged
+.claude/skills/sdlc-ticket/references/decomposition.md	workflow	15170	adde0e61af6bbb13f6706afba72af94067291bd634bc8f7af24a76567b4911cb	unchanged
+.claude/skills/sdlc-ticket/references/exploration.md	workflow	5633	e425f184b7a186186975ebd339f5b4d8a52ec0cb76c3ee6c78ed4a7a6cb2b2fd	unchanged
+.claude/skills/sdlc-ticket/references/local-tracker.md	workflow	16024	0edae8de7e6e2dfbe4d3395cff4c92610f561ed3e0deb0194d814ee67ee9c4f1	unchanged
+.claude/skills/sdlc-ticket/references/plan-recap.md	workflow	6318	7e7ff8a543581575af29b47c38100b8f66f01dc3d74faaed0d02d24b62d234dd	unchanged
+.claude/skills/sdlc-ticket/references/quality-practices.md	workflow	20871	4fd54017312c8e0532900ea2058fad7c14be62be07af166ddc6a77e5c4f6b06b	unchanged
+.claude/skills/sdlc-ticket/references/reviews.md	workflow	28734	bea21e4893c395dcf838de5a49705e3517c20198e6b12ea6f3ae8423fe88288e	unchanged
+.claude/skills/sdlc-ticket/references/setup.md	workflow	4705	91fc79c3912ed77f5a510498fc76b97b0458201cf3b7d348c970a2c5f9ab1750	unchanged
+.claude/skills/sdlc-ticket/references/shaping.md	workflow	17027	e1c0d30048e74d237930f43076466f1577ea4854a7db4d6b38ad406f9be691f3	unchanged
+.claude/skills/sdlc-ticket/references/sprints.md	workflow	7798	f85e170be99006c64ae8788918fbbb31e62fdf9457c31d642a969ef212e4e02e	unchanged
+.claude/skills/sdlc-ticket/references/t3-runner.md	workflow	7486	c3df079e34032181ca5055ad384c4ef4a9e9fc10e49d5a21215681573ca20fca	unchanged
+AGENTS.md	current-guidance	35156	d44398880dbb8b5970e8d37122ac052c234a3f61113abd37f90bb0e6e254e4e2	revised; see git diff
+CLAUDE.md	current-guidance	34	7f938c40880e2f190c06b9bd1973da031057987164ba31d5cbfc85c7218d5f11	unchanged
+README.md	current-guidance	2239	df9b3b784dafff2cb365dd313bb2613888c43958b847e25a59f0314f1828cfd5	revised; see git diff
+docs/LEARNINGS.md	current-guidance	56248	f1853deca9466a46ca13133179ce2da48d515551e8f2e76eacb11066f84a1615	revised; see git diff
+docs/README.md	current-guidance	2054	b0e2573cddd913e06d028e41559c515e9c93b834ca1646eb4c2ac4d3d128396e	revised; see git diff
+docs/ROADMAP.md	current-guidance	2465	301d66ddd6977a895850a748f0d706457b8d95cb8eedb34af52b16c3479ecc42	revised; see git diff
+docs/adr/ADR-001-go-typescript-stack.md	decision	2726	b06d175873a37723043bcea6cd084300fdc69e1fe90cdf1abd58c6cf6881d543	unchanged
+docs/adr/ADR-002-services-from-day-one.md	decision	4257	9f27ff5b25cd589bc37d03e7c018c62b3a019806c958c21d47507ab0208cb2ea	unchanged
+docs/adr/ADR-003-append-only-audit-trail.md	decision	10475	734f10a1c8cc5df44dccfd81a67731a897e8b69b83b4dcf52674eab7cb5eac80	unchanged
+docs/adr/ADR-004-cache-first-read-path.md	decision	31489	8e8b7ceb9fc7d56c5a4435b71a97be47dafb0e1ecbdca68f8fe2b5c33656bd94	revised; see git diff
+docs/adr/ADR-005-unified-dated-slot-admission.md	decision	5806	3cbf991b0105c363c9bf36d27a04492a219042622b1e4502861ace939a99eccb	unchanged
+docs/adr/ADR-006-astro-storefront-shell.md	decision	7889	6d563620f551bbe1c76772300ab9bc13a00555c71c4026e8a227839ffdba4534	unchanged
+docs/adr/ADR-007-postgres-nats.md	decision	3353	28cf500691af418cfe129c1e12218f4621f7e9dede3148a37ec0b0f33231b874	unchanged
+docs/adr/ADR-008-embedded-migrations.md	decision	3599	a2d01e0b804807d9e2a9cfde7d1fa6522ac4c9fa0c49c22b4e556c033eefedc5	unchanged
+docs/adr/ADR-009-contract-first-apis.md	decision	4504	d3361464713169295fde6a6dfdebab8afa0dc4183bea8e3a1b0df3d88e609973	unchanged
+docs/adr/ADR-010-postgres-claim-transaction.md	decision	2118	f55e9f453d970233bdadd02dd7dc2d0700f89a08bed7c2a8d0a8f6a2bf1ffb28	unchanged
+docs/adr/ADR-011-checkout-journal-protocol.md	decision	6185	b7d8f26e62103e43d5d4146b4b41096dc35c27a121ab34fef97c87a0653d72ce	unchanged
+docs/adr/ADR-012-ticket-issuance-and-qr-credentials.md	decision	10747	d4682941e3f286a464329b9a82067311af99435455536773a149549a17d80cf5	unchanged
+docs/adr/ADR-013-occupancy-capping-scoped-exception.md	decision	3873	72f4189f9cb7c8544d6bc322b6f61f28a84656495b9cb175e61f1ceed30ac1cb	unchanged
+docs/adr/ADR-014-typed-dated-slot-implementation.md	decision	4916	6493c71ece66c22eebfedcd4cd601bcf16e011d1915d5734dfbe5a496174b8ab	unchanged
+docs/adr/ADR-015-series-season-grouping-and-lifecycle.md	decision	3150	6b927120e8b1fa606d3b551dc919fd578a12e76d54216269814a37f0691c0372	unchanged
+docs/adr/ADR-016-checkout-recovery-state-machine.md	decision	74680	7d131ce93242ca0fa30ba56acc75fb34086393b167306513f4b5fcf478a05049	unchanged
+docs/adr/ADR-017-domain-event-schema-evolution.md	decision	26802	4b3b5a2cc64de359f633481450c6f848aa2e090e202d2df7c962c2d9c20909cc	unchanged
+docs/adr/ADR-018-catalog-slot-transition-concurrency.md	decision	6536	fdc0f37fe62e458397506db416491c823e7f18712d3f664c0b7a8dfde17fbed3	unchanged
+docs/adr/ADR-019-catalog-read-path-scoping.md	decision	15532	1c42fc1e0832eabaf1ad4f506751cffd55fe16a5499d687f56a7ce9891ca6146	unchanged
+docs/adr/ADR-020-catalog-index-build-concurrency.md	decision	11222	51f14442bf1ada39753802bfba5923a123ce9f71309a2ffdec6aba5ca6903e80	unchanged
+docs/adr/ADR-021-ticket-lifecycle-trail-integrity.md	decision	50564	95e9563cc0a2df10d29b8399e159e62d126b26437492cbadd73edd1f81a3055d	unchanged
+docs/adr/ADR-022-out-of-band-service-migrations.md	decision	16646	59dee209655816ee4989d63d509fa93469e589f7c4b78e82bf83d697706f99fd	unchanged
+docs/adr/ADR-023-operational-holds-and-conversion.md	decision	5251	d471eac9696d89d0357bad8b3721be63d8b39ec775e1fa7f729753e92b832fd9	unchanged
+docs/adr/ADR-024-channel-allocations.md	decision	29716	e3aaded0925bcbbea82404b9449bacf53828bf0b240dc970f96b84e998c83957	unchanged
+docs/adr/ADR-025-admission-events-and-offline-reconciliation.md	decision	30277	33aa35fab0983745368342081c6953429bfac23b809b28503088d0f75f490b09	unchanged
+docs/adr/ADR-026-inventory-capacity-adjustment-clamp.md	decision	4499	7694e9c98fd86cef8e56c70fb1a67b39954381350d234a7ee8d7c245a2b3792d	unchanged
+docs/adr/ADR-027-group-agency-reservations.md	decision	4729	1c091935397e056ce352a07f4ff0d7780d468823489fe7bf50e43bb0d4d39b9f	unchanged
+docs/adr/ADR-028-response-drift-fail-closed.md	decision	13985	b4517bd4ca804ee24e440dfdefa9269382c3e9d5991b8a77074e161a5d5e4625	unchanged
+docs/adr/ADR-029-seat-identity-pinning-contract.md	decision	11787	dc302c2598bc5528f04908274a8e87e79410a78f7315a452f8db3c72e54a9f8e	unchanged
+docs/adr/ADR-030-catalog-coverage-gate-scope.md	decision	7205	3f48ac82cc463707269f4fe39b8021a7f2c022d8da2c8234dadb9661b2213911	unchanged
+docs/adr/ADR-031-seat-claim-pin-coordination.md	decision	12724	20fc79323fe8a6105b4c3aa2db1ebf9676c20adc754f4f272105d2621fa9b78d	unchanged
+docs/adr/ADR-032-stripe-behind-the-psp-port.md	decision	44629	f2db3669ee5850c27ea1facd62907308b3db1af5222f82117583971398f71107	unchanged
+docs/adr/ADR-033-shared-domain-event-envelope.md	decision	15598	a31e6fe4ab95f6df477bfa5827b0e9fb248cc4746496f241a8d548d9c2c1c309	unchanged
+docs/adr/ADR-034-shared-durable-consumer-lifecycle.md	decision	27558	42b824384f2248ac7b0a676244fa3ef4ebddad3a9bfb86221355f9375ff8d2c1	unchanged
+docs/adr/ADR-035-go-module-dependency-declarations.md	decision	15591	fd4ad3aa9f8ccb6282debb9370bddb66325dced84f9b5e75fabaa60dfe02fcf4	unchanged
+docs/adr/ADR-036-pricing-rules-representation.md	decision	43739	4c72674a58fc8bc1530d2f05636e947c5d946585b67068b0d96661eed4dc38cf	unchanged
+docs/adr/ADR-037-post-purchase-refund-money-protocol.md	decision	8818	0dfc78bd98282b0e80ffacc73b6825661dae8033d389eb4c0de5ccef819efcc1	unchanged
+docs/adr/ADR-038-refund-reversal-ticket-voiding.md	decision	17236	31585e7ab3297633b0dfb99f938e7f13229c4fdc87389d8f6b0319fac990c845	unchanged
+docs/adr/ADR-039-exchange-settles-the-difference.md	decision	15872	7369cd9b108379a23170b91c2a7f30f46b81e0d01409061bf76e5f6262f03448	unchanged
+docs/adr/ADR-040-event-cancellation-bulk-refund-runs.md	decision	32388	218032b5375d2cc35fbbedc3425653cf459eb9ad7ed3aa47dfa01f859c4cf101	unchanged
+docs/adr/ADR-041-orphan-seat-arbitration.md	decision	16908	527329952f8b570c3ceae37de5906d1f48ae01f4eaa3c2af5128e8fb2f7e0c42	unchanged
+docs/adr/ADR-042-staff-identity-and-backoffice-sessions.md	decision	34294	84fa4dc63886f0e316fdbb3f4b75eb8a3da3b29cf9a15dfc4e4f27f18c3850fb	unchanged
+docs/adr/ADR-043-where-a-service-auth-guard-lives.md	decision	7708	b41074d7b123a2b9bb0fae95f803eeb2d11908dcf76385942fab70a05f8d5e24	unchanged
+docs/adr/ADR-044-inventory-availability-cache.md	decision	15510	8111761e0a87830612e8adff644c8d2c21fb5329b6b5a7ce3fc51401393349f8	unchanged
+docs/adr/ADR-045-catalog-public-read-cache.md	decision	8210	7d29abc382dcea688ff40bd8ead5057d191bcbad3634065e98d7881fc41e1f16	unchanged
+docs/adr/ADR-046-fee-rules-representation.md	decision	31415	48dbb2dea86efdce7f13ccf666e3f723f2bfb422dd49be55013095bc98f4fa0c	unchanged
+docs/adr/ADR-047-payees-and-split-schedules.md	decision	10147	81a66e158bb7b715be8bfd5c367c67d1dcb45e2d2785c3b6930063ed88ce34cb	unchanged
+docs/adr/ADR-048-settlement-ledger.md	decision	18379	42d19cedfa56fad1e8da634411a16c79766c8a1c58d2426e5792d4ce20899768	unchanged
+docs/adr/ADR-049-customer-identity-and-storefront-sessions.md	decision	40708	955e89248e6be0ec4cc81e9bd86b1ae7ee37bd407f8531eeba70eb79cda7d4d3	revised; see git diff
+docs/adr/ADR-050-transactional-mail-and-password-recovery.md	decision	18302	07198d98c9b5736f61d937cf2a3c09dc1ee838b67a779938ec4c0bc514f62820	revised; see git diff
+docs/adr/ADR-051-public-customer-surface-rate-limiting.md	decision	12151	18b8722d16e87c5149604fcec12bcdc50d6ee46d77e330873c48ae573e3939a6	unchanged
+docs/adr/ADR-052-order-attribution-detachment.md	decision	10388	1c510df0dc5ceb17a383fcac5ab82cf10bf93c864f13d4bdd5a30599db79db57	unchanged
+docs/adr/ADR-053-channel-operator-read-credential.md	decision	7554	8246bd681eb34245531853fd72c2651ac78555faa13980b0483aecafe4fd3f0d	unchanged
+docs/adr/ADR-054-per-channel-sales-windows.md	decision	8549	f795f6b58dd25114c36ea151c46e00032791a7097bb9e3b9ec8aae4aef6fa293	unchanged
+docs/adr/ADR-055-on-sale-write-rate-limiting.md	decision	6528	6cd50c4bc813f0f8c9eb22a0a40d307f81a6f07d02862585dcb30a02eaaf031a	unchanged
+docs/adr/ADR-056-partner-credential-identity.md	decision	17673	a38882d8cc40f7a03910c5639009783e02332419266247dfe628bf958124339a	unchanged
+docs/adr/ADR-057-inventory-staff-write-credential.md	decision	11394	b35ea8ec4ee671c524dfb1007e9955ea1dd035acc655a99317e60458670ae2e6	unchanged
+docs/adr/ADR-058-catalog-organizer-assertion.md	decision	21257	736b6e344017223f0c960496c3982e77f38115f911e6b4562b7b589f4ec57ed5	unchanged
+docs/adr/ADR-059-credential-length-floor.md	decision	10655	383ca3762fd93c02ccb31c581417a7dc1598cebefd184a593cc0ab815564d608	unchanged
+docs/adr/ADR-060-public-reservation-channel-entitlement.md	decision	10169	fd1923e20231425fef6ee9faeb6b2e651211fca7087615a1f90f6f978dbca288	unchanged
+docs/adr/ADR-061-best-available-seat-selection.md	decision	21732	f7f1610404da3cfdd09b2db1e070f0cd6ee858ca659f411e57b43ed08f7eb196	unchanged
+docs/adr/ADR-062-refund-reversal-reconciliation.md	decision	16441	c58c0d3a46be82eb47d5b23aca7aa6b7684510898ae0b726816212b35e84d9bf	unchanged
+docs/adr/ADR-063-exchange-reversal-reconciliation.md	decision	17602	4bd4d3a7d74aae81a529d91b74c8da09da28a5177160b3dcb34c3c0bcf7d1cc6	unchanged
+docs/adr/ADR-064-presale-unlock-codes.md	decision	28709	6936838353347833f3de324ea5909855e2fcf5010f16cf22bb1d9c6c77c2189f	unchanged
+docs/adr/ADR-065-parked-recovery-order-observability.md	decision	10098	912a8a35384b71841077a7e6fa64ba31ec8da5ae733845bee6c6ad92391ec4a6	unchanged
+docs/adr/ADR-066-scanner-voided-ticket-feed.md	decision	19963	f3442bb52d427930b5481db2f7c88c9c51c60dcfa5127afb550d386db7f6e1b0	unchanged
+docs/adr/ADR-067-wedged-exchange-operator-unwind.md	decision	17461	bc56c131f3aa00b7d83078f52673b0cc537ecb4578878af3eee9accbc979edab	unchanged
+docs/adr/ADR-068-staff-ticket-redelivery.md	decision	15063	9deaf81c257eb225591353b8f6fee9f3b0821ca9114d8bd4545330e6666b028f	unchanged
+docs/adr/ADR-069-opaque-payment-tokens-and-exchange-upgrade-instruments.md	decision	11678	b74a1797f3bd7a5104163c573faa38541c2ee5b8509419e958c81138ac7445ea	unchanged
+docs/adr/ADR-070-indexable-reversal-claim-scoping.md	decision	13169	22f81c92674105a4bcfc087f4631c046c2df97ac2ed723f12e7cb7631a6857e8	unchanged
+docs/adr/ADR-071-internal-mutation-ordering-honest-caller.md	decision	21589	f17e02aee5973243895ac1e0f04c915db80a17317920ba2c8fa982a2591929b7	unchanged
+docs/adr/ADR-072-nats-publisher-acls.md	decision	22021	3f8a60dd3dbf51fa638139dad21b2ea203317ea91338fcb5bc4415b2381c91a5	unchanged
+docs/adr/ADR-074-ticket-seat-association-at-issuance.md	decision	5734	29b5876bfed14cee2e00120824b97235050b36744d130d122a6286a1c07e5e50	unchanged
+docs/adr/ADR-075-proposed-waitlist-capacity-capture.md	decision	20568	d8a14809a0aa05659b60b0d1b7a37597cad09fe8000b1f8a917220ee397b3368	unchanged
+docs/adr/ADR-076-proposed-rotating-ticket-credentials.md	decision	9604	aca7feb1cc4d87b6040caa34ab87cd2a1c15fefba378d049084c26376c6e99a3	unchanged
+docs/adr/ADR-077-moot-tombstones-and-bounded-parking.md	decision	13618	56e32bcd072b971018a8476564d9adb8df1733aab6bc90ed4aeb98ec7261e032	unchanged
+docs/adr/ADR-078-optional-resend-and-bounded-delivery-retries.md	decision	2829	592fe73700d832a702edd8f4999dc4d34ab4edcc7d43bc54f781cb6cb8e2fca9	unchanged
+docs/adr/ADR-079-persisted-image-cache-without-stale-if-error.md	decision	2331	83bee5fad1cb9cfbb2a1fcd917a80821e173f1347e9d0f4270f9c159ea827a82	unchanged
+docs/adr/ADR-080-channel-optimistic-revision.md	decision	15933	a1358880fe6d9c14fee62146970b6163d90c643ebfa6184db67c0047539ebbb9	unchanged
+docs/adr/ADR-081-reviewed-expiring-vulnerability-scan-exceptions.md	decision	23899	5f5704228288bc887b4fab5abcab5592970e44282049fd76fc30d2e2925260f7	unchanged
+docs/adr/ADR-082-ga-sellout-refusal-code.md	decision	8318	0c0a2f39376f62ae96728ce9aa0f88f3cac6b31a8195d76d148a9df16616dca7	unchanged
+docs/adr/ADR-083-access-reads-performance-time-zones-from-catalog.md	decision	6157	85a16029ac8aada401343d213ff75eba9b2e9fbe5efa6db236eeddf8c49091b4	unchanged
+docs/adr/ADR-084-promotion-storage-and-redemption-contract.md	decision	56803	4e5c986be8a7f0db43ca948d0b1aa2af3f1badec6cc5fbcce0c084551934c476	unchanged
+docs/adr/ADR-085-scanner-local-outcome-model.md	decision	234176	47e779498ae08f5476b0e2ca1185ef4a39552eefad37073cde7c683b2ea7e924	revised; see git diff
+docs/adr/[template].md	decision	1877	0c263d8fd4725bef01fc86302ba3204329d75d44b02e3f0b17f21c72dad682b3	unchanged
+docs/architecture.md	current-guidance	6882	693e1125fc62e4cfa533327458c252f0127ce4de170eb508dfe387c589aa4b27	revised; see git diff
+docs/configuration.md	current-guidance	14251	39e90dec210c0d1c6ed8188138bd67163bc9be883531474e845828ccb00d8560	revised; see git diff
+docs/conventions/commits-and-branching.md	current-guidance	1989	737bf6c8ea58fe1f2e85e818efc3f47d20b3f4e118df7f00aa82d829cc139faa	revised; see git diff
+docs/conventions/continuous-delivery.md	current-guidance	7874	7c12271413f6e226dbf26676752977eb43561a2599ae3bb3b1b958e330123d33	revised; see git diff
+docs/conventions/dependencies-and-versions.md	current-guidance	5564	83973f3dca867560454b8c215f70de955e2323cb2d6a4f5b61855246e1a9c871	revised; see git diff
+docs/conventions/pull-requests.md	current-guidance	7572	26bfeaa17ebe3d3dcec7ca920faff33d4f2a18e9a100c75b220626ebd2c73798	revised; see git diff
+docs/conventions/security.md	current-guidance	11193	81d035de4a7273f908ba3ee2dcbe6fd08812e080e621683d3bd88f718f80f7a6	unchanged
+docs/demo-readiness.md	current-guidance	7684	d54d472f2921c967b39eb0b936a898c6188f69988b183b8f1a7cb247590f0c67	revised; see git diff
+docs/development.md	current-guidance	142936	93479b027db64765369b51f0a6e739256e721e33293d4d1f6a5a4c42e352efe6	revised; see git diff
+docs/docker.md	current-guidance	3257	c3b39023922f7d3d4dea6ef6e2cfd3e9af0cc2f24328b2338c1c3f596d2ea94d	revised; see git diff
+docs/evidence/TKT-125/README.md	historical-evidence	6958	9a91c31a7b93c6fc79a7d3cf7f0ece66dd22f74b685e7e3b2215e7a59b39bfaa	unchanged
+docs/evidence/TKT-279/README.md	historical-evidence	5884	c062dfd031f712af88d2a23844c0ab36f778358bcf1f0dc882d02170df8bd571	unchanged
+docs/evidence/TKT-279/mutation-details.txt	historical-evidence	34187	d43c2c683f66ce27234a338b5c8b82e2bb9c7ccc6787ebb5ade8dd256b834035	unchanged
+docs/evidence/TKT-279/mutation-results.txt	historical-evidence	4158	e0fce339c512eda54f67e69cf792ad8eda19e54e99fe3c9bc6065af68fa215ec	unchanged
+docs/evidence/TKT-279/red-first.txt	historical-evidence	36695	8565432974c279dbe88f7e3a9bbac41ddd413e4daf189ccc729d7dbca8ff48d1	unchanged
+docs/evidence/TKT-279/repeat-results.txt	historical-evidence	512	94dae114b8479739714152525a66be33de58d040116dff73d364d7759dca38e5	unchanged
+docs/evidence/TKT-295/claim-history-order-explain.md	historical-evidence	2142	bf2ca6bf7ea34b4bcbc8b066dc7067c471b9dfdc2561f136e4b32effac2d924e	unchanged
+docs/evidence/TKT-321/explain.md	historical-evidence	2997	0f695481c8824a12982d08b224026929fd2d029bd724989f1b10e0037db648a4	unchanged
+docs/evidence/TKT-337/first-increment-probe.txt	historical-evidence	1395	d8bdfe5e447b319ceff277c35129f4fd072975ac7beb40573dd454684a82a53e	unchanged
+docs/evidence/TKT-348/README.md	historical-evidence	18578	86f4f4347b77013e523ac8e9455a323586663f7efe0244118b44cc7d2e578efe	unchanged
+docs/evidence/TKT-348/results.md	historical-evidence	1547	617b8b043bc64678fd98afe3e598efc4a8f62a528ad307967da0a64db60ea924	unchanged
+docs/evidence/TKT-356/README.md	historical-evidence	9588	1b16400822660f37c274ca07dc34c386168cf82a91d4a06ff98cfeabffca738f	unchanged
+docs/evidence/TKT-356/results.txt	historical-evidence	2255	bf7a9badb4345cf3def3631e5e8f12c5e0ae3306b06292ca4abdf0ecf5148b16	unchanged
+docs/evidence/TKT-374/README.md	historical-evidence	11046	72e0d8fb6600532be97da7975a11be4f601e1157847c21f894e458b02591a161	unchanged
+docs/evidence/TKT-380/README.md	historical-evidence	15445	67d86752ab07224e97ee76e1ebc95b4b8bc3f3dc1d7344458172ebc249237645	unchanged
+docs/evidence/TKT-380/output/environment.txt	historical-evidence	371	c1abee08e30e9414a0d361c54578354655d496e19f19a481832334d10471b883	unchanged
+docs/evidence/TKT-380/output/exit-codes.txt	historical-evidence	656	39f3a3fcf6b17818c05141078dc3461cb59f762a037e092a3bbfdd2bf28ceada	unchanged
+docs/evidence/TKT-380/output/expectations.txt	historical-evidence	1925	9157170ec02198f13db4ceda1013d31369b450abf94ef7c4727babf9ef231b82	unchanged
+docs/evidence/TKT-380/output/probe1-presale.txt	historical-evidence	14501	9b582fc6f3d244730c1ee5374d2dbfcd77b434ea7be256b1b314aaa67690181b	unchanged
+docs/evidence/TKT-380/output/probe1-window-fix.txt	historical-evidence	3904	f20969e3f8d75b00fe76a14b99cebb76d2a9faa42e73d852ea8b2e607edaef16	unchanged
+docs/evidence/TKT-380/output/probe2-baseline.txt	historical-evidence	2682	4540a8816d81d9d025bbec48ca531ca530566b69178344cde2ba128a3217196f	unchanged
+docs/evidence/TKT-380/output/probe2-mutation-lock.txt	historical-evidence	2800	b7f94400310ff03fc0336be62745af238e81d0acbf45b6c646f38ee5c85f7839	unchanged
+docs/evidence/TKT-380/output/probe2-mutation-time.txt	historical-evidence	2684	24e1ded3fa4d81422ee989c99cf4f1c5fa1edab6b16ce7628d887b8ed99819ca	unchanged
+docs/evidence/TKT-380/output/probe2-mutation-uncapped.txt	historical-evidence	2742	c37cfe70e4f6025f5012e16b2e30b9e874f163221f91e9ee7df9ebfad47ab828	unchanged
+docs/evidence/TKT-380/output/probe2-repeats.txt	historical-evidence	17960	f52c7f8c49f15191ad18c0b565c859cf600f3ffcf79f3d74c4c45ec347c37dc8	unchanged
+docs/evidence/TKT-380/output/probe3-r2-mutation.txt	historical-evidence	2278	5514ce8c295ff5979a6251986e9503e72be183fa05b241a70a07383be6266e92	unchanged
+docs/evidence/TKT-380/output/probe3-r2-repeats.txt	historical-evidence	14081	e543bb635ff4855d540c113ef7fa29b0a59a49c4c533153fcc4e56bf6c74e0ad	unchanged
+docs/evidence/TKT-380/output/probe3-r2.txt	historical-evidence	12091	571ba0af0757f8116e2a9cc21732a33139082f7e58c00941fcb6a073940ad181	unchanged
+docs/evidence/TKT-380/output/summary-distinct.txt	historical-evidence	3897	a75ad0d82a0f341a12b1dd5f989f333436ce342e930c1f01d18790a315772ec8	unchanged
+docs/evidence/TKT-380/presale-race-finding.md	historical-evidence	8678	b1337e38e02ef1782ef9ca0b3af48fd79fe898616211f68080baec9a0fa8c131	unchanged
+docs/learnings/2026-07-15-name-what-a-control-reaches.md	learning	4462	f4ae6a3ec2450c2e69c9bf7635adf5e3616c0326527c050d8fe740bdf29b1e63	unchanged
+docs/learnings/2026-07-15-prove-tests-fail.md	learning	3361	15b761fb262f5b694f81b3d44f79e36609d82cde9c908a23861ca435c7864b1d	unchanged
+docs/learnings/2026-07-15-run-allowlists-strand-tests.md	learning	2216	7776046e6d21a252d42e48cfe4bbf9099ec1bcb0969f43178e98ee73e7b9ccd3	unchanged
+docs/learnings/2026-07-16-judge-replays-by-lifecycle-state.md	learning	3157	d0953fff7ece046fb7fbf1897bb940b3be20382c54fb9bb73b2a40e3e325e080	unchanged
+docs/learnings/2026-07-16-lock-handshakes-pin-the-exact-statement.md	learning	2147	7b53379f67099ec9733330a840fd109aef69213c93e0597ecd37986dc17c1843	unchanged
+docs/learnings/2026-07-16-lock-queue-time-cutoffs.md	learning	2095	cac89f470dc59850899f55f45090c3a91481293297e7de26468e938fbf9d4139	unchanged
+docs/learnings/2026-07-16-protocol-rules-safety-and-liveness.md	learning	2940	0dddb330092cdfe734955fbe00437c34096d98feaa94415f110c2466adef53f8	unchanged
+docs/learnings/2026-07-16-refute-the-trigger-not-the-mechanics.md	learning	1924	b468d3d3a252023349e3192af2207920a5d88b0c3192a41cb158621d9a89eb42	unchanged
+docs/learnings/2026-07-16-upsert-guards-are-snapshot-stale.md	learning	2462	445b5ddeef75075b1623ec6f78f709e715e76bb7e942c587d40dfbcda689e615	unchanged
+docs/learnings/2026-07-16-version-scope-vs-convergence-scope.md	learning	2536	1335b6527ad802031c85eb9cad6edbe9b339f5290fc51c6505b5728a0cf70f8b	unchanged
+docs/learnings/2026-07-17-batch-item-schemas-block-per-item-results.md	learning	1596	59d9c864fcc1bf13c221ed8368405b70d6ea9605ba046f848c1ded0318df5ea9	unchanged
+docs/learnings/2026-07-17-column-range-narrower-than-code-accepts.md	learning	1923	4cb90783ae1bcb2928495ea7c73e59ebeb917d604dcf3fc77fd4af1a2e4cf0fa	unchanged
+docs/learnings/2026-07-17-load-test-generator-health-is-part-of-the-claim.md	learning	2797	35dabab9af3ac50e0cfca237109786b7f6212731ce18b14d04536901bb2b14d3	unchanged
+docs/learnings/2026-07-17-reconciliation-acts-only-on-positive-assertions.md	learning	1804	dafa171381cc015105abae131f7f0f526054f3b97df402ef6c52e165cf7799dc	unchanged
+docs/learnings/2026-07-17-seed-the-failure-state-dont-race-a-kill.md	learning	1619	c0fa849337828068dd3a9b44482d16d9dfeedc0d0313c4393a562c8c4f184d8a	unchanged
+docs/learnings/2026-07-18-time-window-fixtures-must-be-relative.md	learning	1377	7e6908a1c35c8c8c6bc5e6801d4d1cc8a3ad42a158f6457ef8b821050e066028	unchanged
+docs/learnings/2026-07-20-browser-submit-is-the-only-checkorigin-catch.md	learning	2258	a6c7d466cb72d37db8f6257fd3db4f83144c555a676a07bb6e5059d4393f8a9b	unchanged
+docs/learnings/2026-07-20-for-update-does-not-lock-a-row-that-does-not-exist-yet.md	learning	3722	b3dbc60305e5e43b54a1c6435883fef9ef7b4e8f36c3d8ce7b4f0784e7e4a26e	unchanged
+docs/learnings/2026-07-21-catalog-internal-routes-are-hand-mounted-outside-openapi.md	learning	2029	68a02e0c6064f001d3423ed9a2f2b5a20ba021f240dfe68a5675e4dc11a110c6	unchanged
+docs/learnings/2026-07-21-pgrep-watchers-self-match.md	learning	2599	1c0e1ddc8b7203c10acbfd857d2161a48c114dc0e61668fec74d8e8f443a8e63	unchanged
+docs/learnings/2026-07-21-test-validator-downstream-of-production-wrap-sees-laundered-statuses.md	learning	1912	b3e0db5823d505149593aab7a25dd3430f216566062da5346832a3cd34671831	unchanged
+docs/learnings/2026-07-25-coarse-observables-pass-the-broken-build.md	learning	2522	6dea7e3383d2591eb12466113450f7c25809f2a657d17d4a07326e3e5f0019fe	unchanged
+docs/learnings/2026-07-29-fail-closed-validator-emits-the-same-header-as-the-success-case.md	learning	4681	66fa49d7cbf6b7eda263d1c76025a59ef34a5f5aa4571ed24cb724e29b071db9	unchanged
+docs/learnings/2026-07-29-force-the-interleaving-repetition-cannot-falsify-a-race-fix.md	learning	3610	04d5a8e8d0658c73e9b64af82058174d1e2af9a9749ccf9c50ae76b52954a13a	unchanged
+docs/learnings/2026-07-29-format-uuid-is-unenforced-and-catalog-validates-its-own-rejections.md	learning	5991	5a003974ddb8d6fe252d0ccbfc2a026e55518c8ec4925e3fde1c5b9b92f84a02	unchanged
+docs/learnings/2026-07-30-a-decoded-page-is-not-an-answered-one.md	learning	4376	d4f41a94a95d622a97bd1fe12df936aa958ad26b9aeecae4ee68148c4805b192	unchanged
+docs/learnings/2026-07-30-a-fingerprint-of-a-symmetric-secret-is-an-oracle.md	learning	4870	2d10cc1d6ad2a22f646d720a5a4fa209e5793d99085f276a95e6b7c3994e3edb	unchanged
+docs/learnings/2026-07-30-a-gitignore-rule-can-outlive-its-reason.md	learning	5816	a92c3a73cf94eb359791ae5b07f60413bae425ba9c66fdec60de0496071f11ef	revised; see git diff
+docs/learnings/2026-07-30-ask-whether-the-fixtures-or-production-are-wrong.md	learning	3462	7cc8eba60922513cf79f9c368526e22ba4d1be78e0a2d46c1f8a61f414f3297f	unchanged
+docs/learnings/2026-07-30-check-why-a-test-is-red-not-just-that-it-is.md	learning	3416	e78705c43ce04daff73f0fc2830823f49c940ae19857c9a3c34b8b98cad01253	unchanged
+docs/learnings/2026-07-30-record-a-relaxation-as-a-relaxation.md	learning	4871	6cac55e0b932a91abb2a5ef9717f9f4bd0393762cc8fdf372e59c9de0e7387ec	unchanged
+docs/learnings/2026-07-30-you-cannot-classify-an-event-you-caused.md	learning	4525	268c092dd3c71f47de7f2d73cf2b3d8fc446b5ffc13b365b9904a7f116c4215a	unchanged
+docs/learnings/2026-08-03-a-fixture-too-small-cannot-show-the-negative.md	learning	1783	267cd0baaeb30ba00ad9f7efb1f9e490f9fc8a3b85b4173189ba5e5739a907cd	unchanged
+docs/learnings/2026-08-03-driver-migration-and-compose-gotchas.md	learning	2265	ae9da980ce91f88ce46f297cc907b022837a2021f12890bf3b67e06a7dd2f5cd	unchanged
+docs/learnings/2026-08-03-retry-vs-terminate-and-http-boundary-dispositions.md	learning	1895	993107911fa1a7d33b3137a18b6b3f077d38bc2c44c8fa2bf7829dd52e6b6bc7	unchanged
+docs/learnings/2026-08-03-say-what-a-check-establishes.md	learning	1839	63e333477f43a8d25ee9ce818360699df9b61950a80dfda6ab01c8cb55cdbc5e	unchanged
+docs/learnings/2026-08-03-schema-rollout-ordering-and-early-acceptance.md	learning	2415	7412ece99b9c02779aa1483be73a9202e07a8a3be4a2f5fda248590818f49cca	unchanged
+docs/learnings/2026-08-03-storefront-island-styling-and-fetch-gotchas.md	learning	1766	8643856eb2ec17a03ff85f7e804dc4c51fa4acf05cc4c733fe57d4ac84697345	unchanged
+docs/learnings/2026-08-03-two-correct-fixes-can-compose-into-a-new-defect.md	learning	1882	07dfd41657c9cf85c7822db7a5e9d02c5e04b4d335683585167475c2dcaa115c	unchanged
+docs/learnings/2026-08-03-typescript-7-has-no-js-compiler-api.md	learning	3599	527a54ea4e9a05bd6a9893c9d7fd23c381d012b806a48da6e8d8ac4364a1a353	unchanged
+docs/learnings/2026-08-05-a-guard-inside-a-generated-handler-is-not-first.md	learning	3169	2054b70934e4442a1f308b4e457db0eab849d03a49f8a629db0b0f415330af79	unchanged
+docs/learnings/2026-08-05-a-hand-maintained-inventory-cannot-detect-its-own-drift.md	learning	3289	1d5e452cbd2463b97835bcb9452e154bf4d941124ec435a83092ef164d14efe1	unchanged
+docs/learnings/2026-08-05-a-refusal-after-the-point-of-no-return-loses-money.md	learning	2569	56e6ddf4a90ec976e2f6ce402700405b556eeb1eb8d247170af256e1ead23487	unchanged
+docs/learnings/2026-08-05-a-schema-too-old-cannot-fail-a-mutation-check.md	learning	1775	9995ce2e76b3701a3fc6729d1ec3fb7f85ae45ead81f55f1f01e631f89461731	unchanged
+docs/learnings/2026-08-05-at-startup-is-a-claim-about-a-runtime.md	learning	3726	47dbe8bfdfe73574ea660a6a03ec2d252f97170960fdf311183a380a41011027	unchanged
+docs/learnings/2026-08-06-a-cap-inherited-across-a-trust-boundary-is-not-a-bound.md	learning	3823	e0987cf1db591406e7a288a94353ac69634cdd1267b47a222bdebf39544dfd16	unchanged
+docs/learnings/2026-08-06-a-fake-store-cannot-see-the-driver.md	learning	3698	6ba9775da285dcd6d69f1911c6ed23b956f02030f8f28ea6a9019935b18e2c33	unchanged
+docs/learnings/2026-08-06-a-fix-can-be-correct-and-still-lie-about-itself.md	learning	3849	f0be314d342117dc096599d9a4747dbc1fc9c425b61ca1a0f249f4d667174fd7	unchanged
+docs/learnings/2026-08-06-a-guards-worst-failure-is-not-seeing.md	learning	4278	3e2a3cedb32db8eb8fe815e20b5a455769ef750da7abad0c97b76ed0070f4dfa	unchanged
+docs/learnings/2026-08-06-three-ways-one-test-could-not-fail.md	learning	5510	ba425ca362cbca24410d70c8f94b345da1ae3d2cbc76143fce8d88962f232746	unchanged
+docs/learnings/2026-08-07-a-failed-optional-dependency-is-skipped-silently.md	learning	6396	3e2b2554f17f7e57ffebc2e93aec127aba23a9b7fa4258a363a1c8f8e4465e68	unchanged
+docs/learnings/2026-08-07-no-referrer-nulls-the-origin-header.md	learning	4269	7045628bc1dafb1f55d3f5a1b1f03a88e537a6e99eb0566a66f9bae018328ad0	unchanged
+docs/learnings/2026-08-09-a-proxy-can-fail-while-the-guarantee-holds.md	learning	4788	b0bf417634dada47adcabe107b63e69c44b2577ba89c61d078c0b685018bfd54	unchanged
+docs/learnings/2026-08-09-a-total-order-is-not-a-meaningful-one.md	learning	6537	6536abf0f0736ce28303aa52351afc78834e5d606c47a227e6d8c8c6147817ef	unchanged
+docs/learnings/2026-08-09-an-assertion-over-a-min-only-tests-the-winning-arm.md	learning	2797	fa74290d08f7d75061e02a12995024aabaebdbaad75c749ec8b699c78284d878	unchanged
+docs/learnings/2026-08-09-pgx-returns-infinity-timestamps-as-a-string.md	learning	2233	3e5f06b4496055e8d3e0f5d5de7fa259e6e711c76d2d3adc8f6c94d8eae8a3bd	unchanged
+docs/learnings/2026-08-10-a-green-test-can-bless-the-defect.md	learning	3945	807a9f90a861bc1a3cff03f8ddd00dec8b0e91febc424c2860525e3aafed00f7	unchanged
+docs/learnings/2026-08-10-a-green-test-that-cannot-reach-the-failing-state.md	learning	5624	ad6ff1592014d876ababa6386a16791279b37f58079755a8c31f8d1a2327ff5c	unchanged
+docs/learnings/2026-08-11-forwarding-a-value-is-an-authorization-change.md	learning	4229	dd8f93caca438f30bfa5d9b43d134f203c65d6a48dbc6cb268c094bf56d30cbb	unchanged
+docs/learnings/2026-08-15-a-precondition-that-cannot-fail.md	learning	4456	f1fb63343800e1d263f9f4e011611edcf60f38b1a5d97d0ed51ebaf5ddf237af	unchanged
+docs/learnings/2026-08-15-make-it-unsubmittable-not-validated.md	learning	5618	3e07caf0b739f6949e204e36ce77003d98617ddaec02c5408d7d875e35d45471	unchanged
+docs/learnings/2026-08-16-a-fixture-that-seeds-two-mechanisms.md	learning	5280	43a1ab17d657a0826f0bba200eca92f4c60fa300b0a42291940af71750b92ec4	unchanged
+docs/learnings/2026-08-17-a-harness-that-cannot-catch-what-it-hunts.md	learning	7445	c4dbae428c72fa95592794d78bb31a39b40f1f053087e4d513bcf68fcb48859c	unchanged
+docs/learnings/2026-08-17-a-test-that-restates-its-helper.md	learning	4432	ef6170f007c2465c8c339fa82bfa2bc2c8c5627aa21b5782b742b193b48e3956	unchanged
+docs/learnings/2026-08-18-a-test-for-a-swap-needs-distinguishable-positions.md	learning	3340	563fb31eb13f92fadc7522a7481b5cc9676c1a22d63f74c7fc45f46721e6c86e	unchanged
+docs/learnings/2026-08-18-ancestor-of-the-base-is-not-shipped.md	learning	2859	8672143cd4992c34fb0e1ea327ffff8101872f5bed37e735a70b74e55db4518b	unchanged
+docs/learnings/2026-08-18-harmless-is-not-free-in-a-bounded-queue.md	learning	3262	3219519ba9ab6ed8493e1bff2b82d07917dc2b5b17a6b58ac4acd4a83befbdaa	unchanged
+docs/learnings/2026-08-19-a-test-that-pins-the-harness-not-the-contract.md	learning	5581	e4d1e5c85813cc881fa74ba6ab7f5d996167abd2b9f992101bbbc8bb09ea9b19	unchanged
+docs/learnings/2026-08-21-a-refusal-for-the-wrong-reason-is-a-green-test.md	learning	4159	98b90595322206ea234fab31bebef19bc1c167052e492c17a3859f20bf072be9	unchanged
+docs/learnings/2026-08-23-a-test-that-asserts-the-effect-not-the-layer.md	learning	3911	144928ce274abfcc42e0b1fb578f45e9a10db3de924a7b3a1744bd3026c98b71	unchanged
+docs/learnings/2026-08-23-the-guard-recreated-the-bug-it-prevented.md	learning	3914	5382ee406aa8f5b948b30a28937defbc843a85cf2693a55bdadf381ecb1d3022	unchanged
+docs/learnings/2026-08-23-the-mechanism-was-inert-not-the-test.md	learning	4789	f94af10a988ba1c9d4b35b7b368e917d11d61b681bacb942c32d3342fe98bb73	unchanged
+docs/learnings/2026-08-30-inert-for-two-different-reasons.md	learning	6328	236e588a82a51932a2f4ad3b164700df3c28fe5b53e1ee7259856e75ffa93e49	unchanged
+docs/learnings/2026-08-31-a-design-space-has-no-compiler.md	learning	5000	12537eed3c2de4c3fc6e385ba8168a043075c966eb432c2901b76686fd0ea1fc	unchanged
+docs/learnings/2026-08-31-a-mutation-your-generator-cannot-reach.md	learning	5806	e44dd6ebff3eb0a8e710161a2dd8840c2c6ffd03a77bd33dd9fddb5f05967369	unchanged
+docs/learnings/2026-08-31-a-structural-match-claims-errors-you-never-enumerated.md	learning	5794	c860a3c9531f87a38c98f913a2a50d0d9c2771271e22189367ed4775f230ee83	unchanged
+docs/learnings/2026-08-31-deterministic-or-discriminating-but-not-both.md	learning	5501	e2ea6535b23d504e5d78e4a19b8c738fce66ddd41c89fa6ef34a09bea58ef377	unchanged
+docs/learnings/2026-09-25-a-sqlstate-does-not-name-the-constraint.md	learning	2322	426d83ceba486a02b4a858fbbec9967bfd187e0994938a58a619e0e786de6536	unchanged
+docs/learnings/2026-09-25-a-stub-that-ignores-its-arguments.md	learning	1960	d563fb872728e3ff927a4e6392fa8ab6b3a7971ac81194cd494bd4cb65972ba5	unchanged
+docs/learnings/2026-09-26-a-rising-finding-count-indicts-the-mechanism.md	learning	2717	e04b31cd383542c6633ca6f0ccbda5660a57c8f76490ba2c90be1fff8c9872a7	unchanged
+docs/learnings/2026-09-26-pgx-does-not-wrap-deadline-exceeded.md	learning	2007	c325d4137c486c6e83ce32732c8fc2a88b9a8e99d769d871b03c1e69a2b0de10	unchanged
+docs/learnings/2026-10-13-a-go-patch-release-can-break-the-linter.md	learning	1275	dd93377ec8737490a07a8e748f6d40907312a3993488cb7b36bb000ba052094a	unchanged
+docs/learnings/2026-10-13-a-version-outside-the-advisory-range-is-not-a-fix.md	learning	1705	4567d0d035989b524037b0521eafd827086084ff1fb5c1254758f76f76051a92	unchanged
+docs/learnings/2026-10-18-classify-by-state-you-own-not-by-error-spelling.md	learning	1940	1719e2bb38952bcf7cfd39bf7d853c6eba3ea5dff9d2d8e216f7dc28693dc1ea	unchanged
+docs/learnings/2026-10-18-probe-the-production-connection-string.md	learning	2016	8671b31385545b9b09b621a298ad018c6b2f9e96b3ad6596e0d181350b02e055	unchanged
+docs/learnings/2026-10-18-seven-review-passes-mean-the-plan-has-no-model.md	learning	1445	ad30154c42b41c55d50736cd619810daba9d3857446e07ffa24994095e5ecc79	unchanged
+docs/learnings/TKT-84-lifecycle-migration-measurement.md	learning	1774	abedfd5072a83a332eed46ed8c91fffa673fb7fa7c7d85d8ffc8d058a7884b1b	unchanged
+docs/learnings/TKT-85-quarantine-migration-measurement.md	learning	2240	084b608617b0060668565d82c51b4643b3025f6431b96ff3df300bb96727e73f	unchanged
+docs/learnings/TKT-87-policy-migration-measurement.md	learning	1384	4f1d98a1077f09a643db634af8c487a82c5812c079580d7ff5fb99096c9636e4	unchanged
+docs/product/backlog-decisions-2026-10-10.md	requirement	31404	e310bd441f990ae470ef631c2f710a1755e5babd9dedd79353d396b1bf5d32da	unchanged
+docs/product/brief.md	requirement	5209	f2bfdd97d53fc918b1e5bda4614afa4345c85179193177294c0b650d504f9928	revised; see git diff
+docs/product/prd-v1.md	requirement	36450	d083feda03169f05ad60cb363c99e1c543062d9a0aea7a8856eb7aa99fa26027	unchanged
+docs/sdlc-vault-migration-plan.md	current-guidance	30812	3b2eea3cea7084d98068d871d400d04a14a350e6216900cc80937ace738d8ff0	unchanged
+docs/solution-design.md	current-guidance	3187	b70b7c94d640431a0ebd21658d079f03553accdd5aadebb73d7c26528012f7e9	revised; see git diff
+docs/spikes/TKT-374-fr-cash-scope.md	historical-evidence	52315	5c4188f4648b98cf11d5dedf03581a3f219a9f6fa0cf4d563e6704003217c84c	unchanged
+docs/spikes/TKT-39-astro7-storefront-shell.md	historical-evidence	8466	b7a5f4e15cc53f79bc24d0ea334b6050e19578904f7f514fb4cacacfcf6f9be8	unchanged
+docs/spikes/TKT-50-dated-slot-pressure-test.md	historical-evidence	17061	936817c23f353d27f9333aa334cdfb601c7d343943e52a241ad5197e271b3da2	unchanged
+docs/sprints/S-2/evidence/TKT-399/dns-fixture/verification.md	historical-evidence	9032	4efd9f9be5c70d24a5e44af6673b54b1eb1931b066e0f839d1fd138e5a72db80	unchanged
+docs/sprints/S-2/evidence/TKT-399/verification.md	historical-evidence	11156	2900706c2bca53f34c0e5be0fe87bed6036391a08e3dccf1ad68763cba9faf48	unchanged
+docs/sprints/S-2/evidence/TKT-551/README.md	historical-evidence	2280	07d180f80c5265da4d1f01bcf54fcc12fa60576e7328aa75f646580451ea76d4	unchanged
+docs/sprints/S-2/evidence/TKT-551/review-fixes/README.md	historical-evidence	2168	dd9e714169f15a924011841715f2e1e07d8bd061549609ec288540576c755937	unchanged
+docs/sprints/S-2/evidence/TKT-552/README.md	historical-evidence	2040	fa90f9f2548a4b92c483ef5fa6e223097da85386b9f92a35542ca7c61d004814	unchanged
+docs/sprints/S-2/evidence/TKT-552/implementation/INDEX.txt	historical-evidence	4480	3490281490d4bacc6bf66fbff1d22bf8c64ad389023e6da3c6480030d30f0552	unchanged
+docs/sprints/S-2/evidence/TKT-552/implementation/baseline/focused-file-list.txt	historical-evidence	300	aae7c398160e372afb25513410a8149358da387ffbf686498a761e47295369a8	unchanged
+docs/sprints/S-2/evidence/TKT-552/implementation/green-v2/scan-result-sha256-after-production-reapplied.txt	historical-evidence	97	25ef322d0d5dd32d4a494ce72d5b1784a31ea4b72ab2b4d6e44b967fd8eda95e	unchanged
+docs/sprints/S-2/evidence/TKT-552/implementation/red-v2/scan-result-sha256-original-before-red-v2.txt	historical-evidence	97	3d766cb70b5ab61cbe391a7eedf72ccb5f706c665d6248c1917a5cbd0e8fb262	unchanged
+docs/sprints/S-2/evidence/TKT-563/README.md	historical-evidence	12940	4d6375cc8072cca206b2d244f2dbcfe411ed34db9f981e36a7ecc2bc3fda71ef	unchanged
+docs/sprints/S-2/evidence/TKT-563/publication/README.md	historical-evidence	1667	9689352e6753b6981912c319c6049b813da43ee99c44678b62f6b313e6753238	unchanged
+docs/sprints/S-2/evidence/TKT-563/publication/TKT-563-full-browser-r2/timing-result.txt	historical-evidence	292	336c5c178f72f6010d0019a8b1f47d2818eaeed37e547f625ef6ea361ca35d31	unchanged
+docs/sprints/S-2/preparation.md	historical-evidence	10763	ac48fe538669aa84149fa9514d00d81a37385fe890c46a138804a6a21ed158c1	revised; see git diff
+docs/sprints/S-2/start-prompt.md	historical-evidence	4374	e05da61e20a8f408b0791a8f57eeea58acabf032e8e8456abd323c7fb9396f55	unchanged
+docs/technical-delivery-standards.md	current-guidance	4069	5838d4e8016f1a33ac0ee74acf1e2a0f5355bc227d64c22acab43c107541b4e0	revised; see git diff
+docs/testing.md	current-guidance	8994	e594536d68dd23c35c5237fc885f306aee21f79eff9ab7d03a4492bc433247c5	revised; see git diff
+docs/verification/checkout-dashboard/README.md	historical-evidence	30427	cb89c20103d248f6dec45ebf77540941bbd157e6e69ca57a11fee3409472a6d7	unchanged
+docs/verification/on-sale-load/README.md	historical-evidence	3561	f7180d181a34a143218a1470e18857ada6e98c66eaeddcd399c641df4ef62b93	revised; see git diff
+web/scanner/README.md	current-guidance	2831	e58bc2e4a950001695df77f1a60e20f70286d581b1ec7c824d1ef4cadca3f9b0	revised; see git diff
