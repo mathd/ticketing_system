@@ -1,6 +1,6 @@
 ---
 name: sdlc-sprint-review
-description: Validate a complete sprint outcome, with or without a Git tag with four independent area reviews, real integration and LLM evidence, a cross-story retrospective, and a French or English HTML report that is committed to the repository. Use when you prepare a sprint closure or review a release candidate. Requires the sdlc-ticket and sdlc-sprint skills.
+description: Validate a complete sprint outcome, with or without a Git tag, with a simplification phase, four independent area reviews, real integration and LLM evidence, a cross-story retrospective, and a French or English HTML report that is committed to the repository. Use when you prepare a sprint closure or review a release candidate. Requires the sdlc-ticket and sdlc-sprint skills.
 ---
 
 # Sprint release review and report
@@ -26,6 +26,13 @@ You, the primary agent, gather the evidence, run the tests and measurements that
 render and commit the report, and talk to the human. Reviewers have read-only access and return
 findings. The actual model of a reviewer must differ from every author of the work it reviews. The
 report author is one of them, and it is you. Do not let the writer of the report approve it.
+
+## Simplify before you freeze
+
+Every full-review sprint has a simplification task that cleans, refactors and simplifies the sprint's
+code. Follow the [simplification mission](references/simplification.md). Do not freeze the review
+packet until that task is Done, or until the human removes it from the release with a recorded
+reason. The area reviews check its result. They do not replace it.
 
 ## Freeze the review packet
 

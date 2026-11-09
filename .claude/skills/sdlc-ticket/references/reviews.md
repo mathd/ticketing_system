@@ -9,7 +9,9 @@ vocabulary and the review-guide are in `quality-practices.md` §2–3.
 Adopted from the upstream sdlc-ticket review procedure (2026-10-16). It replaces the former
 "second pass iff the fixes were non-trivial" rule, the churn cap, the convergence exception and the
 docs-only merge-at-cap carve-out. The `sprint-review` stage was added on 2026-10-17 (§ Sprint
-review).
+review). On 2026-11-09 the upstream scope rule, the bounded-review rules and the convergence rules
+were adopted: finding origin, `priorFinding`, delta inspection, the approach check before round 3,
+optional review guidance and the optional security pass.
 
 ## Inputs and identity
 
@@ -26,7 +28,8 @@ For a restarted implementation, retain all earlier rounds and their findings. De
 The **initial** lens never sees author rationale:
 
 - `ai-review`: the complete branch diff against the current default branch, the relevant code, the
-  COS and the verification facts. No plan, no decision log.
+  COS and the verification facts. No plan, no decision log. From round 2, the initial inspection
+  can cover only the changes since the last reviewed revision (§ Delta inspection).
 - `plan-review`: the proposed steps, scope, test strategy and COS. Withhold the rationale and the
   decision-log sections.
 - `sprint-review`: the frozen release packet: the release criteria, the scope, the complete diff from
@@ -34,6 +37,22 @@ The **initial** lens never sees author rationale:
   no decision logs.
 
 Prime it for guilt: "assume the artifact is wrong and find where", not "check whether it is ok".
+
+Also tell every lens to hold the artifact to the **smallest change that meets the COS**: report
+code, tests, guards, options or abstractions that the COS do not need, with evidence of their cost
+or of a requirement they break; report tests that repeat another test's assertion or test behaviour
+the change does not touch; compare the diff with the plan's size estimate. "Fewer tests" never
+covers the tests that this repository's rules require: one test per guard predicate, a mutation per
+fixture, both readings of a green mutation (`AGENTS.md`). Do not report style preferences or
+cleanup that has no concrete consequence; lint and the review guidance cover those.
+
+**Review guidance (`config.review.guidance`, optional).** When it names a repository file, give it
+to both lenses with its revision and digest. Use the version on the default branch. If the change
+under review edits that file, give the default-branch version and say that the PR changes it.
+Guidance can say what a failure looks like in this repository, which paths need less attention and
+which conventions apply. It cannot waive a required check, remove a security path from review or
+change this procedure. A configured file that cannot be read blocks review. Author rationale stays
+audit-only.
 
 ## One round
 
@@ -57,10 +76,17 @@ Prime it for guilt: "assume the artifact is wrong and find where", not "check wh
    lenses**; if the artifact changes, discard the incomplete round and review the new artifact.
 4. **Validate both results, merge duplicate defects, triage every finding** against the reviewed
    revision (SKILL.md § Hard rules — verify against the revision under review). Keep the original
-   severity and the evidence for each disposition.
-5. **Fix** accepted findings. A correctness, security or COS defect in the current deliverable
-   must be fixed — never deferred, whatever its severity. Incidental issues become linked Backlog
-   tickets; refuted claims get evidence. Log a `kind=decision` when a fix makes a material choice.
+   severity and the evidence for each disposition. Check every `pre-existing` origin claim against
+   the base revision before you defer on it (§ Pre-existing findings).
+   Then compare the findings with this stage's earlier rounds. When a finding is the same defect as
+   an earlier one, set `priorFinding` to `R<round>:<id>` and keep its history in one place rather
+   than posting it again. When code changes or new evidence make an earlier resolution wrong, reopen
+   the finding with `priorFinding` and the new evidence. Never give the initial lens the earlier
+   dispositions as a suppression list; they go to the audit.
+5. **Fix** accepted findings. § Stage policy decides what must be fixed, what can be deferred and
+   what needs a refutation check. Refuted claims get evidence. Log a `kind=decision` when a fix
+   makes a material choice. Fix with the smallest change, and fix every in-scope occurrence of the
+   finding's `bugClass` (§ Keep review bounded).
    **Who fixes matters if another round follows:** the fixer becomes an author, and the next
    round's reviewer must differ from it. When the session model is the reviewer's model (for
    example `planReview: opus-5.5` in an Opus session), send the accepted findings back to the
@@ -72,6 +98,11 @@ Prime it for guilt: "assume the artifact is wrong and find where", not "check wh
    requires another round regardless of severity.
 7. **Record** the round (§ Round record) as a `kind=review` comment and run the contract script.
    Act on its output.
+8. **Before you start round 3, stop and diagnose why findings continue.** Record in a
+   `kind=decision` comment whether the remaining failures come from intent, plan or implementation,
+   and whether to continue, reshape or stop (`quality-practices.md` §4). A material plan change
+   returns to Planning and the plan gate. This check does not reset the round count, and its
+   rationale stays out of the next initial lens.
 
 Initial inspection plus audit is **one round**. A failed invocation gets the runner doc's
 escalation ladder; invocation retries do not consume a round and never authorize a model
@@ -89,6 +120,27 @@ Use the original normalized severity, never an author's reclassification. Findin
 threshold still need a disposition and verification; their fixes are handed off **not re-reviewed**,
 and the review-guide says so. A material change repeats the round at any severity.
 
+**Severity says how bad a defect is; scope says whether this deliverable must fix it.** The
+reviewer gives both: the severity, and whether the defect is in the behaviour the COS cover or
+outside it.
+
+- **Must fix, at any severity:** a security defect wherever it is, and a correctness defect in the
+  behaviour the COS cover.
+- **Incidental, at any severity:** a defect outside that behaviour — another code path, a rare case
+  the COS do not name, a small performance cost, extra compatibility. Defer it to a linked Backlog
+  ticket with a written scope reason. Keep its original severity. Never defer it "to final review":
+  a deferral always names a ticket.
+- A deferred finding at the repeat threshold still requires the next round, unless § Pre-existing
+  findings exempts it.
+- **Disagreeing with the reviewer's scope call on a Critical or High finding is an override.** In
+  `gates: "autonomous"` it is a STOP (SKILL.md § Autonomous mode (d), `AGENTS.md`): escalate, never
+  reclassify a reviewer's in-scope High as incidental yourself. Deferring a High the reviewer itself
+  placed outside the COS is not an override.
+- At `sprint-review`, a deferred Critical or High finding still blocks release readiness: the report
+  contract treats every unresolved Critical or High risk as a blocker. Fix it, or remove its work
+  from the release through the sprint scope-change process. A sprint never defers a story's required
+  verification until closure.
+
 Ticket reviews use this threshold to reduce repeat rounds for smaller corrections. It applies to
 all tickets. In sprint mode, sprint review checks documentation, test quality and other issues
 across the completed tickets through its four review areas (`sdlc-sprint-review`).
@@ -96,6 +148,48 @@ across the completed tickets through its four review areas (`sdlc-sprint-review`
 Why a fix diff deserves care even below the threshold: in TKT-22, 30 of 42 findings were defects in
 code written to fix an earlier finding (`quality-practices.md` §2). Judge `materialChange` on the
 **fix diff**, honestly — it is the only route to a re-review for a Medium fix.
+
+### Pre-existing findings
+
+A finding is `pre-existing` only when the defect is present at the **base revision** of the change:
+the default-branch commit the branch starts from. A defect that the first reviewed revision
+introduced is `introduced`, even if an earlier round missed it. The reviewer sets `origin` to
+`introduced`, `pre-existing` or `unknown`. A `pre-existing` finding needs `originEvidence` that cites
+the base revision with file and line, and `affectedByChange`: `true` when this change reaches,
+exposes or worsens the defect.
+
+A pre-existing finding that this change does not affect, that is marked `security: false`, and that
+is deferred to a linked Backlog ticket does not start another `ai-review` round, whatever its
+severity. Every other finding follows the table above. `unknown` origin or a missing `security` field
+gets no exemption. A pre-existing security defect, or one in the behaviour the COS cover, is still a
+required fix. At `sprint-review`, an unresolved Critical or High finding blocks release readiness
+whatever its origin. You check the origin claim against the base revision (`git show
+<base>:<path>`) before you defer the finding; an origin you did not check is `unknown`.
+
+## Delta inspection
+
+After a complete first `ai-review` round, the next initial inspection can cover only the changes
+since the last reviewed revision, plus the callers, contracts and integrations those changes reach.
+Set `inspection: "delta"` and `previousArtifact` to the artifact of the round before. The decision
+audit stays complete: it sees the full effective diff, the plan and every decision.
+
+A delta inspection needs `base:<sha>/head:<sha>` artifacts with the same base on both sides. Use a
+full inspection when round 1 has not completed, when the previous round recorded
+`materialChange: true`, when the base changed (a rebase onto a newer `origin/main`), or when earlier
+round records are missing. `plan-review` and `sprint-review` always use full inspections. Pass the
+earlier records with `--history` (§ Round record): the contract checks each one as a complete round
+and checks the chain back to a full round 1.
+
+## Security pass (`config.review.securityPass`, optional)
+
+When `review.securityPass.enabled` is true, compare the changed paths with
+`review.securityPass.paths` in each `ai-review` round. On a match, run a separate read-only security
+inspection of the same frozen artifact before the audit, with a model independent of all authors.
+Merge its findings into the initial result with their origin and `security: true`, and list their IDs
+under `securityPass.findingIds`. The audit then sees all findings. Record `securityPass` on the
+round: `required`, and when required, `complete`, `artifact`, `reviewer`, `summary` and `findingIds`;
+when not required, a `reason`. The pass is not a third lens and has no round budget of its own.
+Ticket review covers security in every round either way.
 
 ## Cap — four rounds per stage
 
@@ -181,6 +275,20 @@ severities are `Critical`, `High`, `Medium`, `Low`, `Nit`; other labels map thro
 assumption. Finding IDs are unique across both lenses; the audit references a duplicate rather than
 repeating its ID.
 
+Tell the reviewer to give, for each finding:
+
+- `evidence` with file and line at the reviewed revision, or the exact plan or document section —
+  never a guess from a name;
+- `origin` (`introduced`, `pre-existing` or `unknown`), and for `pre-existing` also
+  `originEvidence` at the base revision and `affectedByChange` (§ Pre-existing findings);
+- `bugClass`: the defect class in one line, with the other occurrences it found in the change;
+- `security`: `true` for a security defect, `false` otherwise;
+- for a defect fix under review: whether the correction removes the cause of the failing mechanism,
+  not only the symptom.
+
+You add `priorFinding` during triage (§ One round step 4). Start `summary` with the number of
+findings; with none, write `0 findings. Nothing to fix.`
+
 A `sprint-review` result also carries `area` (`implementation`, `verification`, `documentation` or
 `retrospective`), and so does its record. Prefix finding IDs with the area (`IMPL-1`, `VER-1`,
 `DOC-1`, `RETRO-1`).
@@ -192,11 +300,14 @@ status (the runner docs' "completed ≠ ran").
 ## Round record
 
 Assemble it after both lenses, shaped like `assets/review-round.example.json`: `stage`, `round`,
-`area` (`sprint-review` only), `artifact`, `reviewer`, optional `researcher`, optional `arm` (A/B only), `results` (the two lens objects, in order),
+`area` (`sprint-review` only), `artifact`, `inspection` (`full` | `delta`) and, for a delta,
+`previousArtifact`, `reviewer`, optional `researcher`, optional `arm` (A/B only), `results` (the two lens objects, in order),
 `dispositions` (`fixed` | `rejected` | `deferred` per finding ID), `dispositionEvidence` (fix SHA and
 verification, refutation evidence, or follow-up ticket and scope reason), `verificationPassed`,
-`materialChange`, `refutationChecks`. Carry still-unresolved findings from earlier rounds into the
-new results; a new round cannot hide them by omission.
+`materialChange`, `refutationChecks`, and `securityPass` when `config.review.securityPass` is
+enabled. Carry still-unresolved findings from earlier rounds into the new results; a new round
+cannot hide them by omission. Keep each round's complete record in its comment: a later delta round
+validates against it.
 
 Post it as `<!-- sdlc:stage=<plan-review|ai-review|sprint-review> kind=review -->` with the record
 in a JSON code block (a `sprint-review` record goes on the sprint note, the others on the ticket),
@@ -208,8 +319,16 @@ the one that counts):
 python3 .claude/skills/sdlc-ticket/scripts/review_round.py review .review-<ticket>-<stage>-r<n>.json \
   --config .claude/sdlc.config.json --artifact <expected artifact> \
   --reviewer <actual reviewer model> --author <actual author> [--author <another author>] \
-  [--area <implementation|verification|documentation|retrospective>]
+  [--area <implementation|verification|documentation|retrospective>] \
+  [--history .review-<ticket>-<stage>-history.json]
 ```
+
+`--history` takes a JSON array of this stage's earlier round records, rounds 1 to N-1, copied from
+the `kind=review` comments (the latest record of each round). It is required for a delta inspection
+and checks every `priorFinding` reference when given. A record cannot prove its own history. The
+script normalizes the known Claude aliases (`opus-5.5` = `claude-opus-5-5`), a provider prefix and
+an `:effort` suffix before it compares the reviewer with the authors; it cannot prove which model
+actually ran.
 
 `--area` is required for a `sprint-review` record. It must equal the `area` on the record and on both
 lens results.
@@ -228,6 +347,21 @@ T3 result), never from the returned result. Read the output, not just the exit c
 | `FAIL: <reason>` | 1 | The record or its inputs are invalid. Correct them; it is not a verdict |
 
 Never retry a valid `FIX`, `REVIEW_AGAIN` or `STOP` as if the script had crashed.
+
+## Keep review bounded
+
+Review loops grow a deliverable one cheap-looking fix at a time. Keep it at the size the COS need:
+
+- Fix an accepted finding with the smallest change. Prefer a fix that deletes or narrows code to a
+  new lock, cache, helper, option or abstraction.
+- Fix every occurrence of the finding's `bugClass` in the reviewed change that has evidence and is
+  in scope, so the next round does not find the next one. Record occurrences outside the change as
+  follow-up tickets. Do not add guards for hypothetical cases.
+- Do not accept a finding only to end the loop. Reject it with evidence or defer it with a scope
+  reason.
+- Record `git diff --shortstat <base>` at the first reviewed revision and at the final revision, code
+  and test lines apart, beside the plan's estimate. If review grew the diff, look for what to cut
+  before the hand-off.
 
 ## Sprint review — four areas, one round
 
@@ -286,3 +420,9 @@ python3 -B -m unittest discover -s .claude/skills/sdlc-ticket/tests -v
 
 They are not part of `make check`. Run them after any edit to `scripts/review_round.py`, and run a
 mutation of the edited rule to confirm a test goes red.
+
+These tests check record shape and the decision rule, not review quality. Fewer review rounds alone
+is not evidence of a better review. Judge a change to this procedure, a reviewer prompt or a reviewer
+model by the defects it caught or missed: a reverted merge, an incident, or a later finding that an
+earlier round should have raised. Record such a miss in the ticket's closeout as a defect class with
+a proposed control (SKILL.md § Memory & metrics).

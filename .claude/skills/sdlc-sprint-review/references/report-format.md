@@ -202,6 +202,10 @@ Rules:
 
 ### `checks`
 
+Each check is the proof for one or more release criteria, as `sdlc-ticket`
+`references/quality-practices.md` §3 Proof defines it. A `passed` check names what it proves and
+links what was observed.
+
 | Field | Meaning |
 |---|---|
 | `id` | A short unique ID, for example `C4` |
@@ -239,6 +243,10 @@ Rules:
 | `observation` | What the value means here. When a value is `null`, the reason |
 
 Values are evidence to investigate. The report sets no target, coverage included.
+
+Required entries for a full-review sprint: `Sprint diff size` from the simplification phase
+([simplification](simplification.md) § Record), and the review-convergence counts from the
+retrospective area ([retrospective](retrospective.md)).
 
 ### `risks`
 

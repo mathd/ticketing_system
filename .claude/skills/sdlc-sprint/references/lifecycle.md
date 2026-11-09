@@ -27,7 +27,9 @@ Start from the human's theme and from the outcome that people can observe.
    human agreed, each with an offset.
 3. Select vertical stories in dependency order. Do not take a whole epic with no bound. An epic can
    span several sprints. Record the exclusions, the acceptance criteria, the useful subsets and the
-   shared architecture choices. For full review, record the base SHA, named approver and verification budget. Record a proposed tag only when `release: true`.
+   shared architecture choices. For each release criterion, name the proof you expect, as
+   `sdlc-ticket` `references/quality-practices.md` §3 Proof defines it: the check, journey or real
+   output that will show it works. For full review, record the base SHA, named approver and verification budget. Record a proposed tag only when `release: true`.
 4. Assign each ticket with `POST /ticket/sprint` (`board.md`). A reason is optional while the sprint
    is planned. A member is a Story, a Task, a Bug or a Spike. Assign the children of an epic, never
    the epic. A Backlog ticket can be a member. Gate 1 and the blocker check still decide when a
@@ -42,6 +44,13 @@ Start from the human's theme and from the outcome that people can observe.
      committed, the release evidence is complete, the exact close approval is recorded, and any planned tag is verified.
    - Shape it like any ticket (`sdlc-ticket` `references/shaping.md`).
    - Assign it to the sprint.
+
+   Also create the simplification task (`sdlc-sprint-review` `references/simplification.md`):
+   - `POST /ticket/new` with `type: "Task"`. Its description holds the criteria: the sprint diff is
+     measured before and after, the approved cuts are applied, and behavior is unchanged.
+   - Add a `blocked-by` link to every other functional member (authored in the note, `sdlc-ticket`
+     `references/local-tracker.md`), so it is claimed only after all of them are Done. Add the link again when a functional member joins later.
+   - Shape it and assign it to the sprint. It is a functional member, not the closure task.
 8. Read `GET /sprint` again. Check the members against the plan. Build a snapshot and run
    `sprint_state.py progress`. Take `scopeDigest` from its output.
 9. Write the brief from [the template](../assets/brief.md). Show it to the human with the digest.

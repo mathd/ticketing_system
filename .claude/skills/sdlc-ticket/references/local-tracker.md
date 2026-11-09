@@ -133,7 +133,9 @@ comment on the way to Done (spikes excepted). A refused move answers with the br
 POST may carry `override: "<reason>"`; the move then goes through and the server records the
 bypass as a `kind=override` comment and on the transition log line.
 
-**An agent sends `override` only for the epic roll-up below.** Any other refusal means a pipeline
+**An agent sends `override` only for the epic roll-up below, and for a sprint simplification task
+whose approved plan has no cuts** (`sdlc-sprint-review` `references/simplification.md`): that task has
+no PR, so its move to `PO Review` sends `override:"simplification: no cuts; plan approved at <sha>"`. Any other refusal means a pipeline
 step is missing — do the step. An override you sent for another reason goes in the closeout's
 `overrides:` list.
 

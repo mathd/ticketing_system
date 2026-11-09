@@ -2,11 +2,21 @@
   "stage": "ai-review",
   "round": 1,
   "artifact": "base:BASE_SHA/head:HEAD_SHA",
+  "inspection": "full",
   "reviewer": "gpt-6.1-sol",
   "researcher": "gpt-6-luna",
-  "results": ["REPLACE_WITH_INITIAL_RESULT_OBJECT", "REPLACE_WITH_AUDIT_RESULT_OBJECT"],
-  "dispositions": {"R1": "fixed"},
-  "dispositionEvidence": {"R1": "Fixed at FIX_SHA; regression test observed red before the fix, green after."},
+  "results": [
+    "REPLACE_WITH_INITIAL_RESULT_OBJECT",
+    "REPLACE_WITH_AUDIT_RESULT_OBJECT"
+  ],
+  "dispositions": {
+    "R1": "fixed",
+    "R2": "deferred"
+  },
+  "dispositionEvidence": {
+    "R1": "Fixed at FIX_SHA in store.go:42 and store.go:88; regression test observed red before the fix, green after.",
+    "R2": "Deferred to TKT-NNN; pre-existing at BASE_SHA, outside the COS and not reached by this change."
+  },
   "verificationPassed": true,
   "materialChange": false,
   "refutationChecks": {}

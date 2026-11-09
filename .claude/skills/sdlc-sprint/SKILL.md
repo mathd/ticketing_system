@@ -30,6 +30,7 @@ start and the close. A finished ticket or an end date never triggers one of them
 - The board keeps the members. The sprint note's comments keep the approved brief, the human
   decisions, the review records and the report pointer ([records](references/records.md)).
 - With `review: "full"`, the closure task holds final validation and report work. It goes through the ticket pipeline.
+- With `review: "full"`, a simplification task runs after every other functional member is Done and before final validation (`sdlc-sprint-review` `references/simplification.md`). It is a functional member with the normal gates.
   Its deliverable is the release evidence and the committed report
   (`sdlc-ticket/references/sprints.md`). The four review pairs of `sdlc-sprint-review` are its
   independent review. Do not add a second generic review.

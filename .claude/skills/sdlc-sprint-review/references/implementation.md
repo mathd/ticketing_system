@@ -45,3 +45,7 @@ and on both lens results. State the files and interfaces you inspected, and your
 A correctness, security or acceptance failure in the current release blocks readiness. It blocks even
 when it is below the severity that repeats a round. Do not turn an incidental refactor into
 required release work without evidence that a release criterion fails.
+
+Check the result of the [simplification phase](simplification.md) against the candidate. Report each
+cut it missed, with the estimated lines removed, as a follow-up. A missed cut blocks readiness only
+when a release criterion fails.

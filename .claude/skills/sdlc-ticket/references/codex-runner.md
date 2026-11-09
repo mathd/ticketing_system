@@ -47,9 +47,12 @@ frozen artifact:
 2. **Decision audit** — the approved plan, every `kind=decision` comment, the diff, the initial
    findings and the verification evidence, with the questions in `quality-practices.md` §2.
 
-Every brief names the stage, round, lens, artifact ID and the actual author models, and asks for
+Every brief names the stage, round, lens, artifact ID, the inspection mode (`full`, or `delta` from
+the previous artifact), the base revision for origin checks and the actual author models, and asks for
 one JSON object shaped like `assets/review-result.example.json` (inline the shape: the worker
-cannot open skill files). If `config.models.research` is set, the brief also says the reviewer may
+cannot open skill files). Inline the per-finding requirements and the scope instruction from
+`reviews.md` § Results and § Inputs and identity too: file and line, `origin`, `bugClass`,
+`security`, smallest change, no style findings, count-first summary. If `config.models.research` is set, the brief also says the reviewer may
 return `researchRequests` with `complete: false` (`reviews.md` § Researcher). Name the brief
 `.brief.<ticket>-<stage>-r<round>-<lens>.md`.
 

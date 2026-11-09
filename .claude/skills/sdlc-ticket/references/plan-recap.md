@@ -23,8 +23,8 @@ of its authors (`reviews.md` § Inputs and identity). **The plan's drafter write
 it** (`config.models.planReview`). The skill already refuses a config where those two are the same
 model, so the recap inherits the plan's cross-model guarantee in every configuration. You, the
 orchestrator, brief the drafter and post the result; you do not write or edit the recap yourself,
-or you become its author. When `plan` is `main-agent`, you are the drafter, and `planReview` is
-still another model. Record the recap's author and checker in `plan-final`.
+or you become its author. When `plan` is `main-agent`, the drafter is a subagent on this session's model
+(SKILL.md § config.models), and `planReview` is still another model. Record the recap's author and checker in `plan-final`.
 
 ## When
 
@@ -43,8 +43,13 @@ still another model. Record the recap's author and checker in `plan-final`.
 3. **Post it** as `<!-- sdlc:stage=planning kind=plan-recap -->` together with `kind=plan-final`,
    before Gate 2 (or before the autonomous `Planning → Building` move). `risk:low` tickets skip the
    plan gate, not the recap.
-4. **Building — refresh only when the plan's meaning changed.** A material change returns to
-   Planning anyway (`quality-practices.md` §4). A non-material clarification that changes what the
+4. **Building — refresh only when the plan's meaning changed.** Sort each decision accepted in
+   Building before the next hand-off. It is a **material change** when it changes at least one of
+   the COS, the scope, observable behaviour, a public interface, data handling, permissions or an
+   architecture choice; it returns to Planning, plan review and the plan gate (`quality-practices.md`
+   §4). It is a **clarification** when it adds detail inside the approved plan and changes none of
+   those: a file location, an internal helper, a test fixture. When you cannot tell, treat it as
+   material or ask the human. A clarification that changes what the
    recap says (a decision logged in Building) gets a new recap with
    `<!-- sdlc:stage=coding kind=plan-recap -->`, status `revised in Building`, naming the decision.
    Do not post a recap for implementation detail the recap never mentioned.

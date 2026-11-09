@@ -10,6 +10,18 @@ Read the board's data too: `GET /metrics?sprint=` for the counts and for the tim
 with `attributed: null` has unknown time. Do not read it as zero. A sprint with `historyGaps` has
 unreliable history and metrics. Say so in the retrospective.
 
+For a defect class that review found in more than one story (the `defect-classes:` sections of the
+closeouts, the `bugClass` and `priorFinding` fields of the review records), propose a control at the
+source: a regression test, a lint rule, a review-guidance entry or a skill change. Cite the
+occurrences and say which control would prevent the next one. Repetition alone does not prove that a
+lint rule fits.
+
+Report review convergence in `measurements`, per stage (`plan-review`, `ai-review`): rounds to pass,
+and finding dispositions (fixed, rejected, deferred), counted once per finding across lenses and
+rounds through `priorFinding`. Say what the counts cannot show: `rejected` does not separate a wrong
+finding from an intentional choice, and `deferred` does not mean the finding did not matter. Missing
+history is unknown, not zero.
+
 For each useful candidate, state:
 
 - the evidence,

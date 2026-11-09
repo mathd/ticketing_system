@@ -1,7 +1,8 @@
 # Sprint brief
 
 Fill every line. Keep the original scope. Append each approved change with its reason and time. The
-board's member list stays the authority. Show the stories and the closure task apart.
+board's member list stays the authority. Show the stories, the simplification task and the closure
+task apart.
 
 - Vault and sprint key:
 - Name and goal:
@@ -9,8 +10,9 @@ board's member list stays the authority. Show the stories and the closure task a
 - Review: `review: "full"` by default; `review: "none"` only with an owner-approved `reviewReason`:
 - Tag publication: `release: true` or `release: false`:
 - Owner priority approval for the exact member scope, or manual Ready transitions:
-- Members in dependency order, and the closure task (full review):
+- Members in dependency order, and the simplification and closure tasks (full review):
 - Outcome that people can observe, acceptance criteria, exclusions and useful subsets:
+- Expected proof for each release criterion (the check, journey or real output that will show it):
 - Baseline SHA for full review, and proposed tag only for `release: true`:
 - Shared architecture choices and the governing ADRs:
 - Dependency inspection: the selected maintenance work, or `no justified update`:

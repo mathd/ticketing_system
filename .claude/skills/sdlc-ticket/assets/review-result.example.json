@@ -6,12 +6,26 @@
   "reviewer": "gpt-6.1-sol",
   "complete": true,
   "verdict": "REVISE",
-  "summary": "A stale update can overwrite newer data.",
+  "summary": "2 findings. A stale update can overwrite newer data; the same comparison already exists in the export path.",
   "findings": [{
     "id": "R1",
     "severity": "High",
-    "evidence": "services/commerce/internal/store/store.go:42 compares the revision read during this request.",
+    "origin": "introduced",
+    "security": false,
+    "bugClass": "Compares the server's read revision instead of the client's submitted revision",
+    "evidence": "services/commerce/internal/store/store.go:42 compares the revision read during this request. store.go:88 repeats it in the batch update added by this change.",
     "impact": "Concurrent edits can overwrite the user's newer value.",
+    "correction": "Compare with the revision submitted by the client at both locations."
+  }, {
+    "id": "R2",
+    "severity": "Medium",
+    "origin": "pre-existing",
+    "originEvidence": "services/commerce/internal/store/export.go:17 at BASE_SHA has the same comparison; this change does not touch or call it.",
+    "affectedByChange": false,
+    "security": false,
+    "bugClass": "Compares the server's read revision instead of the client's submitted revision",
+    "evidence": "services/commerce/internal/store/export.go:17 compares the revision read during the export request.",
+    "impact": "A concurrent edit can be exported with a stale revision number.",
     "correction": "Compare with the revision submitted by the client."
   }],
   "researchRequests": []

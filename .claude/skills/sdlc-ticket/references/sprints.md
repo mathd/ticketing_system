@@ -34,12 +34,23 @@ inside its ticket. Plan and code reviews repeat for Critical and High findings, 
 change. A Medium correction needs a disposition and verification. The broader criteria of the sprint belong to
 `sdlc-sprint-review`. A story's Done does not mean that the release is validated or tagged.
 
-Keep the closeout factual. Its `learnings:` and `retro:` sections feed the sprint retrospective. A
-local choice does not become an ADR by itself. The choice of retrospective items, and the approval of
+Keep the closeout factual. Its `learnings:`, `defect-classes:` and `retro:` sections feed the sprint
+retrospective: write retro items as candidates for it, not as per-story skill patches (SKILL.md §
+Memory & metrics). A local choice does not become an ADR by itself. The choice of retrospective items, and the approval of
 the release, the tag and the close, stay with the two sprint skills and with the human.
 
 Do not move a ticket into or out of a sprint yourself. `sdlc-sprint` does it. `POST /ticket` ignores a
 `sprint` field. `POST /ticket/new` refuses one.
+
+## The simplification task
+
+A sprint with `review: "full"` also has one simplification task. It cleans, refactors and simplifies
+the sprint's code under `sdlc-sprint-review` `references/simplification.md`. It is a normal
+functional member, with the normal gates. It carries a `blocked-by` link to every other functional
+member, so the board lets it be claimed only after all of them are Done (accepted and merged). At
+Planning, load that mission and plan from the actual sprint diff. Final validation starts after it is
+Done. A pass that finds nothing worth cutting has no PR: see the mission for its acceptance and the
+one board `override` it needs (`local-tracker.md` § Workflow checks and `override`).
 
 ## The closure task
 
@@ -66,8 +77,12 @@ and the report under `docs/sprints/<S-n>/`, delivered on the task's own PR.
 
 Ticket reviews cover correctness, security, COS, affected integration and material choices. Broad
 architecture cleanup, cross-story test quality, documentation consistency and the process retrospective
-belong to the final sprint review. Create linked Backlog tickets for incidental issues that final review must read. A Critical or High finding is never deferred to final review; fix it in the ticket or escalate to the owner. A known defect
-in this ticket's correctness, security or COS still needs a fix before merge, at any severity.
+belong to the final sprint review. Create linked Backlog tickets for incidental issues that final review must read.
+A finding is never deferred "to final review": it is fixed, rejected with evidence, or deferred to a
+named Backlog ticket under `reviews.md` § Stage policy. A security defect, or a correctness defect
+in the behaviour this ticket's COS cover, needs a fix before merge at any severity. An incidental
+Critical or High finding can be deferred only when the reviewer placed it outside the COS; it still
+blocks the release readiness of the sprint until it is fixed or its work leaves the release.
 
 Use the existing two lenses and repeat threshold. Do not add routine checkpoints between work units.
 An extra checkpoint needs a named unresolved risk, the missing evidence and the decision its result

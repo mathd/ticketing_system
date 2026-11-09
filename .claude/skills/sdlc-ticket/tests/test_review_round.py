@@ -821,5 +821,286 @@ class SprintRoundTests(unittest.TestCase):
             self.assertTrue(result.stdout.startswith("FAIL:"))
 
 
+def preexisting_record(stage="ai-review", **changes):
+    item = record("High", stage=stage)
+    item["results"][0]["findings"][0].update(
+        {
+            "origin": "pre-existing",
+            "originEvidence": "store.go:42 at base a has the same comparison.",
+            "affectedByChange": False,
+            "security": False,
+            **changes,
+        }
+    )
+    item["dispositions"] = {"F1": "deferred"}
+    item["dispositionEvidence"] = {"F1": "Deferred to TKT-9; outside the COS."}
+    return item
+
+
+def delta_record(round_number=2, previous="base:a/head:b", head="c"):
+    item = record(round_number=round_number)
+    item["artifact"] = f"base:a/head:{head}"
+    for output in item["results"]:
+        output["artifact"] = item["artifact"]
+    item["inspection"] = "delta"
+    item["previousArtifact"] = previous
+    return item
+
+
+class ConvergenceTests(unittest.TestCase):
+    """Ported from the upstream feat/sdlc-review-convergence ConvergenceTests."""
+
+    def test_unchanged_preexisting_deferred_finding_does_not_repeat(self):
+        self.assertEqual(
+            review_round.review_action(preexisting_record(), policy()), "HUMAN_REVIEW"
+        )
+        unmarked = preexisting_record()
+        del unmarked["results"][0]["findings"][0]["security"]
+        for candidate in (
+            unmarked,
+            preexisting_record(affectedByChange=True),
+            preexisting_record(security=True),
+            preexisting_record(origin="unknown"),
+            preexisting_record(stage="sprint-review"),
+            preexisting_record(stage="plan-review"),
+        ):
+            with self.subTest(finding=candidate["results"][0]["findings"][0]):
+                self.assertEqual(
+                    review_round.review_action(candidate, policy()), "REVIEW_AGAIN"
+                )
+        fixed = preexisting_record()
+        fixed["dispositions"] = {"F1": "fixed"}
+        self.assertEqual(review_round.review_action(fixed, policy()), "REVIEW_AGAIN")
+
+    def test_preexisting_claims_need_baseline_evidence(self):
+        for change, message in (
+            ({"originEvidence": ""}, "baseline evidence"),
+            ({"affectedByChange": None}, "affectedByChange"),
+            ({"origin": "old"}, "origin"),
+            ({"bugClass": " "}, "bugClass"),
+            ({"security": "yes"}, "security must be boolean"),
+        ):
+            with (
+                self.subTest(change=change),
+                self.assertRaisesRegex(ValueError, message),
+            ):
+                review_round.review_action(preexisting_record(**change), policy())
+
+    def test_delta_inspection_shape(self):
+        self.assertEqual(
+            review_round.review_action(delta_record(), policy()), "HUMAN_REVIEW"
+        )
+        plan = delta_record()
+        plan["stage"] = "plan-review"
+        for output in plan["results"]:
+            output["stage"] = "plan-review"
+        for candidate, message in (
+            (delta_record(round_number=1), "earlier round"),
+            (delta_record(previous=""), "previous reviewed artifact"),
+            (delta_record(previous="base:a/head:c"), "previous reviewed artifact"),
+            (delta_record(previous="base:z/head:b"), "changed baseline"),
+            (delta_record(previous="TKT-1:plan:sha256:aa"), "known base"),
+            (plan, "ai-review only"),
+        ):
+            with (
+                self.subTest(message=message),
+                self.assertRaisesRegex(ValueError, message),
+            ):
+                review_round.review_action(candidate, policy())
+
+    def test_delta_history_must_link_back_to_a_full_round(self):
+        first = record("Medium")
+        current = delta_record()
+        review_round.validate_history(current, [first], policy())
+        current["results"][0]["findings"] = [{**finding(), "priorFinding": "R1:F1"}]
+        review_round.validate_history(current, [first], policy())
+        cases = [([], "each earlier round")]
+        changed = copy.deepcopy(first)
+        changed["materialChange"] = True
+        cases.append(([changed], "material change"))
+        moved = copy.deepcopy(first)
+        moved["artifact"] = "base:a/head:x"
+        for output in moved["results"]:
+            output["artifact"] = moved["artifact"]
+        cases.append(([moved], "previous reviewed artifact"))
+        delta_first = copy.deepcopy(first)
+        delta_first["inspection"] = "delta"
+        cases.append(([delta_first], "complete earlier round"))
+        other = copy.deepcopy(first)
+        other["stage"] = "plan-review"
+        for output in other["results"]:
+            output["stage"] = "plan-review"
+        cases.append(([other], "stage"))
+        bare = {"stage": "ai-review", "round": 1, "artifact": "base:a/head:b"}
+        cases.append(([bare], "reviewer required"))
+        partial = copy.deepcopy(first)
+        partial["results"][1]["complete"] = False
+        cases.append(([partial], "incomplete review output"))
+        for history, message in cases:
+            with (
+                self.subTest(message=message),
+                self.assertRaisesRegex(ValueError, message),
+            ):
+                review_round.validate_history(current, history, policy())
+        current["results"][0]["findings"][0]["priorFinding"] = "R1:F9"
+        with self.assertRaisesRegex(ValueError, "unknown prior finding"):
+            review_round.validate_history(current, [first], policy())
+
+    def test_every_delta_in_history_keeps_a_known_base(self):
+        first = record()
+        crossing = delta_record(previous="base:a/head:b", head="c")
+        crossing["artifact"] = "base:z/head:c"
+        for output in crossing["results"]:
+            output["artifact"] = crossing["artifact"]
+        current = delta_record(round_number=3, previous="base:z/head:c", head="d")
+        current["artifact"] = "base:z/head:d"
+        for output in current["results"]:
+            output["artifact"] = current["artifact"]
+        with self.assertRaisesRegex(ValueError, "known base"):
+            review_round.validate_history(current, [first, crossing], policy())
+
+    def test_cli_requires_history_for_delta(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "round.json"
+            history = Path(directory) / "history.json"
+            config = Path(directory) / "config.json"
+            config.write_text(json.dumps({"review": POLICY}), encoding="utf-8")
+            path.write_text(json.dumps(delta_record()), encoding="utf-8")
+            history.write_text(json.dumps([record("Medium")]), encoding="utf-8")
+            command = [
+                sys.executable,
+                "-B",
+                str(SKILL / "scripts/review_round.py"),
+                "review",
+                str(path),
+                "--config",
+                str(config),
+                "--artifact",
+                "base:a/head:c",
+                "--reviewer",
+                "gpt-6.1-sol",
+                "--author",
+                "sonnet-5.5",
+            ]
+            missing = subprocess.run(
+                command, capture_output=True, text=True, check=False
+            )
+            self.assertEqual(missing.returncode, 1)
+            self.assertIn("--history", missing.stdout)
+            linked = subprocess.run(
+                [*command, "--history", str(history)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                (linked.returncode, linked.stdout.strip()), (0, "HUMAN_REVIEW")
+            )
+            history.write_text(json.dumps([]), encoding="utf-8")
+            broken = subprocess.run(
+                [*command, "--history", str(history)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(broken.returncode, 1)
+            self.assertTrue(broken.stdout.startswith("FAIL:"))
+
+
+class SecurityPassTests(unittest.TestCase):
+    """Ported from the upstream feat/sdlc-review-convergence SecurityPassTests."""
+
+    def policy(self):
+        item = policy()
+        item["securityPass"] = {"enabled": True, "paths": ["services/*/internal/auth/**"]}
+        return item
+
+    def passed(self, **changes):
+        item = record("Medium")
+        item["results"][0]["findings"][0]["security"] = True
+        item["securityPass"] = {
+            "required": True,
+            "complete": True,
+            "artifact": "base:a/head:b",
+            "reviewer": "gpt-6-astra",
+            "summary": "1 finding. Token check bypass merged as F1.",
+            "findingIds": ["F1"],
+            **changes,
+        }
+        return item
+
+    def test_enabled_pass_needs_a_recorded_decision(self):
+        with self.assertRaisesRegex(ValueError, "securityPass decision"):
+            review_round.review_action(record(), self.policy())
+        self.assertEqual(review_round.review_action(record(), policy()), "HUMAN_REVIEW")
+        skipped = record()
+        skipped["securityPass"] = {"required": False}
+        with self.assertRaisesRegex(ValueError, "reason"):
+            review_round.review_action(skipped, self.policy())
+        skipped["securityPass"]["reason"] = "No changed path matches the auth paths."
+        self.assertEqual(
+            review_round.review_action(skipped, self.policy()), "HUMAN_REVIEW"
+        )
+
+    def test_required_pass_is_complete_bound_and_merged(self):
+        self.assertEqual(
+            review_round.review_action(self.passed(), self.policy()), "HUMAN_REVIEW"
+        )
+        for change in (
+            {"complete": False},
+            {"artifact": "base:a/head:old"},
+            {"findingIds": ["F9"]},
+            {"summary": ""},
+        ):
+            with (
+                self.subTest(change=change),
+                self.assertRaisesRegex(ValueError, "security pass"),
+            ):
+                review_round.review_action(self.passed(**change), self.policy())
+
+    def test_security_reviewer_is_independent_of_authors(self):
+        candidate = self.passed(reviewer="sonnet-5.5:xhigh")
+        with self.assertRaisesRegex(ValueError, "security reviewer"):
+            review_round.validate_review_target(
+                candidate, "base:a/head:b", "gpt-6.1-sol", ["claude-sonnet-5-5"]
+            )
+
+    def test_reviewer_aliases_are_one_identity(self):
+        with self.assertRaisesRegex(ValueError, "independent"):
+            review_round.validate_review_target(
+                record(), "base:a/head:b", "gpt-6.1-sol", ["openai/gpt-6.1-sol:high"]
+            )
+
+    def test_security_pass_findings_never_get_the_preexisting_exemption(self):
+        candidate = preexisting_record()
+        candidate["securityPass"] = self.passed()["securityPass"]
+        with self.assertRaisesRegex(ValueError, "security: true"):
+            review_round.review_action(candidate, self.policy())
+        candidate["results"][0]["findings"][0]["security"] = True
+        self.assertEqual(
+            review_round.review_action(candidate, self.policy()), "REVIEW_AGAIN"
+        )
+
+    def test_review_config_fields(self):
+        candidate = {"review": policy()}
+        candidate["review"]["guidance"] = "docs/conventions/review.md"
+        candidate["review"]["securityPass"] = {"enabled": True, "paths": ["ci/**"]}
+        review_round.validate_policy(candidate)
+        for key, value, message in (
+            ("guidance", "", "guidance"),
+            ("securityPass", {"enabled": True, "paths": []}, "path patterns"),
+            ("securityPass", {"enabled": "yes"}, "boolean"),
+            ("securityPass", {"enabled": False, "extra": 1}, "unknown keys"),
+            ("copilot", {"enabled": False}, "unknown keys"),
+        ):
+            broken = copy.deepcopy(candidate)
+            broken["review"][key] = value
+            with (
+                self.subTest(key=key, value=value),
+                self.assertRaisesRegex(ValueError, message),
+            ):
+                review_round.validate_policy(broken)
+
+
 if __name__ == "__main__":
     unittest.main()

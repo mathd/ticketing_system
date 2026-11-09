@@ -1,7 +1,9 @@
 # Test relevance and real-system verification
 
-Map each release criterion to the smallest useful test that observes the real behavior. Read the
-tests and the production boundary that they claim to protect. Look for:
+Map each release criterion to its proof, as `sdlc-ticket` `references/quality-practices.md` §3 Proof
+defines it, and to the expected proof that the approved brief names for it. A criterion without
+observed proof is untested behavior. Use the smallest useful test that observes the real behavior.
+Read the tests and the production boundary that they claim to protect. Look for:
 
 - assertions that repeat another test and cover no new risk,
 - mocks that enforce a rule that production does not have,

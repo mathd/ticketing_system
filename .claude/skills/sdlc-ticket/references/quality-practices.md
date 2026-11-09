@@ -6,6 +6,13 @@ Four practices applied at specific points of the pipeline. Each is cheap; skippi
 
 Who drafts and who critiques is `config.models.plan` / `config.models.planReview` (`SKILL.md` § Config) — **always two different models**, so the critic is always reviewing someone else's draft. That is what this pass is for: a draft is a proposal, not a plan.
 
+**Plan the smallest complete change that meets the COS.** A small PR is easier to review, so lines
+of change are a cost, tests included. Leave out unrelated cleanup, speculative abstractions and
+guards for cases the COS do not name. Keep the security, failure handling and integration work the
+COS need. The plan **estimates the diff**: files and approximate lines, tests counted separately.
+When the deliverable grows well past that estimate, cut it, or explain why in the `ai-review`
+summary.
+
 **Read the draft's own Cons/Risks against its Decision — first, before any code check.** It is the cheapest possible reject and needs no verification at all: if a Con negates the Decision, the draft is refuted by its own evidence. The known drafter failure is a **hallucinated seam** (facts wrong); this is the *opposite* one — **every fact right, the synthesis wrong**. A drafter is unattached to an approach only until it has drafted one, and it will carry a fatal Con in its own §Cons and adopt the approach anyway. TKT-62 is the worked example: the draft wrote *"concurrency preserves database writes for another replica or client, not HTTP availability by itself"* and *"removing the fixed migration deadline accepts potentially unbounded startup"*, then recommended `CREATE INDEX CONCURRENTLY` with ~250 lines of machinery. Both sentences refute the plan they appear in. Quote the self-refuting line in `plan-final` — a critic who verifies every seam but never reads the Cons will accept a well-researched wrong answer.
 
 **Verify wire-level facts the draft quotes, not just symbols.** Seam verification (below) proves files and functions exist; it does not prove the *payload shapes* the plan asserts — field names, header names, status codes. A plan whose code-facts say the response field is `id` when the handler returns `hold_id` survives every symbol check and fails only at runtime (TKT-82: every harness attempt failed on the first gate run, with no diagnostic pointing at the field). When the plan quotes a request/response shape, grep the OpenAPI spec or the handler's struct tags for the exact field names. When a plan filters or parses **logs**, read a real line from the running service for the exact format: the logger the code calls may not be the one configured (TKT-149: every `slog.Error` printed text, not the JSON the plan assumed, because no service calls `slog.SetDefault`).
@@ -15,6 +22,13 @@ Who drafts and who critiques is `config.models.plan` / `config.models.planReview
 **A stub for an input-dependent lookup must record and assert its inputs.** A stub that returns a fixed answer whatever it is asked cannot catch a call with the wrong arguments: TKT-169's payments-evidence stub stayed green while production asked with an empty key, got a 400, read it as Indeterminate, and made a money guard inert for every downgrade.
 
 **A seam that exists is not yet a test that can fail — check the fixtures too.** Verifying the seam is a spelling check: it proves the drafter didn't hallucinate, nothing more. The next question is **"what input shape can this test not represent?"**, and for **compatibility, format, schema, versioning, or parser** work it has a specific deadly answer: **a fixture built from the same type the code under test decodes with cannot express incompatibility.** It encodes the very compatibility the test claims to prove, so the test passes while the bug ships — and it looks thorough doing it. TKT-61 is the worked example: the plan's "unknown schema is parked" test built its schema-4 payload from the current Go struct, so it only ever exercised future variants shaped like the present one — the subset that needed protecting least. The bug (real future variants still terminated, service still reporting healthy) survived the plan gate, an implementation, a mutation-check that killed three mutants, and a full adversarial review pass; it took a *second* pass to catch. **Mutation testing does not save you here** — it proves the test detects a change in the *code*, and says nothing about whether the *input space* is right. Every mutant died correctly, downstream of a fixture that could not represent the failure. So: for this class of work, require **hand-written fixtures** (literal JSON/bytes with renamed keys, changed types, unexpected shapes) and reject "we'll construct it with the existing type" in the plan, not at review.
+
+**Write the fewest tests that prove the COS** — usually one focused test for each COS or rule, at the
+seam where the rule acts. Extend an existing test before you add a file. Do not add a suite for each
+function, tests for behaviour the change does not touch, or a test that repeats an assertion another
+test already makes. "Rule" is meant literally here: a guard with N predicates is N rules and needs N
+tests, and a fixture still needs its mutation and its repeat runs (`AGENTS.md`). The limit cuts
+duplicated and decorative tests, never the tests that make a rule observable.
 
 **When a plan changes a disposition (what the code *does* with an input class), sweep every suite for fixtures riding the old disposition** — not just the package's own tests. A fixture elsewhere may use the re-classified input as its *vehicle* to a code path whose real subject is something else, and it breaks only at the gate, with a misleading failure. Grep all test trees (unit, smoke, integration) for the field values / reason strings whose meaning is changing, and list the hits in the plan's test section. TKT-74: the plan re-pointed the unit test the ticket flagged but missed `smoke/access_consumer_test.go` doing the same schema-99-as-poison trick — found by the gate, not the plan.
 
@@ -51,8 +65,8 @@ initial inspection and the audit are one round; whether a fix it causes needs an
 
 Every finding — from the Codex adversarial review or the human reviewer — gets classified before acting:
 
-- **Blocking** — correctness, security, or AC violation *in this diff* → fix now, in the PR. Disposition `fixed`. Never deferred, whatever its severity.
-- **Incidental** — real but out of scope (pre-existing issue, adjacent improvement, nice-to-have) → **create a Backlog ticket** (`POST /ticket/new`, with a minimal context-mémo — `decomposition.md`), link the finding in its body, note the deferral in the review reply. Disposition `deferred`.
+- **Blocking** — a security defect anywhere in the diff, or a correctness defect in the behaviour the COS cover → fix now, in the PR. Disposition `fixed`. Never deferred, whatever its severity.
+- **Incidental** — real but outside the behaviour the COS cover (a pre-existing issue, another code path, a rare case the COS do not name, a small performance cost, extra compatibility, a nice-to-have) → **create a Backlog ticket** (`POST /ticket/new`, with a minimal context-mémo — `decomposition.md`), link the finding in its body, note the deferral in the review reply. Disposition `deferred`, at any severity. The reviewer's scope call decides; overruling it on a Critical or High finding is an override (`reviews.md` § Stage policy).
 - **Rejected** — false positive or nitpick → say so explicitly, with the reason. Adversarial reviewers are instructed to find problems, so some won't exist; filtering is part of the job. Disposition `rejected`; at the stage's repeat threshold it needs the reviewer's refutation check (`reviews.md` § Refutations).
 
 Severity (Critical/High/Medium/Low/Nit) is the reviewer's, kept as given; it decides whether another round runs. Blocking/incidental/rejected is yours; it decides what happens to the finding.
@@ -71,25 +85,92 @@ The local gate is the source of truth for "green" — but only when run against 
   delegate made to that file (TKT-144 lost a comment fix this way). Mutate only files that are clean.
 - **Never stage-then-unstage to make a gate pass.** A sub-agent (or you) satisfying a `HEAD`-diffing check by transiently staging generated files produces a **false green** — the working tree as it sits does not match a clean `make generate`. When delegating implementation, the prompt must forbid this and require committing the regenerated output. **Verify, don't trust:** re-run the gate yourself against the committed tree before advancing to `agent:ai-review` — a sub-agent's "gate passed" is a claim, not evidence.
 
-## 3. Ready-for-review walkthrough (the Gate 3 hand-off, on the PR)
+## 3. Proof, and the Gate 3 hand-off on the PR
 
-The "ready for review" comment **on the PR** (code repo, not the board) is a guided walkthrough, not a pointer at the diff. The reviewer's time is the pipeline's scarcest resource; structure it (marker on line 1 — see `SKILL.md`):
+### Proof
+
+Proof is evidence you **observed at the deliverable's revision**: command output, a reproduction that
+fails before the fix and passes after it, a test that fails without the change (its mutation), or a
+screenshot or real output of the running system. A claim, a planned command or a green mocked test is
+not proof.
+
+- Each COS needs proof. Each other behaviour change in the diff needs proof too, review fixes
+  included. A gate pass proves only that the configured checks passed.
+- Use the most direct proof the change allows. For UI and runtime behaviour, run the system and look
+  at the result: `make browser` for a write form (`AGENTS.md`), the hermetic smoke suite, or a real
+  request against `make up`.
+- Proof holds for its exact revision and inputs. A new session does not void it; a changed revision
+  does. Get it again for every row after a new commit.
+- When a change touches an external contract (another service's API, a NATS subject, a payment
+  provider, a browser), a test against a fake is not proof that the real counterpart agrees. Plan a
+  small real-integration check for that contract, inside the authorized environment. If the suite
+  does not exist, its creation is part of the approved work; a planned command is not evidence that a
+  suite exists or ran.
+- Record proof in the proof table of the review-guide (below). Text proof of a few lines goes in the
+  table; longer output and screenshots go in a `kind=summary` board comment or as images in the PR,
+  linked from the row. Check every screenshot and log for secrets and personal data first. When you
+  cannot prove a change, mark its row `unproven` and ask the human. Do not present it as ready.
+
+### Model visibility on GitHub
+
+The owner decided on 2026-11-09 to adopt the upstream rule for SDLC PRs in this repository. It
+**replaces the no-AI-attribution rule for SDLC PR descriptions and agent PR comments only.** Commit
+messages keep no AI attribution.
+
+- The PR description carries a **Models** table: the actual author models, then for each review
+  round the reviewer model, the researcher model when used, and the verdict. Update it at hand-off.
+- Start every comment an agent posts on GitHub (top-level PR comments, inline review comments,
+  replies, the review-guide) with this note, before the marker line:
+
+  ```md
+  > [!NOTE]
+  > 🤖 **<model> responding on behalf of <user>**
+  ```
+
+  Use the verified actual model identity, as in review records, and the owner's name or GitHub login.
+  If the identity is not verified, name the runner. Do not guess. Add no second attribution and no
+  signature.
+- Lead a comment with the conclusion. Cite the code, check or reproduction. Separate verified facts
+  from judgement. No filler, thanks or status narration. Comment only to answer a reviewer or when a
+  human asks; do not copy board records into PR comments. After you post, confirm GitHub returned
+  the comment URL.
+
+### The review-guide (the Gate 3 hand-off)
+
+The "ready for review" comment **on the PR** (code repo, not the board) is a guided walkthrough, not
+a pointer at the diff. It stays a PR comment, not the PR description, because it is the append-only
+audit record of the hand-off (SKILL.md § Autonomous mode, Gate 3). The reviewer's time is the
+pipeline's scarcest resource; structure it. Write it for a reviewer who has not read the ticket: the
+problem in plain words first, then the outcome.
 
 ```markdown
+> [!NOTE]
+> 🤖 **<model> responding on behalf of <user>**
+
 <!-- sdlc:stage=ai-review kind=review-guide -->
 ### 🔎 Review guide — <TICKET-KEY>
 
-**Scope:** <n> files, +<x>/−<y> — <one sentence: what this PR does>.
+**Problem and outcome:** <the problem in plain words; the outcome in one or two sentences>.
+**Diff size:** first reviewed revision <files, +x/−y code, +x/−y tests>; final <same>; plan estimate <same>.
 
 **Walkthrough** (by design concern, not by file):
 1. <concern> — `src/foo.ts:42` — what to check and why it's shaped this way
 2. <concern> — `db/…` — …
 
-**High-risk spots:** <each tagged `[security]` `[schema]` `[data]` `[concurrency]` `[perf]` + location — or "none">
+**Proof:**
+
+| Item (COS or change) | How proved | Observed result | Revision | Evidence |
+|---|---|---|---|---|
+| COS-1 … | <test that fails without the change / browser submit / command> | <what was seen> | <sha> | <link, or `unproven`> |
+
+**Models:** <author models; per round: reviewer, researcher, verdict>
+**Testing:** <what ran and was observed; what the checks do not cover>
+**Risk:** <the behaviour this can break, each spot tagged `[security]` `[schema]` `[data]` `[concurrency]` `[perf]` + location, residual uncertainty — or "none">
+**How to revert:** <the operation that undoes it (revert the squash commit, turn off a flag) and what a revert cannot undo: migrations, published events, sent messages>
 **Manual checks:** <1–3 observable verifications the reviewer can run>
 **Decision log:** <shaping + planning + development IDs, or "none">
 **Deferred (triage):** <Backlog tickets from incidental findings, or "none">
-**Review rounds:** <plan-review n/4, ai-review n/4; reviewer + researcher models; reviewed head vs final head>
+**Review rounds:** <plan-review n/4, ai-review n/4; reviewed head vs final head; confirmed refutations>
 **Not re-reviewed:** <fixes below the repeat threshold since the last round, each with its verification — or "none">
 ```
 
@@ -97,7 +178,7 @@ Order the walkthrough by risk: the thing most likely to be wrong goes first.
 
 ## 4. Correct-course: regenerate from the failing layer
 
-When a human pushes back (plan rejected at Gate 2, changes requested at Gate 3) or a stage keeps failing, **diagnose which layer broke before touching anything**:
+When a human pushes back (plan rejected at Gate 2, changes requested at Gate 3), before review round 3 (`reviews.md` § One round step 8), or when a stage keeps failing, **diagnose which layer broke before touching anything**:
 
 | Layer | Symptom | Action |
 |---|---|---|
