@@ -12,7 +12,8 @@ make up      # first run generates a local credential (.env), then compose up --
 
 `make up` is needed once per clone. No working service credential, database password, HMAC key, or
 signing seed is checked in, so the command generates the required local values in a gitignored
-`.env`. After that, plain `docker compose up` works as usual.
+`.env`. Use `make up` for later starts too. It includes the diagnostic-port overlay needed for
+Grafana and direct local service access. Base `docker compose up` publishes only the gateway.
 
 Then:
 

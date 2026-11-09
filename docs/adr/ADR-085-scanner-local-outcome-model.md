@@ -4,7 +4,7 @@ Date: 2026-10-17
 
 ## Status
 
-Accepted (TKT-556, a spike; owner decisions ADR-085 D1 of TKT-556, ADR-085 D38 and ADR-085 D40). Amends ADR-025 §3 and
+Accepted (TKT-556, a spike; owner decisions ADR-085 D1 of TKT-556, ADR-085 D38 of TKT-556 and ADR-085 D40 of TKT-556). Amends ADR-025 §3 and
 ADR-066 §8.
 
 This ADR records the accepted model and its staged delivery. TKT-557 delivered the Access and
@@ -61,15 +61,15 @@ cover a compromised same-origin page, a scanner under attacker control, or a dat
 
 Option 2 has four sub-choices with real alternatives:
 
-- **Old-tab barrier (F1).** A shared database at version 3 (owner ADR-085 D14-3, chosen) or a separate
+- **Old-tab barrier (F1).** A shared database at version 3 (owner ADR-085 D14-3 of TKT-556, chosen) or a separate
   database name. Section 7.2 records the costs of the rejected alternative.
 - **Live HTTP 500.** Terminal with no server change stops every gate on an Access store outage.
   Offline as on main turns a validator-hidden refusal into a signed false fact. The chosen split keeps
   exactly 502/503/504 offline-eligible, makes 500 terminal, and adds Access ticket 0 for proved
-  pre-decision 503, ADR-085 D24 as amended by ADR-085 D33-ADR-085 D37 and ADR-085 D39.
-- **Live 401.** Queue as on main, or terminal. The owner chose terminal, ADR-085 D13-1.
+  pre-decision 503, ADR-085 D24 of TKT-556 as amended by ADR-085 D33 of TKT-556-ADR-085 D37 of TKT-556 and ADR-085 D39 of TKT-556.
+- **Live 401.** Queue as on main, or terminal. The owner chose terminal, ADR-085 D13-1 of TKT-556.
 - **Legacy QUEUED rows at upgrade.** Sync as on main, with possible false facts, or hold all of them,
-  with re-entry risk. The owner chose sync, ADR-085 D31.
+  with re-entry risk. The owner chose sync, ADR-085 D31 of TKT-556.
 
 ## Decision
 
@@ -100,13 +100,17 @@ Read [2. Actors, fields, and states](scanner-outcomes/state-model.md).
 
 <a id="21-actors-and-ownership-d2-and-d3"></a>
 
-#### 2.1 Actors and ownership, ADR-085 D2 and ADR-085 D3
+<a id="21-actors-and-ownership-adr-085-d2-and-adr-085-d3"></a>
+
+#### 2.1 Actors and ownership, ADR-085 D2 of TKT-556 and ADR-085 D3 of TKT-556
 
 See [this section](scanner-outcomes/state-model.md#21-actors-and-ownership-d2-and-d3).
 
 <a id="22-durable-record-d4"></a>
 
-#### 2.2 Durable record, ADR-085 D4
+<a id="22-durable-record-adr-085-d4"></a>
+
+#### 2.2 Durable record, ADR-085 D4 of TKT-556
 
 See [this section](scanner-outcomes/state-model.md#22-durable-record-d4).
 
@@ -116,19 +120,25 @@ See [this section](scanner-outcomes/state-model.md#23-allowed-transitions-and-re
 
 <a id="24-client-knowledge-is-an-independent-axis-d15-d17"></a>
 
-#### 2.4 Client knowledge is an independent axis, ADR-085 D15-ADR-085 D17
+<a id="24-client-knowledge-is-an-independent-axis-adr-085-d15-adr-085-d17"></a>
+
+#### 2.4 Client knowledge is an independent axis, ADR-085 D15 of TKT-556-ADR-085 D17 of TKT-556
 
 See [this section](scanner-outcomes/state-model.md#24-client-knowledge-is-an-independent-axis-d15-d17).
 
 <a id="24a-producer-by-layer-matrix-d33"></a>
 
-#### 2.4a Producer-by-layer matrix, ADR-085 D33
+<a id="24a-producer-by-layer-matrix-adr-085-d33"></a>
+
+#### 2.4a Producer-by-layer matrix, ADR-085 D33 of TKT-556
 
 See [this section](scanner-outcomes/state-model.md#24a-producer-by-layer-matrix-d33).
 
 <a id="24b-runtime-limits-and-closed-classes-d35d39"></a>
 
-#### 2.4b Runtime limits and closed classes, ADR-085 D35/ADR-085 D39
+<a id="24b-runtime-limits-and-closed-classes-adr-085-d35adr-085-d39"></a>
+
+#### 2.4b Runtime limits and closed classes, ADR-085 D35 of TKT-556/ADR-085 D39 of TKT-556
 
 See [this section](scanner-outcomes/state-model.md#24b-runtime-limits-and-closed-classes-d35d39).
 
@@ -142,7 +152,9 @@ Read [3. Decision time, operator result, and the full outcome table](scanner-out
 
 <a id="31-time-and-response-classification-d5-d7-and-d24"></a>
 
-#### 3.1 Time and response classification, ADR-085 D5-ADR-085 D7 and ADR-085 D24
+<a id="31-time-and-response-classification-adr-085-d5-adr-085-d7-and-adr-085-d24"></a>
+
+#### 3.1 Time and response classification, ADR-085 D5 of TKT-556-ADR-085 D7 of TKT-556 and ADR-085 D24 of TKT-556
 
 See [this section](scanner-outcomes/outcome-tables.md#31-time-and-response-classification-d5-d7-and-d24).
 
@@ -196,9 +208,11 @@ See [this section](scanner-outcomes/finding-map.md#53-accepted-tkt-556-plan-revi
 
 <a id="6-tests-and-mutations-by-invariant-d11"></a>
 
-### 6. Tests and mutations, by invariant, ADR-085 D11
+<a id="6-tests-and-mutations-by-invariant-adr-085-d11"></a>
 
-Read [6. Tests and mutations, by invariant, ADR-085 D11](scanner-outcomes/tests-and-mutations.md).
+### 6. Tests and mutations, by invariant, ADR-085 D11 of TKT-556
+
+Read [6. Tests and mutations, by invariant, ADR-085 D11 of TKT-556](scanner-outcomes/tests-and-mutations.md).
 
 ### 7. F1: the old-tab barrier and the cost of each option
 
@@ -206,7 +220,9 @@ Read [7. F1: the old-tab barrier and the cost of each option](scanner-outcomes/s
 
 <a id="71-owner-selected-storage-shared-database-version-3-d9-and-d14-3"></a>
 
-#### 7.1 Owner-selected storage: shared database, version 3, ADR-085 D9 and ADR-085 D14-3
+<a id="71-owner-selected-storage-shared-database-version-3-adr-085-d9-and-adr-085-d14-3"></a>
+
+#### 7.1 Owner-selected storage: shared database, version 3, ADR-085 D9 of TKT-556 and ADR-085 D14-3 of TKT-556
 
 See [this section](scanner-outcomes/storage-upgrade.md#71-owner-selected-storage-shared-database-version-3-d9-and-d14-3).
 
@@ -216,21 +232,27 @@ See [this section](scanner-outcomes/storage-upgrade.md#72-a-real-option-without-
 
 <a id="73-do-not-turn-open-completion-into-permission-to-resume-a-scan-d10"></a>
 
-#### 7.3 Do not turn open completion into permission to resume a scan, ADR-085 D10
+<a id="73-do-not-turn-open-completion-into-permission-to-resume-a-scan-adr-085-d10"></a>
+
+#### 7.3 Do not turn open completion into permission to resume a scan, ADR-085 D10 of TKT-556
 
 See [this section](scanner-outcomes/storage-upgrade.md#73-do-not-turn-open-completion-into-permission-to-resume-a-scan-d10).
 
 <a id="74-legacy-rows-need-an-explicit-classification-owner-d13-3"></a>
 
-#### 7.4 Legacy rows need an explicit classification, owner ADR-085 D13-3
+<a id="74-legacy-rows-need-an-explicit-classification-owner-adr-085-d13-3"></a>
+
+#### 7.4 Legacy rows need an explicit classification, owner ADR-085 D13-3 of TKT-556
 
 See [this section](scanner-outcomes/storage-upgrade.md#74-legacy-rows-need-an-explicit-classification-owner-d13-3).
 
 <a id="8-delivery-split-and-merge-order-d19-d24-and-d25"></a>
 
-### 8. Delivery split and merge order, ADR-085 D19, ADR-085 D24, and ADR-085 D25
+<a id="8-delivery-split-and-merge-order-adr-085-d19-adr-085-d24-and-adr-085-d25"></a>
 
-Read [8. Delivery split and merge order, ADR-085 D19, ADR-085 D24, and ADR-085 D25](scanner-outcomes/delivery-plan.md).
+### 8. Delivery split and merge order, ADR-085 D19 of TKT-556, ADR-085 D24 of TKT-556, and ADR-085 D25 of TKT-556
+
+Read [8. Delivery split and merge order, ADR-085 D19 of TKT-556, ADR-085 D24 of TKT-556, and ADR-085 D25 of TKT-556](scanner-outcomes/delivery-plan.md).
 
 ### 9. Rules and decisions this ADR rests on
 
@@ -252,7 +274,7 @@ See [this section](scanner-outcomes/decision-log.md#92-agent-decisions).
     - Ticket 2 closes Entry P7-1 and the other section 1.3 gaps assigned to ticket 2, for new rows.
       TKT-559 supplies the Entry time checks. TKT-399 implements ticket 4 Exit.
     - Each invariant names its enforcing test tier and the mutation that must turn it red.
-    - The delivery split lets the Entry core merge before time safety and Exit, ADR-085 D13-2.
+    - The delivery split lets the Entry core merge before time safety and Exit, ADR-085 D13-2 of TKT-556.
 - **Negative:**
     - W01 can turn an unsent attempt into an Access fact. A lost failed terminal write (P) and M02 can
       also give false facts. O01/O02 and transparent resend keep U. An ambiguous 500 can leave A.
@@ -263,15 +285,15 @@ See [this section](scanner-outcomes/decision-log.md#92-agent-decisions).
       guarantee.
     - Held true admissions can stay unsynced. The export contains credentials and can expose them. A
       browser cannot prove that a file was saved.
-    - A rollback to the old bundle needs a compatible v3 reader. The upgrade waits for repairs, ADR-085 D27.
-      The page holds its owner lock for its whole life, ADR-085 D3.
+    - A rollback to the old bundle needs a compatible v3 reader. The upgrade waits for repairs, ADR-085 D27 of TKT-556.
+      The page holds its owner lock for its whole life, ADR-085 D3 of TKT-556.
     - External generators, browser resend and rejection shapes, device sleep, paint and pgx dial
       behavior stay unverified. TKT-556 ran static document and source checks only. TKT-557 verified
       only the real-driver producers of its ticket-0 class ledger, section 8.
 
 ## References
 
-- TKT-556 (this spike, decision log ADR-085 D1-ADR-085 D41); TKT-399 (thread, PR #451 closed, branch
+- TKT-556 (this spike, decision log ADR-085 D1 of TKT-556-ADR-085 D41 of TKT-556); TKT-399 (thread, PR #451 closed, branch
   `TKT-399-pass-exit-mode` at `24f1c209`).
 - TKT-551 (sync reporting delivered, see I7), TKT-552 (two Entry reason instructions, section 3.2), TKT-565 (remaining Entry reason copy), TKT-553 (unknown event-type test), TKT-500
   (revocation freshness ceiling and override).
@@ -280,5 +302,5 @@ See [this section](scanner-outcomes/decision-log.md#92-agent-decisions).
 - [ADR-025](./ADR-025-admission-events-and-offline-reconciliation.md) §3, amended by this ADR.
 - [ADR-066](./ADR-066-scanner-voided-ticket-feed.md) §8, amended by this ADR.
 - [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md), the trust boundary.
-- [Operator guide: scanner](../development.md#scanner-device-enrolment-ai-review-s1) and
+- [Operator guide: scanner](../runbooks/scanner.md) and
   [HTTP server configuration](../configuration.md#http-servers-services-and-gateway).

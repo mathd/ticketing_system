@@ -92,8 +92,8 @@ same change.
 
 **An existing `.env` is preserved.** A run adds only what is missing; it never rotates a value you
 already have. So a developer who once set `INVENTORY_STAFF_WRITE_TOKEN` equal to
-`INTERNAL_SERVICE_TOKEN` by hand keeps that value and inventory will keep refusing to start ,
-delete the line from `.env` and re-run `make up` to get a fresh independent draw.
+`INTERNAL_SERVICE_TOKEN` by hand keeps that value, so Inventory will still refuse startup.
+Delete the line from `.env` and re-run `make up` to get a fresh independent draw.
 
 **The organizer assertion is signed with an Ed25519 pair (TKT-287, ADR-058 § Amendment).** `make up`
 writes three values together: `CATALOG_ORGANIZER_ASSERTION_SIGNING_KEY` (the private seed, catalog

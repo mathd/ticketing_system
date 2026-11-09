@@ -43,8 +43,13 @@ Review tests, source comments, runtime messages, migrations, and Compose comment
 Use the actual old path for another move. `web/scanner/test/doc-namespace.test.ts` reads a fixed
 scanner subsection and safety sentences from `development.md`; it also checks added ADR decision
 references. Keep that synopsis and its safety limits, namespace references without changing their
-source authority, and run the test after moves. Password-recovery browser comments and durable
-configuration errors also cite development headings. A Markdown link scan cannot see these contracts.
+source authority, and run the test after moves. Every ADR-085 numbered decision must name its
+source ticket explicitly. Check grouped and historical references against the original sentence
+and decision body; a default-ticket parser cannot prove ownership. Password-recovery browser comments and durable
+configuration errors also cite development headings. A Markdown link scan cannot see these contracts. Search quoted instruction text too, for example
+`git grep -n 'AGENTS.md' -- ':!*.md'`. Several browser specs quote the browser-submit rule.
+Preserve that wording or review each dependent quote when changing it. A path-only search misses
+quoted rules and embedded section text.
 
 Read source before changing a technical claim. Record the inspected files and limits in review
 evidence. Check malformed input classes and failure paths before writing guarantees. Refer to

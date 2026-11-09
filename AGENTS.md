@@ -54,6 +54,7 @@ then read `.gate.verdict`. Never use `pgrep -f` to wait for it.
 Commit regenerated `openapi_gen.go` and `api-types.gen.ts` files before the gate, when commits
 are authorized. `check-generate` compares generated outputs with HEAD.
 
+A web-UI ticket isn't verified until a browser has *submitted* its forms.
 For every changed back-office, storefront, or scanner write form, add a submitting spec under
 `test/browser/` and run `make browser` with real host Chrome. Smoke submits selected forms but
 cannot prove browser action, Origin, Referer, SameSite, navigation, or JavaScript behavior.

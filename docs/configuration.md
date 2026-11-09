@@ -168,7 +168,7 @@ The bound sets how many healthy but slow scans go offline at normal peak, not on
 
 Every Access command that opens its database refuses `DATABASE_URL` unless the string sets
 `sslmode=disable` **explicitly** and the parsed configuration enables no TLS and no TLS fallback
-(TKT-557, ADR-085 decision D21). This covers the server, `migrate`, and every database command of the
+(TKT-557 decision D21, recorded in ADR-085). This covers the server, `migrate`, and every database command of the
 CLI (`lifecycle-backfill`, `verify-lifecycle`, `seal-lifecycle-epoch`, `set-lifecycle-mode` and the
 scanner commands). `healthcheck` and `keygen` open no database. The refusal comes before any dial,
 and its text does not contain the URL.
@@ -202,9 +202,9 @@ committed literal `postgres` and each role's was its own **name**, so anything t
 reach the published port owned every database by typing the obvious thing.
 
 `make up` generates all six into `.env`; the isolated stacks generate their own per run.
-They are applied on **first boot only** — the init scripts run against an empty data
-directory — `make down` deletes the volumes and their data; it is a disposable-stack reset, not an in-place
-password rotation. For retained data, an authorized `ALTER ROLE` and matching credential update
+Init scripts apply these passwords only on first boot, against an empty data directory.
+`make down` deletes the volumes and their data. It resets a disposable stack; it does not rotate
+passwords in a retained database. For retained data, an authorized `ALTER ROLE` and matching credential update
 must preserve database access. Do not regenerate a password beside an unchanged role.
 
 ## Published ports

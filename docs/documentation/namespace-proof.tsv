@@ -1,11 +1,11 @@
-path	decision_references	same_identity_and_source_ticket
-docs/adr/ADR-085-scanner-local-outcome-model.md	44	true
-docs/adr/scanner-outcomes/baseline-evidence.md	3	true
-docs/adr/scanner-outcomes/outcome-tables.md	26	true
-docs/adr/scanner-outcomes/finding-map.md	16	true
-docs/adr/scanner-outcomes/delivery-plan.md	51	true
-docs/adr/scanner-outcomes/storage-upgrade.md	20	true
-docs/adr/scanner-outcomes/invariants.md	11	true
-docs/adr/scanner-outcomes/state-model.md	48	true
-docs/adr/scanner-outcomes/decision-log.md	82	true
-docs/adr/scanner-outcomes/tests-and-mutations.md	15	true
+path	decision_references	contextual_source_sequence_matches	non_citation_text_sha256
+docs/adr/ADR-085-scanner-local-outcome-model.md	44	true	ce49dc0edc734ad0f0f45fa02bdf007e7c74eeac626e37cddcf0de81da4931d9
+docs/adr/scanner-outcomes/baseline-evidence.md	3	true	6ca44b1a72ef0d9ab39668309ac34d2a690e3e560d7e73f2ea8cbb4f293eb494
+docs/adr/scanner-outcomes/outcome-tables.md	26	true	bdfc256a73febd750f6d6d6f7c7611196ca8797ad4a0513e57153aab58b24e2c
+docs/adr/scanner-outcomes/finding-map.md	16	true	a4f9f7d820dffb004510ef1522a85220b4c9c03f708002ecd6f158687a12e637
+docs/adr/scanner-outcomes/delivery-plan.md	51	true	c3d25926fe2e43363f903233313ed468795862153176a38d4fc8260fe749fb4e
+docs/adr/scanner-outcomes/storage-upgrade.md	20	true	1cb8d355fa098d1183c659f340640e4cc58ceacd0cd619909ebf813d5d5fe953
+docs/adr/scanner-outcomes/invariants.md	11	true	c010d283e2681b8cdad7444934e13e5e93d7428d22bb8832888d063e1bbb7504
+docs/adr/scanner-outcomes/state-model.md	48	true	7c94b24bde531cf8a5e46ad1debe1de1670da644b57219fab8f3d374b373d9fb
+docs/adr/scanner-outcomes/decision-log.md	82	true	5dcf2263c35e71f3707f996553edc05efb069ab79cf9fadec7a32a8204833044
+docs/adr/scanner-outcomes/tests-and-mutations.md	15	true	16ee7e5e74af33862c2e34710f811ec1181b26b54c4e09dc1a1de32f493f5ad9
