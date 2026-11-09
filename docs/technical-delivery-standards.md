@@ -1,70 +1,55 @@
-# Technical Delivery Standards
+# Technical delivery standards
 
-These are the delivery rules actually used by this repository. `AGENTS.md` is the highest-level
-working agreement; accepted ADRs bind architectural choices.
-
-## Sources of truth
-
-- Product briefs and PRDs: `docs/product/`
-- Architecture decisions: `docs/adr/`
-- Current topology and ownership: `docs/architecture.md`
-- Ticket state and delivery context: the sdlc board (`~/sources/sdlc-board`), backed by a Fast
-  Note Sync vault, not this repository. The former `.sdlc/` rollback stub was removed; git history
-  remains the rollback mechanism.
-- API behavior: `services/*/api/openapi.yaml` plus implementation conformance tests
-- Dependencies and executable versions: manifests, lockfiles, Dockerfiles, Compose, and workflows
-
-Documentation is entirely in this repository. There is no Jira, Confluence, or external project
-wiki attached to this testbed.
+[AGENTS.md](../AGENTS.md) sets the working agreement. Accepted ADRs bind design.
+The [documentation map](README.md#authority-and-freshness) distinguishes requirements,
+implementation, and historical evidence.
 
 ## Local and CI gate
 
-Run `make deps` on a clean clone, then `make check`. CI invokes the same gate.
+Run `make deps` on a clean clone, then `make check` as a standalone command. The wrapper owns
+`.gate.lock`, `.gate.log`, and `.gate.verdict`. Do not edit tracked files during the run.
+Never call `make check-all` directly. The verdict checks both exit status and log content, and
+records its commit/tree. [Testing](testing.md) owns the stage description; the executable stage
+list is `check-all` in [Makefile](../Makefile).
 
-| Stage | Current tooling | Purpose |
-|---|---|---|
-| Generate | `oapi-codegen`, `openapi-typescript` | Detect committed contract/type drift |
-| Dependency declarations | `go mod edit -json` over every module | One version per shared Go dependency, horizontally (ADR-035) |
-| Build-list lag | `go list -m` against every module's declarations | No manifest declares below the workspace-selected version (ADR-035 §Amendment) |
-| Standalone Go modules | workspace-disabled, network-disabled `go list` | Every workspace module has a complete readonly manifest and checksum set |
-| Go lint | pinned `golangci-lint` | Static analysis for every Go module |
-| TypeScript lint | `oxlint` | Frontend static analysis |
-| Tests | `go test`, Vitest | Package and component behavior |
-| Build | Go toolchain, Astro, Vite | Compile every service and frontend |
-| Smoke | isolated Docker Compose project | Real gateway, PostgreSQL, NATS, web, and telemetry seams |
+CI calls the same gate plus `scripts/gate-selftest.sh`. Scheduled/path-triggered hermetic smoke
+and advisory scans have separate roles. See [CI policy](conventions/continuous-delivery.md).
+For changed web write forms, add a submitting browser spec and run `make browser`; smoke alone
+does not verify browser actions, Origin, cookies, or JavaScript.
 
-`scripts/gate-selftest.sh` proves that seeded lint, test, build, dependency-drift and build-list-lag defects fail
-the gate. The drift case is preceded by a positive control asserting the clean baseline passes —
-without it, a checker that always failed would satisfy its own seeded test.
-`make smoke-hermetic` exercises in-container builds on the scheduled/path-triggered CI workflow.
-There is no project pre-commit framework; run focused tests during development and `make check`
-before handoff.
+## Engineering and review
 
-## Engineering rules
+Start from written requirements. Keep service ownership, integer money, tenant scoping,
+append-only histories, explicit public/internal routes, and contract compatibility intact.
+Read [engineering rules](conventions/engineering-rules.md) for test tiers, reachability,
+mutations, fixture repetitions, security evidence, and review of interacting fixes.
+Record design changes as ADRs and update the owning documentation in the same change.
+[Maintenance](documentation/maintenance.md) names update triggers.
 
-- Write or refine the spec before implementation; do not infer ticketing behavior that the ticket
-  or PRD has not settled.
-- Preserve the service ownership in ADR-002. Shared code is limited to cross-cutting policy and
-  requires deliberate review.
-- Use integer minor units and ISO currency on every money path; floats are forbidden.
-- Treat money and ticket lifecycle history as append-only.
-- Keep public/internal HTTP boundaries explicit and committed OpenAPI contracts enforceable.
-- Use deterministic tests. Infrastructure behavior belongs in the isolated smoke seam, not timing
-  assumptions or mocks that cannot prove database/bus semantics.
-- Record significant or cross-cutting decisions as ADRs. Correct documentation in the same change
-  when behavior or topology changes.
+Ticket work uses [.claude/sdlc.config.json](../.claude/sdlc.config.json) and the selected
+[workflow skill](../.claude/skills/README.md). Human and autonomous modes take gates differently;
+owner priority and unresolved blocking findings remain owner decisions. Documentation maintenance
+uses the skill's exception unless the session asks for a PR. See [PR conventions](conventions/pull-requests.md).
 
-## Review and commits
+## Tool hooks and limits
 
-Use ticket-prefixed branches created by the project workflow and focused conventional-style commit
-messages. A PR must explain its ticket, risks, validation, and any ADR impact. Review correctness,
-clarity, architecture, security, and operational recovery; AI assistance does not replace owner or
-human approval at the workflow gates. See [`conventions/`](./conventions/) for the detailed local
-conventions.
+[.claude/settings.json](../.claude/settings.json) registers Claude `PreToolUse` hooks only.
+The Bash guard refuses commands outside its narrow wait/read forms while the gate is locked.
+For a recognized `gh pr merge`, it refuses a dirty tree, a missing/stale PASS verdict, a different
+current tree digest, or a local HEAD that differs from the forge's PR head. It also detects some
+Claude-attribution patterns in commit command text. The Edit/Write guard refuses edits inside a
+repo with a gate lock. `make check-hooks` runs `.claude/hooks/selftest.sh` with seeded violations.
+
+These guards are limited recognizers, not a full shell parser or universal enforcement. They do
+not automatically run for Codex or every execution tool. The attribution policy covers all models
+even though this guard recognizes only some strings. No hook currently refuses `--admin`;
+TKT-518 tracks that gap. The gate lock also has structural enforcement in Makefile, independent
+of hook wiring. Respect the working agreement when a tool can bypass a guard.
 
 ## Runtime baseline
 
-Docker Compose is the only deployment topology. Services expose health/readiness endpoints, emit
-structured logs, and export OpenTelemetry signals. Distroless Go images run as non-root; frontend
-containers use their documented Node/nginx runtimes. Cloud infrastructure, release automation,
-SLOs, and production alerting remain out of scope until explicitly designed.
+Docker Compose is the only runtime. Each service has health/readiness, structured logs, and
+OpenTelemetry export. [Architecture](architecture.md), [configuration](configuration.md),
+and [known limits](known-limits.md) own the details. Local measured NFR targets do not create
+production SLO commitments. Cloud release infrastructure and production operations need separate
+design and authorization.

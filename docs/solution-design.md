@@ -1,4 +1,4 @@
-# Solution Design
+# Solution design
 
 This document is the high-level design index for the ticketing-system testbed. Detailed product
 scope lives in [`product/`](./product/), binding technical decisions in [`adr/`](./adr/), and the
@@ -37,10 +37,10 @@ must begin from an accepted product spec or ticket context.
   `platform.catalog.performance.published`.
 - Commerce completion triggers Access through `platform.commerce.order.completed`.
 - Each service owns its schema and credentials; cross-service reads use HTTP or committed events.
-- OpenAPI source files live at `services/*/api/openapi.yaml`; generated models and Storefront types
-  are drift-checked by `make check`.
+- OpenAPI source files live at `services/*/api/openapi.yaml`; all twelve generated outputs
+  are drift-checked by `make check`; see the [contract map](contracts.md).
 - Configuration and operational recovery procedures live in
-  [`configuration.md`](./configuration.md) and [`development.md`](./development.md).
+  [`configuration.md`](./configuration.md) and the [runbook index](runbooks/README.md).
 
 ## Quality and evolution
 
@@ -49,6 +49,7 @@ isolated Compose smoke suite. The smoke seam covers real PostgreSQL, JetStream, 
 contracts, browser assets, and observability. Architecture decisions are appended under
 [`adr/`](./adr/); milestone state is maintained in [`ROADMAP.md`](./ROADMAP.md).
 
-There is no cloud environment, infrastructure-as-code estate, production deployment pipeline,
-real PSP, or external documentation system in the current scope. Those are future decisions, not
-implicit parts of this design.
+Payments implements fake and Stripe test-mode adapters. Live Stripe keys are refused.
+Commerce sells in EUR only. Cloud infrastructure, a production deployment pipeline, live PSP
+operation, and an external documentation system remain outside the implemented scope.
+See [known limits](known-limits.md) for the consolidated implementation boundaries.

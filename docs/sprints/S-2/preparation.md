@@ -1,5 +1,7 @@
 # S-2 preparation
 
+Historical start brief at its recorded baseline. Statements below such as "remains planned" refer to preparation time. Later evidence is in [the committed report](report.en.html) and [publication records](evidence/TKT-563/publication/README.md). Current closure status must be read from the board, not inferred from this snapshot.
+
 Prepared on October 18, 2026. This is the proposed start brief. S-2 remains planned. No ticket was
 prioritized or claimed by this preparation. The owner has approved the dates, full final review,
 HTML report, no tag, the TKT-399 review extension and the host-Chrome measurement limit.

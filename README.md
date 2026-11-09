@@ -1,4 +1,4 @@
-# Ticketing System
+# Ticketing system
 
 Event ticketing platform — five Go services behind a gateway, TypeScript/React frontends,
 built spec-first with AI-assisted development. See `docs/product/` for the brief/PRD and
@@ -12,7 +12,8 @@ make up      # first run generates a local credential (.env), then compose up --
 
 `make up` is needed once per clone. No working service credential, database password, HMAC key, or
 signing seed is checked in, so the command generates the required local values in a gitignored
-`.env`. After that, plain `docker compose up` works as usual.
+`.env`. Use `make up` for later starts too. It includes the diagnostic-port overlay needed for
+Grafana and direct local service access. Base `docker compose up` publishes only the gateway.
 
 Then:
 
@@ -33,7 +34,10 @@ deterministic shifted ports. It runs the integration suite in `smoke/`; its defa
 is separate from your dev stack.
 `scripts/gate-selftest.sh` proves the gate fails on seeded lint/test/build errors.
 
-Prereqs: Go 1.26+, Node 24+ (pnpm via corepack), Docker with Compose v2.
+Prerequisites and pinned versions: [development](docs/development.md#toolchain).
+Run `make deps` before the gate on a clean clone. Use [the documentation map](docs/README.md)
+to load only the files needed for your task. `make down` deletes local volumes; see
+[stopping without data loss](docs/development.md#everyday-loop).
 
 ## Layout
 
@@ -44,7 +48,7 @@ Prereqs: Go 1.26+, Node 24+ (pnpm via corepack), Docker with Compose v2.
 | `web/storefront` | Astro 7 SSR storefront with React components (ADR-006) |
 | `web/backoffice` | Astro 7 SSR staff back office with role-gated sessions (ADR-042) |
 | `web/scanner` | React/Vite gate scanner served under `/scanner/` |
-| `shared/go/` | shared kernel: health, observability, cache tier, rate limiting, mail, event envelope and durable-consumer packages; additions require an ADR |
+| `shared/go/` | shared kernel: cross-cutting packages; see the package map in docs/architecture.md; additions require an ADR |
 | `smoke/` | black-box integration suite through the gateway |
 | `docs/` | PRD, ADRs, architecture, conventions |
 

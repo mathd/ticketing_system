@@ -1,0 +1,11 @@
+ticket	decision	checked_utc	board_body_sha256	summary
+TKT-399	D7	2026-11-09	aaea28f68840db1eee7b5c9d4e9fe8f8f9f6c75ef8f04063ea7eaa697e213f5e	Exit mode records or does not record; no local revocation refusal
+TKT-399	D11	2026-11-09	b300a0dcc497e020228223152a9ad1efa74113e96853d1659b833445b6391b9d	Entry-only local refusal; Exit listed ticket writes nothing
+TKT-399	D18	2026-11-09	321f6ed14f7910459622e47b06e8932196cabf21e61d91b6ef22427da782758c	Historical version-3 barrier owner choice
+TKT-399	D29	2026-11-09	06b146037ecbd569dbc2a7c145ccf887e443bdb7da713794dd189361cda6b253	Owner send and actuation time limits
+TKT-399	D30	2026-11-09	dc3ae1e6c07ed2cf89f71e1ea94f3327749390f82245a18188bbc2fa51e59362	Owner stopped-scan and page-loss rules
+TKT-399	D33	2026-11-09	12ffe4cb353a3965f908658135ad749574661ac776aae855b7fa4ce0c396059b	Offline result before queue persistence
+TKT-399	D39	2026-11-09	60d7a0082b4408642927cd6e11712e131a60fa4c4eb309d83754ca969d9f2e47	Owner design-first stop and re-plan
+TKT-557	D21	2026-11-09	3bbd6e17d35e951c05a30d2686584bdd3c4a4c4b72f8291dafb0f05d7619ca22	Explicit sslmode=disable deviation
+TKT-557	D29	2026-11-09	cf090175daa02b037a8cf6b77b192f78a8984fcd251edd0ca8f6404ae51be0ac	Full venue qualification and owner-selection precondition
+TKT-557	D33	2026-11-09	16db699c50a8af2fad4cf03b19431951daaaec393b4dbacef3dafe3cffdd499f	Apply full venue precondition and amendments

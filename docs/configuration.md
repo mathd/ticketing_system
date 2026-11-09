@@ -1,9 +1,11 @@
 # Configuration
 
-All configuration is environment variables, injected by Compose (`compose.yaml`); there are
-no config files in the services.
+Process configuration uses environment variables; CLI commands also have flags. Base Compose,
+overlays, and service startup code determine what reaches each process. This page explains key
+relationships and limits. The [override register](configuration-reference.md) covers all 55 base
+Compose interpolations, code-only Commerce worker settings, and overlay port inputs.
 
-## Go services (all five)
+## Shared settings and Access event settings
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -63,17 +65,22 @@ Without it nothing, including the reconciler, can ever discharge ticket voiding
 
 `REFUND_REVERSAL_INTERVAL` (default `1m`) and `REFUND_REVERSAL_BATCH` (default `16`) tune the runner
 that drives outstanding reversals. Operator surface and the meaning of each state:
-`docs/development.md` § Refund reversal reconciliation.
+[order recovery](runbooks/order-recovery.md#refund-reversal-reconciliation).
 
 `EXCHANGE_REVERSAL_INTERVAL` (default `1m`) and `EXCHANGE_REVERSAL_BATCH` (default `16`) tune the
 equivalent sweep for outstanding exchange obligations. Both are plain defaults with no compose `:?`
 marker — they are tuning knobs, not credentials. Operator surface and the meaning of each state:
-`docs/development.md` § Exchange obligation sweep.
+[order recovery](runbooks/order-recovery.md#exchange-obligation-sweep).
+
+Base Compose does not forward these Commerce worker variables. Setting them only in `.env`
+has no effect. Pass them explicitly with a local overlay; see the [worker register](configuration-reference.md#commerce-worker-settings).
 
 ## Compose host ports (dev defaults / smoke)
 
-All published ports bind to `127.0.0.1`. `GATEWAY_PORT` 8080/18080 · `POSTGRES_PORT` 5432/15432 · `NATS_PORT` 4222/14222 ·
-`GRAFANA_PORT` 3000/13000 · `PROM_PORT` 9090/19090 · `OTLP_PORT` 4318/14318.
+Published ports bind to `127.0.0.1`. The dev overlay defaults are gateway 8080, PostgreSQL 5432,
+NATS 4222, Grafana 3000, Prometheus 9090, and OTLP 4318. Smoke and browser runs add a path-derived
+slot to their own base port ranges. Read their startup line and [Docker's slot rule](docker.md),
+not a fixed smoke-port pair.
 
 ## Secrets
 
@@ -145,8 +152,7 @@ UTC.
 
 The scan routes require `X-Scanner-Token` from an enrolled device (ai-review S1). No
 environment variable configures it: devices are enrolled per organizer with
-`access enrol-scanner` and stored hashed. See `docs/development.md` § Scanner device
-enrolment.
+`access enrol-scanner` and stored hashed. See [scanner enrollment](runbooks/scanner.md).
 
 **Provisional pre-decision bounds** (TKT-557, ADR-085 §8 ticket 0). Access limits four steps that
 run before any ticket decision to **500 ms each**: the device lookup, the initial policy read of a
@@ -162,7 +168,7 @@ The bound sets how many healthy but slow scans go offline at normal peak, not on
 
 Every Access command that opens its database refuses `DATABASE_URL` unless the string sets
 `sslmode=disable` **explicitly** and the parsed configuration enables no TLS and no TLS fallback
-(TKT-557, ADR-085 decision D21). This covers the server, `migrate`, and every database command of the
+(TKT-557 decision D21, recorded in ADR-085). This covers the server, `migrate`, and every database command of the
 CLI (`lifecycle-backfill`, `verify-lifecycle`, `seal-lifecycle-epoch`, `set-lifecycle-mode` and the
 scanner commands). `healthcheck` and `keygen` open no database. The refusal comes before any dial,
 and its text does not contain the URL.
@@ -196,8 +202,10 @@ committed literal `postgres` and each role's was its own **name**, so anything t
 reach the published port owned every database by typing the obvious thing.
 
 `make up` generates all six into `.env`; the isolated stacks generate their own per run.
-They are applied on **first boot only** — the init scripts run against an empty data
-directory — so rotate with `make down` (which takes the volume) or an `ALTER ROLE`.
+Init scripts apply these passwords only on first boot, against an empty data directory.
+`make down` deletes the volumes and their data. It resets a disposable stack; it does not rotate
+passwords in a retained database. For retained data, an authorized `ALTER ROLE` and matching credential update
+must preserve database access. Do not regenerate a password beside an unchanged role.
 
 ## Published ports
 

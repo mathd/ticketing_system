@@ -1,5 +1,7 @@
 # Product brief — Ticketing System v1
 
+Original product-discovery baseline, 2026-07-12. The draft status and original non-goals below are historical intent, not current delivery status. Payments now includes Stripe test mode; live PSP operation remains excluded. Use [roadmap](../ROADMAP.md), [accepted decisions](../adr/README.md), and the board for current scope and status. No fiscal-compliance claim follows from this brief.
+
 Status: draft for Gate 1 · Date: 2026-07-12 · Source: owner discovery interview (6 rounds + additions), synthesized per `sdlc-ticket` exploration Mode B.
 
 ## Brief

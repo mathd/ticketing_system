@@ -19,6 +19,8 @@ the TKT-221 rule that attribution never changes. See § *TKT-223 amendment*.
 "no recovery path at all" have stopped being true**. See § *TKT-226 amendment* and
 [ADR-050](ADR-050-transactional-mail-and-password-recovery.md).
 
+Amended by [ADR-052](ADR-052-order-attribution-detachment.md) for detaching guest-order attribution.
+
 ## Context
 
 TKT-21 needs a *customer*: an optional account a buyer can create, so that purchases hang off an

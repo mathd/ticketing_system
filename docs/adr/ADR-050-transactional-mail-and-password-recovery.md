@@ -60,7 +60,8 @@ name explicitly.
 
 `shared/go` rather than `services/commerce/internal/mail`, for the reason `shared/go/fakepsp`
 is there: a port's offline fake that more than one module needs belongs in the module every
-service already has in `go.work`. Two callers of the concept exist today. It costs zero extra
+service already has in `go.work`. The service-owned path in this comparison is a rejected
+alternative, not a current directory. Two callers of the concept exist today. It costs zero extra
 code and it is where a real provider must land.
 
 **`access` is deliberately NOT migrated onto it.** Its `Send(ctx, deliveryID, email, link)` has

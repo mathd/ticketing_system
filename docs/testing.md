@@ -1,11 +1,22 @@
 # Testing
 
-The gate is `make check` = **deps → generated API drift → dependency drift → build-list lag →
-workflow checks (security, hermetic) → ADR numbering → markdown links → hook self-test → Go
-toolchain check → lint → standalone Go modules → test → build → smoke**. CI runs exactly the
-same target (`.github/workflows/check.yaml`) plus the gate self-test. Quality gates per story: PRD
-§Quality gates (contract tests per touched boundary from US-002; journal invariants from US-004;
-browser evidence on UI stories).
+Run `make check`. The wrapper locks the tree and writes `.gate.verdict`; never edit tracked
+files while it runs or call `make check-all` directly. CI calls the same target plus the gate
+self-test. [Makefile](../Makefile) is the executable stage order. At this revision it is:
+
+```text
+deps -> check-generate -> check-dep-drift -> check-build-list-lag
+-> check-security-workflow-trigger -> check-scan-allowlist
+-> check-hermetic-workflow-trigger -> check-check-workflow-trigger
+-> check-adr-numbers -> check-markdown-links -> check-hooks -> check-go-toolchain
+-> lint -> check-astro-image-premise -> check-go-standalone -> test -> build -> smoke
+```
+
+`check-generate` compares the twelve [generated contract outputs](contracts.md) with HEAD.
+Commit authorized regeneration before the gate. The scan allowlist and Astro image-premise
+checks cover the accepted risks in [security policy](conventions/security.md).
+Markdown checks confirm file targets, not heading fragments or external URLs.
+[Engineering rules](conventions/engineering-rules.md) govern assertion tiers and fixture proof.
 
 ## Stages
 

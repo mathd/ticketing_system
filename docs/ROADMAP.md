@@ -16,7 +16,8 @@ preserve the planning baseline; they are not a second completion tracker.
   allocations, group reservations, seated claims, orphan prevention, best-available selection,
   and the sustained no-oversell proof are implemented.
 - **Pricing, fees, and settlement foundations** (TKT-5, TKT-6). Rule-resolved integer prices,
-  fee incidence, payees, split schedules, and the settlement ledger are implemented.
+  fee incidence, payees, split schedules, and the settlement ledger are implemented. Commerce
+  currently sells in EUR only; TKT-10 tracks broader currency support.
 - **Buyer and post-purchase flows** (TKT-9, TKT-21, TKT-35). The storefront supports customer
   accounts, guest-order claims, wallets, password recovery, interactive seating, ticket bundles,
   refunds, and exchanges within the limits recorded by their ADRs.
@@ -36,3 +37,5 @@ preserve the planning baseline; they are not a second completion tracker.
 - Live PSP operation beyond the fake and Stripe test-mode adapters, multi-tenant onboarding UX,
   cloud deployment, and the NF525 compliance profile for the French market remain outside the
   current testbed scope. See the [product brief](./product/brief.md) for the v1 non-goals.
+
+See [known implementation limits](known-limits.md). Capability summaries do not replace the board.
