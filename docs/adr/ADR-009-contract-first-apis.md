@@ -35,7 +35,9 @@ We adopt **contract-first APIs**:
    the single source of truth, reviewed in PRs like code.
 2. Go server interfaces and types are generated with **oapi-codegen v2** (pinned via the
    module's `tool` directive); TypeScript types use **openapi-typescript**, pinned at the
-   workspace root because the applications use TypeScript 7. Generated files are committed;
+   workspace root. It needs the TypeScript 6 compiler API, which the root supplies through the
+   `@typescript/typescript6` alias (see [dependency policy](../conventions/dependencies-and-versions.md)).
+   Generated files are committed;
    **`make generate` regenerates and the gate fails on drift** (`git diff --exit-code HEAD` on
    every output declared by `scripts/generate-api.sh`).
 3. Requests are validated against the spec at runtime (kin-openapi middleware); handler tests

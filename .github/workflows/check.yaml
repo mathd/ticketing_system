@@ -34,13 +34,15 @@ jobs:
         with:
           go-version: "1.27.3"
           cache-dependency-path: "**/go.sum"
-      # pnpm via corepack (version from packageManager, like the scanner
-      # Dockerfile) — pnpm/action-setup v6 is broken both in default and
-      # standalone mode (pnpm/action-setup#276)
+      # pnpm via corepack (version from packageManager) — pnpm/action-setup v6
+      # is broken both in default and standalone mode (pnpm/action-setup#276).
+      # This step runs before setup-node, so it uses the corepack of the
+      # runner's preinstalled Node. Node 25+ has no corepack; the pnpm shim
+      # still runs under the Node 26 that setup-node puts first on PATH.
       - run: corepack enable pnpm && corepack install
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24.22.2"
+          node-version: "26.13.0"
           cache: pnpm
       # golangci-lint analysis cache, keyed on the Makefile's pinned version
       - id: golangci-version
@@ -60,13 +62,15 @@ jobs:
         with:
           go-version: "1.27.3"
           cache-dependency-path: "**/go.sum"
-      # pnpm via corepack (version from packageManager, like the scanner
-      # Dockerfile) — pnpm/action-setup v6 is broken both in default and
-      # standalone mode (pnpm/action-setup#276)
+      # pnpm via corepack (version from packageManager) — pnpm/action-setup v6
+      # is broken both in default and standalone mode (pnpm/action-setup#276).
+      # This step runs before setup-node, so it uses the corepack of the
+      # runner's preinstalled Node. Node 25+ has no corepack; the pnpm shim
+      # still runs under the Node 26 that setup-node puts first on PATH.
       - run: corepack enable pnpm && corepack install
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24.22.2"
+          node-version: "26.13.0"
           cache: pnpm
       - run: make deps
       - run: ./scripts/gate-selftest.sh

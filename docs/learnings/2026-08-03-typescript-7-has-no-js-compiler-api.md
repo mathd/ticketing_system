@@ -67,3 +67,9 @@ Watch `@astrojs/check` / `@volar/kit` peers for `^7`. When one lands, restore
 `build: astro check && astro build` and delete this workaround — that closes the `.astro` gap
 above. Moving `openapi-typescript` back into the apps needs the same thing from *its* maintainers;
 until then the root pin is the cheap place for it.
+
+**Update 2026-11-09.** The root `typescript` dependency is now the alias
+`npm:@typescript/typescript6@~6.0.2`, so no TypeScript 6 compiler remains in the workspace. The
+package is a wrapper around `typescript@6.0.3`, so the TS 6 API itself stays in the lockfile.
+`@astrojs/check` 0.9.12 (peer `^5 || ^6`) and `@volar/kit` 2.4.31 (peer `<7`) still block the
+`astro check` restore.
