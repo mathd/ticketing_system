@@ -282,8 +282,10 @@ headers and body.
 
 This does not add a cardinality rule for arrays, objects, schemas without an explicit primitive type,
 or content-based headers. A composed schema receives the rule when it declares one of the primitive
-types above. Array headers still use kin-openapi's existing decoder, which reads the first field value;
-no current service contract declares array, object or content-based response headers. Do not read this
+types above. Array headers use kin-openapi's decoder. Up to v0.149.0 it read only the first field
+value. From v0.153.0 (dependency update, 2026-11-09) it decodes every field value, so an invalid later
+field fails closed through the same 500 and log; the shared contract test pins both array cases.
+No current service contract declares array, object or content-based response headers. Do not read this
 as a guarantee for every declared response header.
 
 Request validation is unchanged. kin-openapi also reads the first field value for primitive request
