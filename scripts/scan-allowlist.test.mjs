@@ -648,7 +648,10 @@ describe('workflow wiring (structural)', () => {
   });
 
   it('a Trivy version that is not pinned fails', () => {
-    refusesWiring(mutated('          version: v0.72.0\n', '          version: latest\n'), /Trivy input "version"/);
+    // Read the pinned line from the workflow, so a Trivy bump does not break this test.
+    const pinned = REAL.match(/^ {10}version: v\d+\.\d+\.\d+\n/m);
+    assert.ok(pinned, 'the Trivy step has no pinned version line');
+    refusesWiring(mutated(pinned[0], '          version: latest\n'), /Trivy input "version"/);
   });
 });
 
@@ -806,8 +809,12 @@ describe('the audit wrapper with the real pnpm and a local registry', () => {
   // The real pnpm reads the real configuration sources, so each bypass is first
   // shown to work on a plain `pnpm audit` (exit 0), and then shown not to work
   // through the wrapper (exit 1). The registry is a local process that reports
-  // one HIGH advisory for smol-toml under /adv/ and nothing under /empty/, so
-  // these tests use no network.
+  // one HIGH advisory for smol-toml under /adv/ and nothing under /empty/.
+  // pnpm 12 also resolves its own `packageManager` pin (the `pnpm` and
+  // `@pnpm/exe.*` metadata) through the given registry before it audits. The
+  // local registry forwards those metadata GETs to registry.npmjs.org, so these
+  // tests need the network. Only the advisory endpoint decides the result, and
+  // the local process always answers it.
   const LOCK_ONE = `lockfileVersion: '9.0'
 
 settings:
@@ -847,7 +854,20 @@ const advisory = { 'smol-toml': [{ id: 1, url: 'https://github.com/advisories/GH
   title: 'fixture advisory', severity: 'high', vulnerable_versions: '<=1.7.0' }] };
 const server = createServer((req, res) => {
   req.resume();
-  req.on('end', () => {
+  req.on('end', async () => {
+    if (req.method === 'GET' && !req.url.includes('/-/npm/v1/security/')) {
+      try {
+        const upstream = await fetch('https://registry.npmjs.org' + req.url.replace(/^\\/(adv|empty)\\//, '/'), {
+          headers: { accept: req.headers.accept ?? 'application/json' },
+        });
+        res.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type') ?? 'application/json' });
+        res.end(Buffer.from(await upstream.arrayBuffer()));
+      } catch {
+        res.writeHead(502);
+        res.end();
+      }
+      return;
+    }
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify(req.url.startsWith('/adv/') ? advisory : {}));
   });
@@ -856,7 +876,10 @@ server.listen(0, '127.0.0.1', () => console.log(server.address().port));
 `;
   const HOOK = "module.exports = { hooks: { updateConfig(config) { config.auditConfig = { ignoreGhsas: ['GHSA-7w5x-hrqm-74c2'] }; return config; } } };\n";
   const HOOK_MJS = "export const hooks = { updateConfig(config) { config.auditConfig = { ignoreGhsas: ['GHSA-7w5x-hrqm-74c2'] }; return config; } };\n";
-  const GLOBAL_HOOK = 'module.exports = { hooks: { updateConfig(config) { config.ignoreUnfixable = true; delete config.globalPnpmfile; return config; } } };\n';
+  // pnpm 12 derives a patched range from `vulnerable_versions`, so the fixture
+  // advisory is fixable and `ignoreUnfixable` no longer hides it. The hook
+  // ignores the GHSA instead.
+  const GLOBAL_HOOK = "module.exports = { hooks: { updateConfig(config) { config.auditConfig = { ignoreGhsas: ['GHSA-7w5x-hrqm-74c2'] }; delete config.globalPnpmfile; return config; } } };\n";
   const COREPACK_HOME =
     process.env.COREPACK_HOME ?? join(process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'node', 'corepack');
   let server;
