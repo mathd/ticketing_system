@@ -251,6 +251,50 @@ async function liveAccess(shared) {
   });
 }
 
+export async function realPolicyRefusals(shared) {
+  for (const policy of [
+    { reason: 'exit_required', mode: 'multi', maxEntries: 'NULL', requiresExit: true },
+    { reason: 'entry_limit_reached', mode: 'count_limited', maxEntries: '1', requiresExit: false },
+  ]) {
+    await withPage(shared, async ({ page, scans, batches }) => {
+      const ticket = shared.fixture();
+      const updated = sql(shared.PG, 'access', `UPDATE slot_re_entry_policies
+        SET mode='${policy.mode}',max_entries=${policy.maxEntries},requires_exit=${policy.requiresExit}
+        WHERE slot_id=(SELECT slot_id FROM tickets WHERE id='${ticket.ticket}') RETURNING slot_id`);
+      assert.equal(updated.trim().split('\n').filter(Boolean).length, 1);
+      assert.deepEqual(shared.facts(ticket.ticket), []);
+      await page.getByRole('radio', { name: 'Entry', exact: true }).check();
+      const accepted = await send(page, ticket.credential);
+      assert.equal(accepted.response.status(), 200);
+      assert.deepEqual(accepted.body, { decision: 'accepted', scanned_at: accepted.body.scanned_at });
+      await completedState(page, accepted.request.occurrence_id, 'ACTUATED');
+      await page.getByRole('heading', { name: 'Accepted', exact: true }).waitFor();
+      const admission = [{ occurrence_id: accepted.request.occurrence_id, event_type: 'entry',
+        occurred_at: new Date(accepted.body.scanned_at).toISOString() }];
+      assert.deepEqual(shared.facts(ticket.ticket), admission);
+      const before = lifecycle(shared.PG, ticket.ticket);
+      assert.equal(before.length, 1);
+      assert.ok(before[0].integrity);
+      assert.equal(shared.quarantine(ticket.ticket), 0);
+
+      const denied = await send(page, ticket.credential);
+      assert.equal(denied.response.status(), 409);
+      assert.deepEqual(denied.body, { decision: 'rejected', reason: policy.reason });
+      assert.notEqual(denied.request.occurrence_id, accepted.request.occurrence_id);
+      assert.deepEqual(denied.request, { occurrence_id: denied.request.occurrence_id, qr_payload: ticket.credential,
+        occurred_at: denied.request.occurred_at, direction: 'entry' });
+      await assertResolved(page, denied.request, 409, policy.reason);
+      await page.getByRole('heading', { name: 'Rejected', exact: true }).waitFor();
+      await assertResult(page, entryDenials.find(entry => entry.reason === policy.reason).lines);
+      assert.deepEqual(lifecycle(shared.PG, ticket.ticket), before);
+      assert.deepEqual(shared.facts(ticket.ticket), admission);
+      assert.equal(shared.quarantine(ticket.ticket), 0);
+      assert.deepEqual(scans, [accepted.request, denied.request]);
+      assert.deepEqual(batches, []);
+    });
+  }
+}
+
 async function writeFailure(shared) {
   const cases = [
     { reason: 'refunded', status: 409, lines: ['Do not admit. This ticket was voided by a refund. Get an operator.', 'Reason: refunded.'] },
@@ -348,6 +392,7 @@ export async function entryReasons(shared) {
   for (const [name, journey] of [
     ['TKT-565 readable-matrix', readableMatrix],
     ['TKT-565 live-access', liveAccess],
+    ['TKT-566 real-policy-refusals', realPolicyRefusals],
     ['TKT-565 write-failure', writeFailure],
     ['TKT-565 exit-control', exitControl],
   ]) {
