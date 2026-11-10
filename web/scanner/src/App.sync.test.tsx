@@ -102,6 +102,7 @@ const waitingNote = 'Waiting for local storage to finish before this sync can co
 const readAlert = 'Storage is unavailable or incompatible. Keep this page open and retry storage.'
 const corruptWarning = 'Local record corrupt-row cannot be read: record type is not exactly one of entry, exit or refusal. It stays on this device and will not sync.'
 const REPAIR_NEEDED_TEXT = 'The outcome write needs repair. Keep this page open and retry storage.'
+const notReadyText = 'Scanner storage is not ready. No ticket was checked.'
 
 const mixedSyncNote = 'Synced 92 offline scan(s). 7 conflicts flagged for the operator. 6 rejected scans were not recorded.'
 const partialSyncNote = 'Completed batches: Synced 90 offline scan(s). 6 conflicts flagged for the operator. 4 rejected scans were not recorded.'
@@ -1393,6 +1394,179 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
   }
   const byId = (a: OccurrenceRecord, b: OccurrenceRecord) => (a.occurrenceId < b.occurrenceId ? -1 : 1)
 
+  // A real opening. The App refreshes while the controller is in its startup repair. The page holds one queued row, so the
+  // count can appear only after the App's own accepted read. Controller startup reads and readiness publish no count.
+  it('a refresh during real opening adds no unavailable alert and shows the queued count after the accepted App read', async () => {
+    page.destroy()
+    dbName = `app-sync-opening-${crypto.randomUUID()}`
+    const seed = createTestPage({ dbName })
+    await seed.ready()
+    const { scan } = await mintOn(seed)
+    seed.coordinator.latch({ kind: 'queue', occurrenceId: scan.occurrenceId,
+      outcome: { family: 'queue', cause: 'transport_failure' }, decidedAt: '2026-10-20T12:00:02.000Z' })
+    await seed.coordinator.persist(scan.occurrenceId)
+    expect(await storedRows()).toMatchObject([{ occurrenceId: scan.occurrenceId, state: 'QUEUED' }])
+    seed.destroy()
+    page = createTestPage({ dbName }); runtime.storage = page.storage
+    // One gate on repairAll. The first hold is the controller's startup repair. The second is the App prelude after ready.
+    const gate = gateMethod(page.coordinator, 'repairAll')
+    const startup = gate.hold()
+    const prelude = gate.hold()
+    stubFetch(() => Promise.reject(new TypeError('no reconcile in this test')))
+    try {
+      render(<App />)
+      await bounded(startup.started, 'opening repair')
+      expect(page.storage.state().status).toBe('opening')
+      expect(page.storage.readyStore()).toBeNull()
+      expect(screen.getByText(notReadyText)).toBeDefined()
+      expect(screen.getByRole('button', { name: 'Use camera' }).hasAttribute('disabled')).toBe(true)
+      expect(screen.getByRole('button', { name: 'Refresh revocation list' }).hasAttribute('disabled')).toBe(true)
+      expect(screen.getByRole('radio', { name: /Entry/ }).closest('fieldset')?.disabled).toBe(true)
+      focusWindow()
+      expect(screen.getByText(notReadyText)).toBeDefined()
+      expect(screen.queryByText(readAlert)).toBeNull()
+      setVisibility('visible')
+      expect(screen.getByText(notReadyText)).toBeDefined()
+      expect(screen.queryByText(readAlert)).toBeNull()
+      tokenEvent('changed-token')
+      expect(screen.getByText(notReadyText)).toBeDefined()
+      expect(screen.queryByText(readAlert)).toBeNull()
+      act(() => { window.dispatchEvent(new Event('online')) })
+      expect(screen.getByText(notReadyText)).toBeDefined()
+      expect(screen.queryByText(readAlert)).toBeNull()
+      startup.release()
+      await readinessIs('ready')
+      await bounded(prelude.started, 'App prelude repair')
+      expect(screen.queryByText(/awaiting sync\./)).toBeNull()
+      prelude.release()
+      await screen.findByText(/^1 queued offline scan awaiting sync\./, {}, { timeout: BOUND_MS })
+      expect(screen.queryByText(notReadyText)).toBeNull()
+      expect(screen.queryByText(readAlert)).toBeNull()
+      expect(screen.getByRole('button', { name: 'Sync queued scans' }).hasAttribute('disabled')).toBe(false)
+      expect(screen.getByRole('button', { name: 'Use camera' }).hasAttribute('disabled')).toBe(false)
+    } finally {
+      startup.release()
+      prelude.release()
+      restoreVisibility()
+    }
+  })
+
+  // The four refresh triggers. Online also calls the existing feed and sync paths, which send nothing without a ready store.
+  // A pairing event refreshes only when its token changes.
+  const refreshTriggers = (token: string) => {
+    focusWindow()
+    setVisibility('visible')
+    tokenEvent(token)
+    act(() => { window.dispatchEvent(new Event('online')) })
+  }
+
+  // Contract only. The App's mount-time start is held back, so the controller stays idle until the explicit start.
+  it('an idle controller shows no unavailable alert on the refresh triggers, and only an explicit start opens storage', async () => {
+    page.destroy()
+    page = createTestPage({ dbName }); runtime.storage = page.storage
+    const start = vi.spyOn(page.storage, 'start').mockImplementation(() => {})
+    stubFetch(() => Promise.reject(new TypeError('no reconcile in this test')))
+    try {
+      render(<App />)
+      expect(page.storage.state().status).toBe('idle')
+      expect(screen.getByText(notReadyText)).toBeDefined()
+      refreshTriggers('idle-token')
+      expect(page.storage.state().status).toBe('idle')
+      expect(screen.getByText(notReadyText)).toBeDefined()
+      expect(screen.queryByText(readAlert)).toBeNull()
+      expect(screen.getByRole('button', { name: 'Use camera' }).hasAttribute('disabled')).toBe(true)
+      start.mockRestore()
+      act(() => { page.storage.start() })
+      await readinessIs('ready')
+      await settle()
+      expect(screen.queryByText(notReadyText)).toBeNull()
+      expect(screen.queryByText(readAlert)).toBeNull()
+    } finally {
+      start.mockRestore()
+      restoreVisibility()
+    }
+  })
+
+  // A real drain. The version-4 upgrade waits behind the held drain. Once the drain is released, the old connection closes.
+  it('a draining controller shows no unavailable alert on the refresh triggers, and its version change waits for the drain', async () => {
+    render(<App />)
+    stubFetch(() => Promise.reject(new TypeError('no reconcile in this test')))
+    const drain = gateMethod(page.coordinator, 'drain').hold()
+    const upgraded = deferred<IDBDatabase>()
+    let upgradeStarted = false
+    try {
+      await act(async () => {
+        const request = indexedDB.open(dbName, 4)
+        upgradeStarted = true
+        request.onsuccess = () => upgraded.resolve(request.result)
+        request.onerror = () => upgraded.reject(new Error('version upgrade failed'))
+        await readinessIs('draining')
+      })
+      await bounded(drain.started, 'version-change drain')
+      expect(page.storage.state().status).toBe('draining')
+      expect(screen.getByText(notReadyText)).toBeDefined()
+      refreshTriggers('draining-token')
+      expect(page.storage.state().status).toBe('draining')
+      expect(screen.getByText(notReadyText)).toBeDefined()
+      expect(screen.queryByText(readAlert)).toBeNull()
+      expect(screen.getByRole('button', { name: 'Use camera' }).hasAttribute('disabled')).toBe(true)
+      expect(screen.getByRole('button', { name: 'Retry storage' }).hasAttribute('disabled')).toBe(true)
+    } finally {
+      drain.release()
+      // Close the version-4 connection. It is not a route back to version-3 readiness.
+      if (upgradeStarted) (await bounded(upgraded.promise, 'upgrade after drain')).close()
+      restoreVisibility()
+    }
+  })
+
+  // Readiness does not change a known count. Only the App's failure branch on focus corrects it to unknown.
+  it.each(['failed', 'closed'] as const)('a %s store turns the known failure unknown on focus, keeps the alert through a held Retry, and restores the count', async (loss) => {
+    await failedSyncWithOneRow()
+    await readsSettled()
+    if (loss === 'failed') {
+      forceCloseDatabase(page.store().db as never)
+      await page.waitFor('failed')
+    } else {
+      act(() => { page.storage.stop() })
+    }
+    expect(screen.getByText(unreadableNote)).toBeDefined()
+    focusWindow()
+    expect(screen.queryByText(unreadableNote)).toBeNull()
+    expect(screen.getByText(unknownUnreadableNote)).toBeDefined()
+    expect(screen.getByText(readAlert)).toBeDefined()
+    const startup = gateMethod(page.coordinator, 'repairAll').hold()
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Retry storage' }))
+      await bounded(startup.started, 'startup repair after retry')
+      expect(page.storage.state().status).toBe('opening')
+      expect(screen.getByText(readAlert)).toBeDefined()
+      expect(screen.getByText(unknownUnreadableNote)).toBeDefined()
+      startup.release()
+      await readinessIs('ready')
+      expect(await screen.findByText(unreadableNote, {}, { timeout: BOUND_MS })).toBeDefined()
+      expect(screen.queryByText(readAlert)).toBeNull()
+      expect(screen.queryByText(unknownUnreadableNote)).toBeNull()
+    } finally {
+      startup.release()
+    }
+  })
+
+  // Readiness reports ready, so the alert can come only from the App's own failure branch.
+  it('a ready page whose store is missing raises the unavailable alert on focus, and readiness stays ready', async () => {
+    stubFetch(() => Promise.reject(new TypeError('no reconcile in this test')))
+    render(<App />)
+    await settle()
+    const missing = vi.spyOn(page.storage, 'readyStore').mockReturnValue(null)
+    try {
+      focusWindow()
+      expect(page.storage.state().status).toBe('ready')
+      expect(screen.queryByText(notReadyText)).toBeNull()
+      expect(screen.getByText(readAlert)).toBeDefined()
+    } finally {
+      missing.mockRestore()
+    }
+  })
+
   describe('T1 refresh triggers, pairing notes and preservation', () => {
     it('a focus read after another tab retires the row removes the failure and keeps the scan result', async () => {
       const row = await failedSyncWithOneRow()
@@ -1979,14 +2153,72 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       focusWindow()
       await readsSettled()
       expect(screen.getByText(readAlert)).toBeDefined()
-      const prelude = gateMethod(page.coordinator, 'repairAll').hold()
-      page.storage.stop()
-      page.storage.retry()
-      await bounded(prelude.started, 'refresh after readiness returns')
-      expect(screen.getByText(readAlert)).toBeDefined()
-      prelude.release(new Error('prelude failed'))
+      // One gate with two FIFO holds: the controller's startup repair, then the App prelude after ready.
+      const gate = gateMethod(page.coordinator, 'repairAll')
+      const startup = gate.hold()
+      const prelude = gate.hold()
+      try {
+        act(() => { page.storage.stop(); page.storage.retry() })
+        await bounded(startup.started, 'startup repair after retry')
+        expect(page.storage.state().status).toBe('opening')
+        refreshTriggers('opening-token')
+        expect(screen.getByText(readAlert)).toBeDefined()
+        startup.release()
+        await readinessIs('ready')
+        await bounded(prelude.started, 'App prelude after ready')
+        expect(screen.getByText(readAlert)).toBeDefined()
+        prelude.release()
+        await waitFor(() => expect(screen.queryByText(readAlert)).toBeNull(), { timeout: BOUND_MS })
+        expect(screen.getByText(/^1 queued offline scan awaiting sync\./)).toBeDefined()
+      } finally {
+        startup.release()
+        prelude.release()
+        restoreVisibility()
+      }
+    })
+
+    // Readiness stays ready. The App's own prelude recovery rejects, so the read source stays set and no count is published.
+    it('a rejected prelude recovery on a ready store keeps the read source and publishes no queue count', async () => {
+      render(<App />)
+      stubFetch(() => Promise.reject(new TypeError('not yet')))
+      await queueOneScan()
+      await readsSettled()
+      queueReads.failNext = true
+      focusWindow()
       await readsSettled()
       expect(screen.getByText(readAlert)).toBeDefined()
+      const gate = gateMethod(page.coordinator, 'repairAll')
+      const startup = gate.hold()
+      const prelude = gate.hold()
+      const spies: Array<{ mockRestore(): void }> = []
+      try {
+        act(() => { page.storage.stop(); page.storage.retry() })
+        await bounded(startup.started, 'startup repair after retry')
+        startup.release()
+        await readinessIs('ready')
+        await bounded(prelude.started, 'App prelude after ready')
+        const current = page.store()
+        const invoked = deferred<void>()
+        const recovery = deferred<never>()
+        spies.push(vi.spyOn(current, 'recoverDeadOwners').mockImplementation(() => { invoked.resolve(); return recovery.promise }))
+        const queued = vi.spyOn(current, 'queued')
+        spies.push(queued)
+        // Release the held repair first. The prelude calls recovery only after the repair returns, so waiting earlier never settles.
+        prelude.release()
+        await bounded(invoked.promise, 'App prelude recovery')
+        await act(async () => {
+          recovery.reject(new Error('recovery failed'))
+          await expect(recovery.promise).rejects.toThrow('recovery failed')
+        })
+        expect(page.storage.state().status).toBe('ready')
+        expect(screen.getByText(readAlert)).toBeDefined()
+        expect(queued).not.toHaveBeenCalled()
+        expect(screen.getByText(/^1 queued offline scan awaiting sync\./)).toBeDefined()
+      } finally {
+        for (const spy of spies) spy.mockRestore()
+        startup.release()
+        prelude.release()
+      }
     })
 
     it('an accepted ordinary read clears the read alert while a coordinator repair warning remains', async () => {
