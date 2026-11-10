@@ -195,6 +195,10 @@ function App() {
     // An obsolete lifecycle or store starts no repair, recovery or read.
     if (store ? !applicable(life, store) : !life.live) return undefined
     if (!store) {
+      // Idle, opening and draining are transient. They issue no ticket, raise no read error and start no work.
+      // Failed, closed and inconsistent ready states still reach the failure below.
+      const status = storage.state().status
+      if (status === 'idle' || status === 'opening' || status === 'draining') return undefined
       const prelude = issueTicket()
       if (claim(prelude)) raiseReadError(carriedFailure(noteRef.current)?.id)
       return undefined
