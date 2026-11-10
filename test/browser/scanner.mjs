@@ -12,6 +12,7 @@ import { predecessorExit } from './lib/scanner-predecessor.mjs';
 import { timedExit, timedEntry } from './lib/scanner-timing.mjs';
 import { entryCore } from './lib/scanner-entry-core.mjs';
 import { entryReasons } from './lib/scanner-entry-reasons.mjs';
+import { mixedReconciliation } from './lib/scanner-mixed.mjs';
 import { storageCore } from './lib/scanner-storage-core.mjs';
 import { oldReader } from './lib/scanner-old-reader.mjs';
 import { syncLifecycle } from './lib/scanner-sync-lifecycle.mjs';
@@ -44,6 +45,10 @@ const requiredEntryReasonChecks = [
   'TKT-565 live-access',
   'TKT-565 write-failure',
   'TKT-565 exit-control',
+];
+const requiredCombinedJourneyChecks = [
+  'TKT-566 real-policy-refusals',
+  'TKT-566 mixed-reconciliation',
 ];
 const reportedChecks = new Set();
 const check = (...args) => {
@@ -250,6 +255,7 @@ try {
   const shared = { browser, BASE, PG, QR_SEED, QR_KID, token, check, ACCESS_PORT, INTERNAL_TOKEN };
   Object.assign(shared, await entryCore(shared));
   await entryReasons(shared);
+  await mixedReconciliation(shared);
   await syncLifecycle(shared);
   await exitJourneys(shared);
   await timedExit(shared);
@@ -264,7 +270,7 @@ try {
   process.exitCode = 1;
 } finally {
   await browser.close();
-  for (const name of [...requiredSyncLifecycleChecks, ...requiredEntryReasonChecks]) {
+  for (const name of [...requiredSyncLifecycleChecks, ...requiredEntryReasonChecks, ...requiredCombinedJourneyChecks]) {
     if (!reportedChecks.has(name)) check(name, false, 'required check was not reported; its journey did not run to completion');
   }
   if (!recorder.finish()) process.exitCode = 1;
