@@ -256,8 +256,10 @@ must commit before online acceptance; offline publication precedes its final wri
 use one or two strict decision commits, including optional reason hardening. Renewal uses default
 durability. The host Chrome run records 100 strict mint and 100 strict mark completions after ten
 warm-up scans in [the raw measurements](../sprints/S-2/evidence/TKT-559-strict-commits.json).
-Run `make browser` to reproduce. These observations do not qualify a venue device or prove power-loss
-behavior. The 3 s allowance remains an owner rule. Venue use requires TKT-560 Done and the owner's
+Run `make browser` to reproduce. The runner rewrites the linked historical evidence file. Preserve
+and restore its pre-run bytes as described in the [browser prerequisites and preservation requirement](../testing.md#historical-scanner-browser-prerequisites).
+These observations do not qualify a venue device or prove power-loss behavior. The 3 s allowance
+remains an owner rule. Venue use requires TKT-560 Done and the owner's
 selection of the provisional pre-decision bound and acceptable offline-spill rate.
 
 #### Entry and Exit controls, TKT-399

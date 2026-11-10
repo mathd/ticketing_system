@@ -124,8 +124,38 @@ submits successful and declined payments, opens the guest ticket page, pairs a s
 accepted and duplicate scans. It requires real Google Chrome and `zbarimg` from the host's ZBar
 command-line tools. The spec decodes the PNG the ticket page loaded and submits that decoded value,
 so a broken image route cannot pass through a direct ticket-bundle fallback. The screenshots in `docs/verification/checkout/` and
-`docs/verification/ticket-delivery/` record earlier manual proof runs; the automated check does not
-rewrite tracked evidence.
+`docs/verification/ticket-delivery/` record earlier manual proof runs. The scanner timing journey
+does rewrite tracked evidence; see the preservation requirement below.
+
+## Historical scanner browser prerequisites
+
+The maintained scanner suite builds two frozen clients from Git. The object database must contain
+`ec336db814d719130cdefd263ca84be73b9f06e2` for the old-reader upgrade check and
+`3752a96a16a2ed6e7fe267206c3dbd05bf5271bf` for predecessor Exit compatibility. A shallow clone can
+lack these objects. Check both with `git cat-file -e <commit>^{commit}` before the run.
+
+Both extracted historical workspaces require pnpm `11.12.0`; the current workspace requires
+`12.18.0`. Use a manifest-aware launcher that selects each version from its working directory.
+A global installation of only pnpm `12.18.0` does not satisfy the historical version assertions.
+Cache both package-manager versions and the packages selected by both historical lockfiles before
+running the suite. Historical installs use `--offline --frozen-lockfile`, so an empty or incomplete
+store fails a prerequisite before the browser assertions. The code establishes these requirements;
+a clean-host bootstrap for both historical workspaces has not been verified.
+
+The [scanner entrypoint](../test/browser/scanner.mjs) maintains these combined checks:
+
+- [Entry reasons](../test/browser/lib/scanner-entry-reasons.mjs): refusal instructions and local outcomes, including real Access policy refusals.
+- [Mixed reconciliation](../test/browser/lib/scanner-mixed.mjs): seven rows, wire fields, results, local transitions and Access facts.
+- [Sync lifecycle](../test/browser/lib/scanner-sync-lifecycle.mjs): queue refresh, native focus and
+  real storage contention. The visibility case uses a synthetic event; it does not prove native
+  visibility delivery.
+- [Old reader](../test/browser/lib/scanner-old-reader.mjs): the frozen version-2 reader and upgrade barrier.
+- [Predecessor Exit](../test/browser/lib/scanner-predecessor.mjs): an earlier version-3 reader and current Exit records.
+
+The timing journey rewrites `docs/sprints/S-2/evidence/TKT-559-strict-commits.json`. Preserve that
+path's pre-run bytes and any existing edits. Keep fresh measurements outside the historical path,
+then restore the pre-run bytes and check the hash. Do not include the runner's rewrite in an
+unrelated ticket commit. A passing browser run does not preserve this historical file for you.
 
 ## The gate self-test
 
