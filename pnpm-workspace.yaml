@@ -11,3 +11,43 @@ auditConfig:
   ignoreGhsas: []
 minimumReleaseAgeExclude:
   - astro@7.4.8 # Owner-requested Astro 7.4 upgrade.
+  # Owner-requested dependency upgrades and their platform bindings.
+  - '@astrojs/react@7.1.5'
+  - '@oxlint/binding-android-arm-eabi@1.93.0'
+  - '@oxlint/binding-android-arm64@1.93.0'
+  - '@oxlint/binding-darwin-arm64@1.93.0'
+  - '@oxlint/binding-darwin-x64@1.93.0'
+  - '@oxlint/binding-freebsd-x64@1.93.0'
+  - '@oxlint/binding-linux-arm-gnueabihf@1.93.0'
+  - '@oxlint/binding-linux-arm-musleabihf@1.93.0'
+  - '@oxlint/binding-linux-arm64-gnu@1.93.0'
+  - '@oxlint/binding-linux-arm64-musl@1.93.0'
+  - '@oxlint/binding-linux-ppc64-gnu@1.93.0'
+  - '@oxlint/binding-linux-riscv64-gnu@1.93.0'
+  - '@oxlint/binding-linux-riscv64-musl@1.93.0'
+  - '@oxlint/binding-linux-s390x-gnu@1.93.0'
+  - '@oxlint/binding-linux-x64-gnu@1.93.0'
+  - '@oxlint/binding-linux-x64-musl@1.93.0'
+  - '@oxlint/binding-openharmony-arm64@1.93.0'
+  - '@oxlint/binding-win32-arm64-msvc@1.93.0'
+  - '@oxlint/binding-win32-ia32-msvc@1.93.0'
+  - '@oxlint/binding-win32-x64-msvc@1.93.0'
+  - '@rolldown/binding-android-arm-eabi@1.2.18'
+  - '@rolldown/binding-android-arm64@1.2.18'
+  - '@rolldown/binding-darwin-arm64@1.2.18'
+  - '@rolldown/binding-darwin-x64@1.2.18'
+  - '@rolldown/binding-freebsd-x64@1.2.18'
+  - '@rolldown/binding-linux-arm-gnueabihf@1.2.18'
+  - '@rolldown/binding-linux-arm64-gnu@1.2.18'
+  - '@rolldown/binding-linux-arm64-musl@1.2.18'
+  - '@rolldown/binding-linux-ppc64-gnu@1.2.18'
+  - '@rolldown/binding-linux-s390x-gnu@1.2.18'
+  - '@rolldown/binding-linux-x64-gnu@1.2.18'
+  - '@rolldown/binding-linux-x64-musl@1.2.18'
+  - '@rolldown/binding-openharmony-arm64@1.2.18'
+  - '@rolldown/binding-win32-arm64-msvc@1.2.18'
+  - '@rolldown/binding-win32-x64-msvc@1.2.18'
+  - '@vitejs/plugin-react@6.3.0'
+  - oxlint@1.93.0
+  - rolldown@1.2.18
+  - vite@8.3.7

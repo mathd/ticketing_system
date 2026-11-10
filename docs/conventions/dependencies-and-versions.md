@@ -19,6 +19,8 @@ React 19 · TypeScript `~7.0.2`. Read the manifests and lockfile for exact resol
   `packageExtensions` and `overrides` cannot point the peer elsewhere. `@hey-api/openapi-ts`
   0.99.0 also calls the TS JS API, so a generator change does not remove the hold. Remove the
   alias when an `openapi-typescript` release accepts `typescript@7`.
+- **Local Node selection.** Run `nvm use` from the repo to select the Node 26.13.0 release
+  pinned in `.nvmrc`.
 - **Node 26 in CI and images.** CI and the web images use Node 26.13.0. Node 25+ has no Corepack.
   The web images install pnpm with npm. CI runs `corepack enable` before `setup-node`, with the
   runner's preinstalled Node; the pnpm shim then runs under Node 26.
@@ -38,6 +40,10 @@ React 19 · TypeScript `~7.0.2`. Read the manifests and lockfile for exact resol
   `go tool oapi-codegen`. The reason is also above the pin. `go get -u tool` removes the hold, so
   give the pinned version again in that command. Remove the hold when yaml-jsonpath uses the same
   yaml module as go-yit.
+- **Speakeasy dependencies share the `go-yit` hold.** `github.com/speakeasy-api/jsonpath`
+  stays at v0.6.3 and `github.com/speakeasy-api/openapi` at v1.25.6. Their v0.7.0 and
+  v1.26.3 releases require `go-yit@v0.0.0-20250804204205-7afe4252a1dd`, which conflicts
+  with the held version. Recheck these upgrades when the generator hold is removed.
 
 ## Executable dependency pins
 
