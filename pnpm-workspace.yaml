@@ -9,3 +9,5 @@ allowBuilds:
 # allowlist, and the pnpm-audit job refuses an expired entry before `pnpm audit`.
 auditConfig:
   ignoreGhsas: []
+minimumReleaseAgeExclude:
+  - astro@7.4.8 # Owner-requested Astro 7.4 upgrade.
