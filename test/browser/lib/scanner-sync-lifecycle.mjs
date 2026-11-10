@@ -120,9 +120,6 @@ const isRecoveryList = (entry) => entry.mode === 'readonly' && entry.requests.in
 // A strict readwrite transaction on occurrences only. The ordering checks confirm its get and put separately.
 const isStrictRepair = (entry) => entry.durability === 'strict' && entry.mode === 'readwrite'
   && entry.stores.length === 1 && entry.stores[0] === 'occurrences';
-// The DEFAULT-durability owner renewal. Ordering checks exclude it explicitly.
-const isHeartbeat = (entry) => entry.durability === 'default' && entry.mode === 'readwrite'
-  && entry.stores.length === 1 && entry.stores[0] === 'occurrences';
 const completed = (entry) => entry.events.includes('complete') && !entry.events.includes('abort');
 
 // Groups an ordered sequence into one view per transaction. Each view keeps the index of its creation, its requests in
@@ -491,11 +488,11 @@ async function idbContention({ browser, BASE, token, fixture, facts, quarantine 
     // disarmAt is the index of the next recorded event. With no event between the disarm and the click, clickAt === disarmAt.
     assert.ok(clickAt >= disarmAt, 'the sync click was not recorded at or after the disarm');
     const beforeClick = transactionsOf(seq).filter((view) => view.createdAt >= disarmAt && view.createdAt < clickAt);
-    assert.equal(beforeClick.some((view) => (isStrictRepair(view) && !isHeartbeat(view)) || isQueueRead(view) || isRecoveryList(view)), false,
+    assert.equal(beforeClick.some((view) => isStrictRepair(view) || isQueueRead(view) || isRecoveryList(view)), false,
       'a repair or queue read ran between disarm and the actual sync click');
 
-    await waitUntil(async () => transactionsOf(await sequenceOf(a)).some((view) => view.createdAt > clickAt && isStrictRepair(view) && !isHeartbeat(view)), 'A strict repair transaction');
-    const blocked = transactionsOf(await sequenceOf(a)).find((view) => view.createdAt > clickAt && isStrictRepair(view) && !isHeartbeat(view));
+    await waitUntil(async () => transactionsOf(await sequenceOf(a)).some((view) => view.createdAt > clickAt && isStrictRepair(view)), 'A strict repair transaction');
+    const blocked = transactionsOf(await sequenceOf(a)).find((view) => view.createdAt > clickAt && isStrictRepair(view));
     assert.ok(blocked.requests.includes('occurrences.get'), 'the repair did not request its row before it was blocked');
     await a.getByText(WAITING_TEXT).waitFor();
     assert.equal(aReconciles.length, reconcilesBefore, 'A sent a reconciliation while B held storage');
@@ -513,7 +510,7 @@ async function idbContention({ browser, BASE, token, fixture, facts, quarantine 
     // before the queue read is created. The queue read completes before the send. DEFAULT renewals are not in this order.
     seq = await sequenceOf(a);
     const after = transactionsOf(seq).filter((view) => view.createdAt > clickAt);
-    const repair = after.find((view) => isStrictRepair(view) && !isHeartbeat(view));
+    const repair = after.find((view) => isStrictRepair(view));
     assert.ok(repair && completed(repair), 'the strict repair did not complete');
     const repairGet = repair.requestAt[repair.requests.indexOf('occurrences.get')];
     const repairPut = repair.requestAt[repair.requests.indexOf('occurrences.put')];

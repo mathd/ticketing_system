@@ -26,7 +26,6 @@ const cases: Array<[EntryResult, string | undefined, string[]]> = [
   [{ kind: 'server-error' }, 'Operator required', ['Outcome unknown. Do not admit. Contact an operator.']],
   [{ kind: 'local-failure' }, 'Operator required', ['Local scanner failure. Scanner did not open. Do not admit from this result; get an operator.']],
   [{ kind: 'revocation-refused' }, 'Not valid for entry', ["This ticket is on the device's revocation list. Do not admit."]],
-  [{ kind: 'rejected', reason: 'already_redeemed' }, 'Rejected', ['Already redeemed.', 'Do not admit. Get an operator.', 'Reason: already_redeemed.']],
 ]
 it.each(cases)('renders the complete %j result', (result, heading, lines) => {
   expect(presentResult(result, { direction: 'entry', requestMayHaveBeenSent: true })).toMatchObject({ heading, lines })

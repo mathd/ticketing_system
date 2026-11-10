@@ -27,8 +27,7 @@ make generate
 
 Inspect the spec and generated diff. Commit the generated files by explicit path when authorized,
 then run `make check`. `check-generate` regenerates, verifies registry/tracked-output agreement,
-and compares all outputs with HEAD. Uncommitted generation fails as drift. No contract regeneration
-was needed for this documentation change.
+and compares all outputs with HEAD. Uncommitted generation fails as drift.
 
 The generated models do not enumerate every hand-mounted internal route. Read the service router
 and [ADR-043](adr/ADR-043-where-a-service-auth-guard-lives.md) before changing security. Request

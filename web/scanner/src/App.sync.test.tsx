@@ -969,7 +969,7 @@ describe('a failed sync of the offline queue', () => {
 // TKT-512: a shared queue count and a carried failure stay current across tabs, focus and pairing,
 // and the sync line shows initial storage waits. Each test names the mechanism it exercises.
 describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', () => {
-  const focus = () => act(() => { window.dispatchEvent(new Event('focus')) })
+  const focusWindow = () => act(() => { window.dispatchEvent(new Event('focus')) })
   const tokenEvent = (newValue: string | null) => act(() => {
     window.dispatchEvent(new StorageEvent('storage', { key: 'scanner.device-token', newValue }))
   })
@@ -1004,7 +1004,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
     await (await sharedPage()).store().applyReconcileResults([row.occurrenceId], [{ occurrence_id: row.occurrenceId, result: 'recorded' }])
     const fetchMock = stubFetch(() => Promise.reject(new TypeError('must not be called')))
     const reads = queueReads.started
-    focus()
+    focusWindow()
     await waitFor(() => expect(queueReads.started).toBeGreaterThan(reads), { timeout: BOUND_MS })
     await readsSettled()
     expect(screen.queryByText(/^Sync failed:/)).toBeNull()
@@ -1067,10 +1067,10 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
   it('does not let an older queue read that resolves nonempty restore the count after a newer read published empty', async () => {
     const row = await failedSyncWithOneRow()
     const older = holdNextQueueRead()
-    focus()
+    focusWindow()
     await bounded(older.started, 'older focus read')
     await (await sharedPage()).store().applyReconcileResults([row.occurrenceId], [{ occurrence_id: row.occurrenceId, result: 'recorded' }])
-    focus()
+    focusWindow()
     await waitFor(() => expect(screen.queryByText(/^Sync failed:/)).toBeNull(), { timeout: BOUND_MS })
     await act(async () => { older.result.resolve([row]) })
     await readsSettled()
@@ -1096,7 +1096,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
     expect(screen.queryByText(/^Synced /)).toBeNull()
     expect(screen.queryByText(refusedDiagnostic)).toBeNull()
     expect(screen.queryByText(writeDiagnostic)).toBeNull()
-    await focus()
+    await focusWindow()
     await readsSettled()
     expect(screen.queryByText(refusedDiagnostic)).toBeNull()
   })
@@ -1296,7 +1296,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
     const first = await held.next()
     // An ordinary refresh is invoked before the failure exists, so it captures no failure. It resolves empty after the failure.
     const older = holdNextQueueRead()
-    focus()
+    focusWindow()
     await bounded(older.started, 'older refresh')
     // The failure's direct correction read is held, so the older empty result can arrive before it.
     const correction = holdNextQueueRead()
@@ -1361,7 +1361,6 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       },
     }
   }
-  const focusWindow = () => act(() => { window.dispatchEvent(new Event('focus')) })
   // A cross-tab pairing commit, simulated in this one jsdom window: it writes the token and dispatches a synthetic StorageEvent.
   // It is not evidence of another browser page. The browser journeys B1 and B3 supply that proof.
   const commitPairing = (token: string) => {
@@ -2709,7 +2708,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       // A corrupt copy of the queued row adds a per-row warning. A stale correction that published would clear that warning.
       const [queuedRow] = await storedRows() as OccurrenceRecord[]
       await rawPut(dbName, STORE.occurrences, { ...queuedRow, occurrenceId: 'corrupt-row', direction: 'sideways' })
-      focus()
+      focusWindow()
       await readsSettled()
       expect(screen.getByText(corruptWarning)).toBeDefined()
       const held = holdReconciles()
@@ -2760,7 +2759,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       await readsSettled()
       const recovery = vi.spyOn(page.store(), 'recoverDeadOwners')
       const prelude = gateMethod(page.coordinator, 'repairAll').hold()
-      focus()
+      focusWindow()
       await bounded(prelude.started, 'held prelude')
       cleanup()
       const reads = queueReads.started
@@ -2786,7 +2785,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
         await recoveryRelease.promise
         try { return await realRecovery() } finally { recoveryDone.resolve() }
       })
-      focus()
+      focusWindow()
       await bounded(recoveryStarted.promise, 'held recovery')
       cleanup()
       const repairs = vi.spyOn(page.coordinator, 'repairAll')
@@ -2805,7 +2804,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       await readsSettled()
       const recovery = vi.spyOn(page.store(), 'recoverDeadOwners')
       const prelude = gateMethod(page.coordinator, 'repairAll').hold()
-      focus()
+      focusWindow()
       await bounded(prelude.started, 'held prelude')
       cleanup()
       render(<App />)
@@ -2826,7 +2825,7 @@ describe('shared queue refresh, carried failures and sync lifecycle (TKT-512)', 
       await readsSettled()
       const recovery = vi.spyOn(page.store(), 'recoverDeadOwners')
       const prelude = gateMethod(page.coordinator, 'repairAll').hold()
-      focus()
+      focusWindow()
       await bounded(prelude.started, 'held prelude')
       page.storage.stop()
       const reads = queueReads.started
