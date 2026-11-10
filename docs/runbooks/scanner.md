@@ -220,7 +220,8 @@ Verification limits. The browser journeys for this behavior run in real Chrome, 
 context with two tabs. Only those journeys use a second page. The App tests simulate a cross-tab
 pairing in one window, with a localStorage write and a synthetic storage event. Focus uses trusted
 focus with focus emulation disabled. Synthetic visibility events prove the page's listener wiring
-only. Native visibility transitions are not verified. The
+only. The maintained visibility journey does not verify native delivery. Standalone sprint
+acceptance checks are recorded on the sprint board. The
 1,000 ms wait tests the page's own storage await. The forced contention journey holds one IndexedDB
 transaction. It does not measure how often a stall happens on a venue device. These checks do not
 cover suspension, bfcache, physical passage or venue performance.
