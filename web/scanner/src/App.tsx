@@ -196,7 +196,7 @@ function App() {
     if (store ? !applicable(life, store) : !life.live) return undefined
     if (!store) {
       const prelude = issueTicket()
-      if (life.live && claim(prelude)) raiseReadError(carriedFailure(noteRef.current)?.id)
+      if (claim(prelude)) raiseReadError(carriedFailure(noteRef.current)?.id)
       return undefined
     }
     const prelude = issueTicket()
@@ -414,7 +414,7 @@ function App() {
       life.controller = controller
       // The first request of a nonempty paired pass replaces the write diagnostic before it is sent, even if the request fails.
       if (index === 0) setBatchDiagnostic(null)
-      let data: ReconcileResponse | undefined
+      let data: ReconcileResponse
       try {
         let response: Response
         try {
@@ -450,7 +450,7 @@ function App() {
         if (life.controller === controller) life.controller = undefined
       }
       // A decoded response applies even if pairing changed. Only a replaced lifecycle or store stops it.
-      if (!data || !applicable(life, store)) return
+      if (!applicable(life, store)) return
       let applied: Awaited<ReturnType<OccurrenceStore['applyReconcileResults']>>
       try {
         applied = await store.applyReconcileResults(batch.keys, data.results)

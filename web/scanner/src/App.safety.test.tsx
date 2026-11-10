@@ -39,7 +39,6 @@ const denialCopy: Array<{ reason: string; text: string }> = [
   { reason: "integrity_quarantined", text: "RejectedDo not admit. Access has blocked another admission after an earlier integrity exception. Get an operator.Reason: integrity_quarantined." },
   { reason: "integrity_operator_controlled", text: "RejectedDo not admit. Access refused this ticket under operator-controlled integrity handling. Get an operator.Reason: integrity_operator_controlled." },
   { reason: "occurrence_required", text: "RejectedDo not admit. This scan is missing its required occurrence ID. Get an operator to check the scanner.Reason: occurrence_required." },
-  { reason: "unknown_future_reason", text: "RejectedDo not admit. Access refused this scan. Get an operator.Reason: unknown_future_reason." },
   { reason: "invalid_occurrence", text: "RejectedDo not admit. This scan has invalid occurrence data. Get an operator to check the scanner.Reason: invalid_occurrence." },
   { reason: "occurrence_collision", text: "RejectedDo not admit. This scan's occurrence ID conflicts with an existing record. Get an operator.Reason: occurrence_collision." },
   { reason: "future_reason", text: "RejectedDo not admit. Access refused this scan. Get an operator.Reason: future_reason." },

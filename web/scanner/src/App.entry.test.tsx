@@ -105,7 +105,6 @@ const entryDenials: Array<{ reason: string; lines: string[] }> = [
   { reason: "integrity_quarantined", lines: ["Do not admit. Access has blocked another admission after an earlier integrity exception. Get an operator.", "Reason: integrity_quarantined."] },
   { reason: "integrity_operator_controlled", lines: ["Do not admit. Access refused this ticket under operator-controlled integrity handling. Get an operator.", "Reason: integrity_operator_controlled."] },
   { reason: "occurrence_required", lines: ["Do not admit. This scan is missing its required occurrence ID. Get an operator to check the scanner.", "Reason: occurrence_required."] },
-  { reason: "unknown_future_reason", lines: ["Do not admit. Access refused this scan. Get an operator.", "Reason: unknown_future_reason."] },
   { reason: "invalid_occurrence", lines: ["Do not admit. This scan has invalid occurrence data. Get an operator to check the scanner.", "Reason: invalid_occurrence."] },
   { reason: "occurrence_collision", lines: ["Do not admit. This scan's occurrence ID conflicts with an existing record. Get an operator.", "Reason: occurrence_collision."] },
   { reason: "future_reason", lines: ["Do not admit. Access refused this scan. Get an operator.", "Reason: future_reason."] },
