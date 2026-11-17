@@ -9,7 +9,7 @@ RUN npm install -g pnpm@12.18.0
 COPY web/scanner/ web/scanner/
 RUN pnpm install --frozen-lockfile && pnpm --filter scanner build
 
-FROM nginx:1.31.8-alpine3.24@sha256:713fc2ebfd92e8217db451477182ee91944b123d2b1ee9fd5a8c6e91ca6c3a11
+FROM nginx:1.31.8-alpine3.24@sha256:fed7e14be83cbd2661a75cdc5b872d936cf155d46c327084d30b8df19ae88d72
 RUN sed -i -e 's!^pid.*!pid /tmp/nginx.pid;!' -e 's!/var/cache/nginx!/tmp/nginx!g' /etc/nginx/nginx.conf \
     && mkdir -p /tmp/nginx \
     && chown nginx:nginx /tmp/nginx
