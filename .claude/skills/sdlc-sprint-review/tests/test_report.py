@@ -1547,6 +1547,51 @@ class MarkupTests(unittest.TestCase):
         output, _ = report.render(data)
         self.assertIn("CAD 1.75 + USD 1.86", output.replace(" ", " "))
 
+    def test_cost_totals_distinguish_unknown_from_recorded_zero(self):
+        def all_null(data):
+            for check in data["checks"]:
+                check["cost"] = None
+            # llm_eval needs a cost once executed. The kind "other" keeps the input valid.
+            data["checks"][3]["kind"] = "other"
+
+        def recorded_zero(data):
+            for number, check in enumerate(data["checks"]):
+                if number != 3:
+                    check["cost"] = None
+            # C4 keeps its cost object, so its model, budget and calls stay.
+            data["checks"][3]["cost"].update(amount=0)
+
+        def mixed(data):
+            recorded_zero(data)
+            data["checks"][0]["cost"] = {"amount": 1.5, "currency": "CAD"}
+            data["checks"][1]["cost"] = {"amount": 0.25, "currency": "CAD"}
+
+        unknown = {lang: report.LABELS[lang]["unknown"] for lang in ("en", "fr")}
+        cases = (
+            ("all-null", all_null, unknown),
+            ("recorded-zero", recorded_zero, {"en": "USD 0.00", "fr": "0,00 USD"}),
+            (
+                "mixed",
+                mixed,
+                {"en": "CAD 1.75 + USD 0.00", "fr": "1,75 CAD + 0,00 USD"},
+            ),
+        )
+        for language in ("en", "fr"):
+            for case, mutate, totals in cases:
+                with self.subTest(language=language, case=case):
+                    data = example(language)
+                    mutate(data)
+                    source = copy.deepcopy(data)
+                    output, _ = report.render(data)
+                    self.assertEqual(data, source)
+                    output = output.replace(" ", " ")
+                    total = totals[language]
+                    measured = report.LABELS[language]["figure_cost"] + " " + total
+                    self.assertIn(measured + "</span>", section(output, "outcome"))
+                    self.assertIn(
+                        '<td class="num">' + total + "</td>", section(output, "checks")
+                    )
+
     def test_tones_map_each_status_to_one_class(self):
         for value, tone in (
             ("failed", "bad"),
