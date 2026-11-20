@@ -65,7 +65,9 @@ var lifecycleEffects = map[string]lifecycleEffect{
 // exchange anywhere voids it with reason exchanged. Otherwise it is valid. The order of
 // the events does not matter, and a later event never restores validity: a delivery, a
 // resend or an admission recorded after a void is a fact about a dead ticket, not a
-// reinstatement (all three writers accept a voided ticket).
+// reinstatement. The first delivery and admission writers accept a voided ticket. A
+// staff resend skips one by the same commercial verdict (TKT-526), but historical
+// `redelivered` facts after a void can exist and have no effect here.
 //
 // Refund before exchange is the scan path's order. Commerce refuses to refund an
 // exchanged order and to exchange a refunded one. A history with both is HISTORICAL:

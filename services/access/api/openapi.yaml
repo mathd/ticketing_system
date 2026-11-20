@@ -138,6 +138,11 @@ paths:
         '200': {description: Tickets re-sent (or replay of an earlier request), content: {application/json: {schema: {$ref: '#/components/schemas/TicketRedelivery'}}}}
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+        # Two decided refusals; nothing is sent in this call. The idempotency key is
+        # bound to a different order. Or no ticket is eligible (TKT-526): every issued
+        # ticket of the order in the organizer's scope is refunded or exchanged, or a
+        # replay's key holds attempts only on such tickets. That body is exactly
+        # {"error":"no eligible tickets for this resend"}.
         '409': {$ref: '#/components/responses/Error'}
         # The order has reached its per-order redelivery bound (ADR-068). Declared
         # because ADR-028's response validation is fail-closed: an undeclared status is
@@ -280,6 +285,11 @@ components:
         # A count, not the tickets. The caller already renders the order's ticket
         # bundle from its own read; what it must never receive from this operation is
         # the buyer's address or a capability link, so neither is representable here.
+        #
+        # The number of tickets this call's claim returned (TKT-526): the valid
+        # tickets of a fresh claim, or on a replay the still-valid subset of the key's
+        # original attempts, accepted ones included. A replay can report fewer than
+        # the first call did. The count stored with the first claim stays historical.
         ticket_count: {type: integer, minimum: 1, maximum: 50}
         replay: {type: boolean}
     TicketRefundCreate:

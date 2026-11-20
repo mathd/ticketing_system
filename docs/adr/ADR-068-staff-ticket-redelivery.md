@@ -10,6 +10,10 @@ guard stays an inline check on access's `/internal/` surface. **ADR-057 decided 
 credential question for inventory, and its reasoning transfers exactly** — the difference from
 ADR-053, which answered the other way, is set out below.
 
+**Amended by TKT-526 (2026-11-20)** — *adds one section after §6.* A staff resend sends only
+tickets that are not refunded or exchanged. An order with no such ticket gets a definite **409**.
+The other sections are unchanged.
+
 ## Context
 
 A customer whose delivery mail was lost or spam-filed could not be helped: **no resend existed
@@ -136,6 +140,66 @@ offers the operator nothing but "wait a day".
 redeliveries across different orders, a caller who waits out the window, a holder of a stolen staff
 credential doing either, or anyone with write access to the access database. It is a blast-radius
 bound on capability re-emission per order, not an anti-abuse control.
+
+### Amended by TKT-526: resend only commercially valid tickets (2026-11-20)
+
+The owner chose option (a) on 2026-10-12: a staff resend does not send a refunded or exchanged
+ticket, on a fresh request or on a replay. This section applies to the staff resend only. The first
+delivery on issuance (`MarkDelivered`) is out of scope.
+
+**The verdict.** A ticket is eligible when its lifecycle history has no `refunded` and no
+`exchanged` event. The store reads this with `ticketCommerciallyVoid`, the predicate the refund
+writer already uses. It agrees with the guest page verdict of
+[ADR-012 § TKT-355](./ADR-012-ticket-issuance-and-qr-credentials.md) for every lifecycle type the
+database admits. `TestEveryLifecycleTypeHasAValidityEffect` compares the two for each type.
+
+**The claim.** `ClaimRedelivery` reads the order's tickets in the organizer's scope and locks them
+in id order, as before. Then it checks each locked ticket.
+
+1. No scoped ticket rows: **503** `tickets not issued yet`, unchanged (§5).
+2. No eligible ticket: **409** with exactly `{"error":"no eligible tickets for this resend"}`. This
+   refusal comes before the key lookup, the bound and every insert, so it writes nothing. It does
+   not depend on the key: a new key, a key bound to this order, and a key bound to another order get
+   the same answer. Another organizer still gets 503, because its scoped read finds no rows.
+3. A fresh key: the request stores the count of eligible tickets, and Access mints attempts only for
+   them.
+4. A replay: Access returns only the key's attempts on tickets that are still eligible, with their
+   stored message ids and acceptance state. It never mints an attempt on a replay. If no eligible
+   attempt remains, the answer is the same 409. The stored request and attempts do not change.
+
+**The count.** The response `ticket_count` is the number of tickets that this claim returned. On a
+replay, it is the eligible subset of the key's original attempts, accepted ones included, so it can
+be smaller than the first answer. `redelivery_requests.ticket_count` stays the historical count of
+the first claim.
+
+**The mark.** The send still runs between the claim and the mark, without the ticket locks. A
+refund or an exchange can commit in that window. `MarkRedelivered` locks the ticket, checks the
+organizer, and then checks eligibility in a separate statement on the same transaction. If the
+ticket is void, it returns success and writes nothing. The loop then goes on to the other tickets.
+The attempt stays pending, and that pending attempt is **terminal**:
+
+- Setting `accepted_at` alone would say the trail recorded the hand-off, which it did not.
+  Appending `redelivered` would record a resend of a dead ticket. Deleting the attempt would erase
+  its message identity.
+- The transport may already have taken the message. The trail then has no record of that hand-off.
+- A replay does not return the attempt. Eligible attempts keep their stored message identities and
+  remain subject to the bounded retry and reconciliation rules of
+  [ADR-078](./ADR-078-optional-resend-and-bounded-delivery-retries.md). Terminal pending attempts on
+  voided tickets are excluded from both.
+
+For an eligible ticket the mark is unchanged: the acceptance update and the signed append commit
+together, at most once per request and ticket.
+
+**The back office.** It already maps 409 to a refusal, shows Access's error text, and clears the
+matching unsettled key on a decided refusal. A no-eligible refusal sends nothing in that call, but
+earlier calls under the same key may have sent mail. A new key can claim eligible tickets that are
+outside the old attempt set, subject to the bound in §6.
+
+**What it costs.** The claim adds one indexed existence check per ticket while it holds the order's
+ticket locks. The count reflects eligibility when the claim read it, so a later replay can answer a
+smaller count or 409. Under ADR-021, a database writer without the lifecycle private key can make
+changes whose modification, insertion or reordering is cryptographically evident. Targeted rollback
+and a compromised current key remain outside that protection.
 
 ## What this costs
 

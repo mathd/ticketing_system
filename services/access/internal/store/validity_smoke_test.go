@@ -84,6 +84,49 @@ func TestEveryLifecycleTypeHasAValidityEffect(t *testing.T) {
 	if len(unknown) > 0 {
 		t.Errorf("lifecycleEffects classifies types the CHECK does not admit: %v (CHECK: %s)", unknown, defs[0])
 	}
+
+	// TKT-526. The store's commercial-void predicate and the page verdict must agree on
+	// every admitted type: a staff resend skips exactly the tickets the guest page shows
+	// as voided. One ticket per type. `issued` is the issuance itself, because a second
+	// issued fact is structurally refused; every other type is a signed append. The data
+	// is quiescent, so History is the production reader and the predicate runs in its
+	// own short transaction.
+	st := New(db, testConfig(t))
+	org := uuid.New()
+	types := make([]string, 0, len(admitted))
+	for typ := range admitted {
+		types = append(types, typ)
+	}
+	sort.Strings(types)
+	for _, typ := range types {
+		order, ids, _ := issueOrder(t, ctx, st, org, 1)
+		id := ids[0]
+		if typ != "issued" {
+			if _, err := st.appendLifecycleForTest(ctx, id, order, org, typ); err != nil {
+				t.Fatalf("seed %s: %v", typ, err)
+			}
+		}
+		history, err := st.History(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasType(typesOf(history), typ) {
+			t.Fatalf("seeded state is wrong: ticket %s has %v, want %s", id, typesOf(history), typ)
+		}
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		void, err := ticketCommerciallyVoid(ctx, tx, id)
+		_ = tx.Rollback()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if page := DeriveTicketValidity(history).Status == ValidityVoided; void != page {
+			t.Errorf("type %s (ticket %s, history %v): ticketCommerciallyVoid = %t, page verdict voided = %t",
+				typ, id, typesOf(history), void, page)
+		}
+	}
 }
 
 // verdicts reads a guest reference the way the bundle handler does — Tickets, then each
@@ -245,11 +288,13 @@ func TestValidityAfterExchangeThenRefund(t *testing.T) {
 	assertVerdicts(t, got, want, types)
 }
 
-// Facts recorded after a void do not restore it. Each of the three writers below accepts
-// a refunded ticket: a delivery can land after a fast refund, a staff resend selects
-// every ticket of the order, and an offline gate reports an admission that already
-// happened. The kept ticket gets the same facts and must stay valid, so the test fails
-// for "any delivery voids" as well as for "the newest event decides".
+// Facts recorded after a void do not restore it. A first delivery can land after a fast
+// refund, and an offline gate can report an admission that already happened; both real
+// writers accept a refunded ticket. A staff resend no longer selects a voided ticket
+// (TKT-526), but a history written before that can hold a `redelivered` fact after a
+// refund, so the resend fact is a signed historical append. The kept ticket gets the same
+// facts and must stay valid, so the test fails for "any delivery voids" as well as for
+// "the newest event decides".
 func TestValidityIsNotRestoredByLaterFacts(t *testing.T) {
 	ctx := context.Background()
 	db := migratedDB(t, ctx)
@@ -275,13 +320,9 @@ func TestValidityIsNotRestoredByLaterFacts(t *testing.T) {
 			t.Fatalf("deliver %s: %v", id, err)
 		}
 	}
-	claim, err := st.ClaimRedelivery(ctx, org, order, "validity-resend")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tk := range claim.Tickets {
-		if err := st.MarkRedelivered(ctx, org, "validity-resend", tk.TicketID, tk.MessageID); err != nil {
-			t.Fatalf("redeliver %s: %v", tk.TicketID, err)
+	for _, id := range ids {
+		if _, err := st.appendLifecycleForTest(ctx, id, order, org, "redelivered"); err != nil {
+			t.Fatalf("seed the historical resend of %s: %v", id, err)
 		}
 	}
 	for _, s := range seeds {
@@ -294,15 +335,8 @@ func TestValidityIsNotRestoredByLaterFacts(t *testing.T) {
 	}
 
 	got, types := verdicts(t, ctx, st, guestRefOf(t, ctx, db, refunded))
-	for _, id := range ids {
-		for _, typ := range []string{"delivered", "redelivered", "entry"} {
-			if !hasType(types[id], typ) {
-				t.Fatalf("seeded state is wrong: %s has %v, want %s after the refund", id, types[id], typ)
-			}
-		}
-	}
-	if last := types[refunded][len(types[refunded])-1]; last == "refunded" {
-		t.Fatalf("seeded state is wrong: the refund is still the newest event of %s: %v", refunded, types[refunded])
-	}
+	history := allHistories(t, ctx, db)
+	requireStepTypes(t, refunded, history[refunded], "issued", "refunded", "delivered", "redelivered", "entry")
+	requireStepTypes(t, kept, history[kept], "issued", "delivered", "redelivered", "entry")
 	assertVerdicts(t, got, map[uuid.UUID]TicketValidity{refunded: voidedRefunded, kept: stillValid}, types)
 }

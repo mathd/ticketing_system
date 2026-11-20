@@ -128,6 +128,12 @@ func (s *Server) redeliverOrderTickets(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, store.ErrRedeliveryKeyConflict):
 		write(w, http.StatusConflict, map[string]string{"error": "idempotency key reused with a different order"})
 		return
+	case errors.Is(err, store.ErrRedeliveryNoEligibleTickets):
+		// TKT-526: every ticket this call could send is refunded or exchanged. A
+		// decided refusal, not "not yet": nothing was sent in this call, and the back
+		// office shows this text as it is.
+		write(w, http.StatusConflict, map[string]string{"error": "no eligible tickets for this resend"})
+		return
 	case errors.Is(err, store.ErrRedeliveryBoundExceeded):
 		write(w, http.StatusTooManyRequests, map[string]string{"error": "this order has reached its redelivery limit"})
 		return
@@ -141,6 +147,10 @@ func (s *Server) redeliverOrderTickets(w http.ResponseWriter, r *http.Request) {
 	// A count and a replay flag. NOT the recipient, NOT a capability link, NOT the
 	// message ids: the caller has no use for any of them and every one of them is a
 	// thing that must not cross this boundary (COS-6).
+	//
+	// The count is the number of tickets this claim returned (TKT-526). On a replay
+	// that is the still-valid subset of the key's original attempts, accepted ones
+	// included, so it can be smaller than the count stored with the first claim.
 	write(w, http.StatusOK, map[string]any{
 		"order_id": out.OrderID.String(), "ticket_count": out.TicketCount, "replay": out.Replay,
 	})
@@ -185,8 +195,10 @@ type redeliveryResult struct {
 //  1. Claim first. It binds the idempotency key, enforces the per-order bound and
 //     mints one message id per ticket, all under the order's ticket locks. Sending
 //     before claiming would let a double-click send twice and argue about it after.
-//  2. Send. On a replay the claim reports it and NOTHING is sent — that is what makes
-//     the double-click one mail rather than two.
+//  2. Send each outstanding ticket. On a replay the claim returns only the key's
+//     attempts on tickets that are still valid, with their stored message ids, and
+//     only the ones not yet accepted are sent again. A completed request therefore
+//     sends nothing, which is what makes the double-click one mail rather than two.
 //  3. Mark each acceptance individually, AFTER the transport took it. Appending the
 //     trail before the send would make it claim a delivery that had not happened
 //     (ADR-021: the trail's claim must match what happened).
@@ -211,8 +223,8 @@ func (s *Server) redeliver(ctx context.Context, org, order uuid.UUID, key string
 	// A replay is a RESUME, not a no-op. Returning success here because the key was
 	// seen before would report the whole order delivered on a request that died after
 	// its first ticket — the claim commits before any send, so outstanding rows are a
-	// state the system genuinely reaches (ai-review F2). Only the tickets the
-	// transport has not accepted are sent, under their ORIGINAL message ids, so a
+	// state the system genuinely reaches (ai-review F2). Only the still-valid tickets
+	// the transport has not accepted are sent, under their ORIGINAL message ids, so a
 	// transport that deduplicates on message id cannot deliver twice.
 	for _, tk := range claim.Outstanding() {
 		email, err := s.addresses.DeliveryEmail(ctx, tk.BuyerID)
