@@ -119,12 +119,16 @@ report a discharged obligation nobody discharged, and the refund would look comp
 >   exchanged: Access answers **409** `{"error":"not enough refundable tickets after exchange"}` and
 >   writes nothing. The exchanged tickets are already void, so a retry cannot succeed. The text is
 >   different from the 409 for refund-id reuse.
-> - Too few eligible tickets, and no exchanged ticket: the issuance **503** above, unchanged.
+> - Too few eligible tickets, and no otherwise unrefunded ticket of the order is exchanged: the
+>   issuance **503** above, unchanged. This includes an order whose exchanged tickets all carry a
+>   refund event.
 >
 > The check reads only the organizer's own locked tickets, so another organizer still gets the
 > 503 and cannot learn of the exchange. Commerce keeps the ticket obligation outstanding for any
-> non-200 and writes no completion marker, so capacity stays reserved until the row parks after
-> its bounded attempts ([order recovery](../runbooks/order-recovery.md)).
+> non-200 and writes no completion marker, so this refund's capacity-return obligation also stays
+> outstanding until the row parks after its bounded attempts. The exchange may already have
+> returned the same source capacity under its own operation
+> ([order recovery](../runbooks/order-recovery.md)).
 
 ### 6. Reversal progress is nullable timestamps, and the money path never fails on it
 

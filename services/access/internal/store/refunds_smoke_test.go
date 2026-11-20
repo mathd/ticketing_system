@@ -3,6 +3,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -462,6 +463,43 @@ func TestRefundOrderTicketsReplaysAHistoricalRefundOfAnExchangedTicket(t *testin
 	} else if !batch.Replay || batch.RefundID != refundID || batch.OrderID != source ||
 		!reflect.DeepEqual(batch.TicketIDs, []uuid.UUID{sourceIDs[0]}) {
 		t.Errorf("replay = %+v, want replay of %s on order %s with ticket %s", batch, refundID, source, sourceIDs[0])
+	}
+	requireTrailState(t, ctx, db, before, wantBindings)
+}
+
+// TKT-527. The exchange refusal applies only to an exchanged ticket that is otherwise
+// unrefunded. Here every exchanged source ticket already carries a historical refund
+// event, so a NEW refund finds no ticket that the exchange took from it. The answer is
+// the issuance sentinel. A writer that sets the exchange flag for any exchanged ticket,
+// refund event or not, answers with the exchange refusal and fails this test.
+func TestRefundOrderTicketsDoesNotBlameAnExchangeForAlreadyRefundedTickets(t *testing.T) {
+	ctx := context.Background()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	org := uuid.New()
+	source, _, sourceIDs, _ := exchangeUnderSourceRef(t, ctx, db, st, org)
+	var wantBindings []refundBinding
+	for _, id := range sourceIDs {
+		historicalRefundID := uuid.New()
+		seedHistoricalRefund(t, ctx, st, org, source, historicalRefundID, id)
+		wantBindings = append(wantBindings, refundBinding{OrganizerID: org, RefundID: historicalRefundID, OrderID: source, Quantity: 1})
+	}
+	sort.Slice(wantBindings, func(i, j int) bool {
+		return bytes.Compare(wantBindings[i].RefundID[:], wantBindings[j].RefundID[:]) < 0
+	})
+
+	before := allHistories(t, ctx, db)
+	for _, id := range sourceIDs {
+		requireStepTypes(t, id, before[id], "issued", "exchanged", "refunded")
+	}
+	if got := allRefundBindings(t, ctx, db); !reflect.DeepEqual(got, wantBindings) {
+		t.Fatalf("seeded state is wrong: refund bindings %v, want %v", got, wantBindings)
+	}
+
+	_, err := st.RefundOrderTickets(ctx, org, source, uuid.New(), 1)
+	if !errors.Is(err, ErrTicketsNotIssued) || errors.Is(err, ErrRefundTicketsExchanged) {
+		t.Errorf("err = %v, want ErrTicketsNotIssued and not ErrRefundTicketsExchanged — "+
+			"every exchanged ticket is already refunded, so no exchange took a ticket from this refund", err)
 	}
 	requireTrailState(t, ctx, db, before, wantBindings)
 }
