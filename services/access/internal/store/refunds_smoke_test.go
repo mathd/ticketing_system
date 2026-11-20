@@ -4,7 +4,9 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"reflect"
 	"sort"
 	"testing"
 	"time"
@@ -210,6 +212,258 @@ func TestRefundOrderTicketsRefusesWhenTooFewTicketsExist(t *testing.T) {
 	if n := countRows(t, ctx, db, `SELECT count(*) FROM lifecycle_events WHERE event_type='refunded'`); n != 0 {
 		t.Fatalf("a refused refund appended %d events", n)
 	}
+}
+
+// lifecycleStep is one event of a ticket's history, in chain order.
+type lifecycleStep struct {
+	ID   uuid.UUID
+	Type string
+}
+
+// allHistories reads every ticket in the test's schema with its complete history in
+// chain order. A ticket with no event still has an entry. The tests compare the whole
+// map, so an extra event, a missing event, a changed event id, or an extra ticket all
+// show as a difference.
+func allHistories(t *testing.T, ctx context.Context, db *sql.DB) map[uuid.UUID][]lifecycleStep {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `
+		SELECT t.id, e.id, e.event_type
+		FROM tickets t
+		LEFT JOIN lifecycle_events e ON e.ticket_id = t.id
+		LEFT JOIN lifecycle_event_integrity i ON i.event_id = e.id
+		ORDER BY t.id, i.sequence NULLS LAST, e.id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[uuid.UUID][]lifecycleStep{}
+	for rows.Next() {
+		var ticketID uuid.UUID
+		var eventID uuid.NullUUID
+		var eventType sql.NullString
+		if err := rows.Scan(&ticketID, &eventID, &eventType); err != nil {
+			t.Fatal(err)
+		}
+		steps := out[ticketID]
+		if steps == nil {
+			steps = []lifecycleStep{}
+		}
+		if eventID.Valid {
+			steps = append(steps, lifecycleStep{ID: eventID.UUID, Type: eventType.String})
+		}
+		out[ticketID] = steps
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// refundBinding is one row of ticket_refund_batches, without its timestamp.
+type refundBinding struct {
+	OrganizerID, RefundID, OrderID uuid.UUID
+	Quantity                       int32
+}
+
+// allRefundBindings reads the complete ticket_refund_batches relation in the test's
+// schema.
+func allRefundBindings(t *testing.T, ctx context.Context, db *sql.DB) []refundBinding {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `
+		SELECT organizer_id, refund_id, order_id, quantity FROM ticket_refund_batches ORDER BY organizer_id, refund_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []refundBinding{}
+	for rows.Next() {
+		var b refundBinding
+		if err := rows.Scan(&b.OrganizerID, &b.RefundID, &b.OrderID, &b.Quantity); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, b)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// requireStepTypes fails unless the history has exactly these event types, in order.
+// It checks the seed that a test's claim depends on.
+func requireStepTypes(t *testing.T, ticketID uuid.UUID, history []lifecycleStep, types ...string) {
+	t.Helper()
+	got := make([]string, 0, len(history))
+	for _, step := range history {
+		got = append(got, step.Type)
+	}
+	if !reflect.DeepEqual(got, types) {
+		t.Fatalf("seeded state is wrong: ticket %s has %v, want %v", ticketID, got, types)
+	}
+}
+
+// requireTrailState compares the complete ticket histories and the complete binding
+// relation with the expected values. It reports with Errorf, so that a test that
+// already saw the wrong result still reports every row the writer committed.
+func requireTrailState(t *testing.T, ctx context.Context, db *sql.DB, wantHistories map[uuid.UUID][]lifecycleStep, wantBindings []refundBinding) {
+	t.Helper()
+	if got := allHistories(t, ctx, db); !reflect.DeepEqual(got, wantHistories) {
+		t.Errorf("ticket histories changed:\n got  %v\n want %v", got, wantHistories)
+	}
+	if got := allRefundBindings(t, ctx, db); !reflect.DeepEqual(got, wantBindings) {
+		t.Errorf("refund bindings = %v, want %v", got, wantBindings)
+	}
+}
+
+// TKT-527. An exchanged ticket is already void, so a new refund must not select it.
+// The sequence is the one in the ticket: the real switch voids every source ticket,
+// then a refund arrives for the SOURCE order. No source ticket is eligible, so Access
+// refuses with the exchange sentinel and writes nothing. Before TKT-527 the writer
+// selected the lowest source ticket and committed a refund event and a binding.
+func TestRefundOrderTicketsRefusesWhenExchangedTicketsLeaveTooFew(t *testing.T) {
+	ctx := context.Background()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	org := uuid.New()
+	source, _, sourceIDs, replacementIDs := exchangeUnderSourceRef(t, ctx, db, st, org)
+
+	before := allHistories(t, ctx, db)
+	if len(before) != len(sourceIDs)+len(replacementIDs) {
+		t.Fatalf("seeded state is wrong: %d tickets, want %d", len(before), len(sourceIDs)+len(replacementIDs))
+	}
+	for _, id := range sourceIDs {
+		requireStepTypes(t, id, before[id], "issued", "exchanged")
+	}
+	for _, id := range replacementIDs {
+		requireStepTypes(t, id, before[id], "issued")
+	}
+	if got := allRefundBindings(t, ctx, db); len(got) != 0 {
+		t.Fatalf("seeded state is wrong: refund bindings %v before any refund", got)
+	}
+
+	_, err := st.RefundOrderTickets(ctx, org, source, uuid.New(), 1)
+	if !errors.Is(err, ErrRefundTicketsExchanged) || errors.Is(err, ErrTicketsNotIssued) {
+		t.Errorf("err = %v, want ErrRefundTicketsExchanged and not ErrTicketsNotIssued — "+
+			"the exchanged tickets are already void, and this is not an issuance delay", err)
+	}
+	requireTrailState(t, ctx, db, before, []refundBinding{})
+
+	// The failure path is organizer scoped too (engineering rules, write boundaries).
+	// Another organizer sees no ticket of this order, so the answer is the issuance
+	// sentinel. The exchange sentinel here would disclose the owner's exchange.
+	after := allHistories(t, ctx, db)
+	afterBindings := allRefundBindings(t, ctx, db)
+	_, err = st.RefundOrderTickets(ctx, uuid.New(), source, uuid.New(), 1)
+	if !errors.Is(err, ErrTicketsNotIssued) || errors.Is(err, ErrRefundTicketsExchanged) {
+		t.Errorf("another organizer: err = %v, want ErrTicketsNotIssued and not ErrRefundTicketsExchanged", err)
+	}
+	requireTrailState(t, ctx, db, after, afterBindings)
+}
+
+// TKT-527. Eligibility is per ticket, not per order. Whole-order exchange is current
+// policy (ADR-039, TKT-158), not a property of the trail, so the lowest ticket is
+// exchanged here with a signed direct append. The refund must take the next eligible
+// ticket. An order-wide refusal fails this test, and so does a selector that takes the
+// lowest id without checking eligibility.
+func TestRefundOrderTicketsSkipsAnExchangedTicketWhenEnoughOthersQualify(t *testing.T) {
+	ctx := context.Background()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	org := uuid.New()
+	order, sorted, _ := issueOrder(t, ctx, st, org, 3)
+	if _, err := st.appendLifecycleForTest(ctx, sorted[0], order, org, "exchanged"); err != nil {
+		t.Fatal(err)
+	}
+
+	before := allHistories(t, ctx, db)
+	if len(before) != 3 {
+		t.Fatalf("seeded state is wrong: %d tickets, want 3", len(before))
+	}
+	requireStepTypes(t, sorted[0], before[sorted[0]], "issued", "exchanged")
+	requireStepTypes(t, sorted[1], before[sorted[1]], "issued")
+	requireStepTypes(t, sorted[2], before[sorted[2]], "issued")
+
+	refundID := uuid.New()
+	batch, err := st.RefundOrderTickets(ctx, org, order, refundID, 1)
+	if err != nil {
+		t.Errorf("refund: %v — one eligible ticket is enough for quantity 1", err)
+	} else if batch.Replay || !reflect.DeepEqual(batch.TicketIDs, []uuid.UUID{sorted[1]}) {
+		t.Errorf("selected %v (replay=%t), want only the lowest ELIGIBLE ticket %s", batch.TicketIDs, batch.Replay, sorted[1])
+	}
+
+	want := map[uuid.UUID][]lifecycleStep{}
+	for id, history := range before {
+		want[id] = append([]lifecycleStep{}, history...)
+	}
+	want[sorted[1]] = append(want[sorted[1]], lifecycleStep{ID: refundEventID(refundID, sorted[1]), Type: "refunded"})
+	requireTrailState(t, ctx, db, want, []refundBinding{{OrganizerID: org, RefundID: refundID, OrderID: order, Quantity: 1}})
+}
+
+// seedHistoricalRefund writes what an older Access writer committed for a refund of an
+// already exchanged ticket: the binding and the refund event under the derived id, in
+// one transaction under the ticket lock. The event goes through appendLifecycle, so the
+// chain stays verifiable.
+func seedHistoricalRefund(t *testing.T, ctx context.Context, st *Postgres, org, order, refundID, ticketID uuid.UUID) {
+	t.Helper()
+	tx, err := st.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var id TicketIdentity
+	if err := tx.QueryRowContext(ctx, `SELECT order_id,organizer_id,slot_id FROM tickets WHERE id=$1 FOR UPDATE`, ticketID).
+		Scan(&id.OrderID, &id.OrganizerID, &id.SlotID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO ticket_refund_batches(organizer_id,refund_id,order_id,quantity) VALUES($1,$2,$3,1)`,
+		org, refundID, order); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.appendLifecycle(ctx, tx, appendInput{
+		TicketID: ticketID, OrderID: id.OrderID, OrganizerID: id.OrganizerID, SlotID: id.SlotID,
+		EventID: refundEventID(refundID, ticketID), Type: "refunded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TKT-527. A refund that an older writer committed on an exchanged ticket still
+// replays. Replay resolves before the exchange exclusion: a classification that skips
+// exchanged tickets first would not find this refund's own event, and would answer
+// with the exchange refusal instead. The ordinary replay test cannot see that, because
+// its tickets are not exchanged.
+func TestRefundOrderTicketsReplaysAHistoricalRefundOfAnExchangedTicket(t *testing.T) {
+	ctx := context.Background()
+	db := migratedDB(t, ctx)
+	st := New(db, testConfig(t))
+	org := uuid.New()
+	source, _, sourceIDs, _ := exchangeUnderSourceRef(t, ctx, db, st, org)
+	refundID := uuid.New()
+	seedHistoricalRefund(t, ctx, st, org, source, refundID, sourceIDs[0])
+
+	before := allHistories(t, ctx, db)
+	requireStepTypes(t, sourceIDs[0], before[sourceIDs[0]], "issued", "exchanged", "refunded")
+	if got := before[sourceIDs[0]][2].ID; got != refundEventID(refundID, sourceIDs[0]) {
+		t.Fatalf("seeded state is wrong: refund event id %s, want the derived id", got)
+	}
+	requireStepTypes(t, sourceIDs[1], before[sourceIDs[1]], "issued", "exchanged")
+	wantBindings := []refundBinding{{OrganizerID: org, RefundID: refundID, OrderID: source, Quantity: 1}}
+	if got := allRefundBindings(t, ctx, db); !reflect.DeepEqual(got, wantBindings) {
+		t.Fatalf("seeded state is wrong: refund bindings %v, want %v", got, wantBindings)
+	}
+
+	batch, err := st.RefundOrderTickets(ctx, org, source, refundID, 1)
+	if err != nil {
+		t.Errorf("replay of a historical refund: %v", err)
+	} else if !batch.Replay || batch.RefundID != refundID || batch.OrderID != source ||
+		!reflect.DeepEqual(batch.TicketIDs, []uuid.UUID{sourceIDs[0]}) {
+		t.Errorf("replay = %+v, want replay of %s on order %s with ticket %s", batch, refundID, source, sourceIDs[0])
+	}
+	requireTrailState(t, ctx, db, before, wantBindings)
 }
 
 // Two different refunds on one order must not select the same ticket. They serialize

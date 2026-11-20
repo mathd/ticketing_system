@@ -53,6 +53,12 @@ func (s *Server) refundTickets(w http.ResponseWriter, r *http.Request) {
 		// this as "there was nothing to void".
 		write(w, http.StatusServiceUnavailable, map[string]string{"error": "tickets not issued yet"})
 		return
+	case errors.Is(err, store.ErrRefundTicketsExchanged):
+		// 409, not 503 (TKT-527, ADR-038 §5): exchanged tickets are already void, so a
+		// retry cannot succeed. Commerce keeps the obligation outstanding for any
+		// non-200, so this does not release capacity.
+		write(w, http.StatusConflict, map[string]string{"error": store.ErrRefundTicketsExchanged.Error()})
+		return
 	case errors.Is(err, store.ErrRefundBatchConflict):
 		write(w, http.StatusConflict, map[string]string{"error": "refund id reused with a different request"})
 		return

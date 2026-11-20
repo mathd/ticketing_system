@@ -6,6 +6,11 @@ Date: 2026-07-13
 
 Accepted
 
+**Amended by TKT-527 (2026-11-20)** — *the refund-precedence paragraph and the follow-ups only.* A
+history with both a refund and an exchange is now historical: Access excludes exchanged tickets from
+new refunds ([ADR-038](./ADR-038-refund-reversal-ticket-voiding.md) §3). The precedence rule does not
+change. The replaced wording is kept at each changed paragraph.
+
 ## Decision
 
 Access owns ticket issuance, the append-only ticket lifecycle trace, QR credentials and delivery attempts. Commerce owns orders and buyer PII. A completed checkout creates a CSPRNG UUIDv4 `guest_order_ref`, distinct from the deterministic order ID; it is a no-store guest retrieval capability and is not logged or written to the money journal/lifecycle payload.
@@ -103,10 +108,15 @@ single-entry scan and the pass scan check for a refund first and for an exchange
 and `scan.go` in the Access store). Offline reconciliation does not choose a reason: it raises one
 alarm for `refunded || exchanged` (`reconcile.go`).
 [ADR-038](./ADR-038-refund-reversal-ticket-voiding.md) records the refund decision. Thus the page and
-the gate give the same reason. Today Commerce refuses to refund an exchanged order and to exchange a refunded order, so a
-history with both events comes only from the Access writers. This changes the page for that one
-case. Before, the page showed the first void event in the history, so exchange then refund showed
-"exchanged". Now it shows "refunded".
+the gate give the same reason. Commerce refuses to refund an exchanged order and to exchange a
+refunded order. A history with both events is historical: older Access writers could append a refund
+after an exchange through a direct internal call. Access now excludes exchanged tickets from new
+refunds (TKT-527). For a history that contains both events, the page and the gate still report
+"refunded". This changes the page for that one case. Before, the page showed the first void event in
+the history, so exchange then refund showed "exchanged". Now it shows "refunded".
+
+> **Amended by TKT-527.** The original text was: "Today Commerce refuses to refund an exchanged order
+> and to exchange a refunded order, so a history with both events comes only from the Access writers."
 
 **Every type is classified.** A table in the Access store gives the effect of each of the nine
 lifecycle types. A store smoke test (`TestEveryLifecycleTypeHasAValidityEffect`) reads the
@@ -133,8 +143,11 @@ verdict and shows "Service unavailable" (503). It does not fall back to history.
 ignores the new field and continues to work.
 
 **Follow-ups, not fixed here.** A staff resend selects every ticket of the order, voided tickets
-included, and records `redelivered` on them. The refund writer counts an exchanged ticket as
-refundable. Commerce blocks this path today.
+included, and records `redelivered` on them.
+
+> **Amended by TKT-527.** This paragraph also said: "The refund writer counts an exchanged ticket as
+> refundable. Commerce blocks this path today." TKT-527 fixed that. The refund writer no longer
+> selects an exchanged ticket for a new refund.
 
 ## References
 

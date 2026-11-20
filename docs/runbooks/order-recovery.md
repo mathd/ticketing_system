@@ -115,6 +115,10 @@ A refund has two obligations beyond the money: the tickets must be **voided** an
 outstanding by an access outage, an unset `ACCESS_URL`, or a refund that outruns issuance (access
 answers `503` — "not yet", not "nothing to void").
 
+When exchanged tickets leave too few eligible tickets, the exchanged tickets are already void,
+Commerce logs `reversal obligation not discharged` with status 409, and capacity stays reserved
+while Commerce retries until the row parks (TKT-527, ADR-038 §5).
+
 Since TKT-163 a background runner in commerce drives them to completion. **No operator action is
 needed for the ordinary case**, and replaying the refund by hand is no longer the recovery path.
 

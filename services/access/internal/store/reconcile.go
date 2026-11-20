@@ -300,8 +300,9 @@ func (p *Postgres) ReconcileAdmission(ctx context.Context, in ReconcileOccurrenc
 		// Two facts, ONE alarm, and that is a requirement rather than a
 		// convenience: one physical offline admission owes exactly one
 		// admission-conflict alarm, however many voiding facts apply. A ticket can
-		// be both (exchange the order, then refund it — the refund path selects on
-		// refundThatVoided alone and does not exclude an exchanged ticket), and two
+		// have both in its history: older Access writers could append a refund after
+		// an exchange through a direct internal call. Access now excludes exchanged
+		// tickets from new refunds (TKT-527), but those histories remain. Two
 		// independent alarm-owning branches would owe two alarms for one person
 		// walking through one door. Hence one disjunction over two lookups, not two
 		// blocks. Pinned by TestReconcileRefundedAndExchangedTicketOwesExactlyOneAlarm.

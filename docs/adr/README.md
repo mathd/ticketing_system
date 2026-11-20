@@ -40,7 +40,7 @@ this register when adding an ADR or changing its status. Preserve existing decis
 | ADR-009 | [Contract-first service APIs (OpenAPI + oapi-codegen) and the domain-event envelope](ADR-009-contract-first-apis.md) | Accepted |
 | ADR-010 | [PostgreSQL claim transaction and hold lifecycle](ADR-010-postgres-claim-transaction.md) | Accepted |
 | ADR-011 | [Checkout finalization and canonical money journal](ADR-011-checkout-journal-protocol.md) | Accepted |
-| ADR-012 | [Ticket issuance, lifecycle and QR credential boundary](ADR-012-ticket-issuance-and-qr-credentials.md) | Accepted |
+| ADR-012 | [Ticket issuance, lifecycle and QR credential boundary](ADR-012-ticket-issuance-and-qr-credentials.md) | Accepted; amended by TKT-527 |
 | ADR-013 | [Concurrent-occupancy capping is out of the reservation claim core](ADR-013-occupancy-capping-scoped-exception.md) | Accepted scoped exception to ADR-005 |
 | ADR-014 | [Typed dated-slot implementation choices](ADR-014-typed-dated-slot-implementation.md) | Accepted |
 | ADR-015 | [Series and season grouping with slot-derived lifecycle](ADR-015-series-season-grouping-and-lifecycle.md) | Accepted |
@@ -66,7 +66,7 @@ this register when adding an ADR or changing its status. Preserve existing decis
 | ADR-035 | [Eight Go modules stay; a gate enforces one version per shared dependency](ADR-035-go-module-dependency-declarations.md) | Accepted |
 | ADR-036 | [Pricing rules are typed declarative rows, not a custom DSL](ADR-036-pricing-rules-representation.md) | Accepted |
 | ADR-037 | [Post-purchase refunds are their own dimension, and their own payments identity](ADR-037-post-purchase-refund-money-protocol.md) | Accepted |
-| ADR-038 | [A refund's reversal is a set of independent obligations, and voiding tickets is the first](ADR-038-refund-reversal-ticket-voiding.md) | Accepted |
+| ADR-038 | [A refund's reversal is a set of independent obligations, and voiding tickets is the first](ADR-038-refund-reversal-ticket-voiding.md) | Accepted; amended by TKT-527 |
 | ADR-039 | [An exchange settles the difference — one provider movement, two gross facts](ADR-039-exchange-settles-the-difference.md) | Accepted |
 | ADR-040 | [A cancellation refund is a durable run with a per-order ledger, and the refund key does not know about the run](ADR-040-event-cancellation-bulk-refund-runs.md) | Accepted |
 | ADR-041 | [Where an orphan-seat rule is arbitrated](ADR-041-orphan-seat-arbitration.md) | Accepted |
