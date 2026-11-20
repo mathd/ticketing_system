@@ -1,0 +1,3268 @@
+{
+ "schemaVersion": 1,
+ "report": {
+  "id": "S-3-release",
+  "version": 10,
+  "language": "en",
+  "generatedAt": "2026-11-20T14:21:22.965850+00:00",
+  "preparedBy": "Primary author",
+  "fictional": false,
+  "packetDigest": "725754035822797d5ac8e3f6adf6eaca72bf22c056b26058fbed5b6655bed775"
+ },
+ "project": {
+  "key": "ticketing_system",
+  "name": "Ticketing system"
+ },
+ "sprint": {
+  "key": "S-3",
+  "name": "Sprint 3: clear scanner outcomes and reliable sync",
+  "goal": "Give scanner operators exact Entry rejection reasons and current queue/sync feedback, and retain the combined denial and mixed-sync journeys in the maintained browser suite.",
+  "state": "active",
+  "startDate": "2026-10-21T09:00:00-04:00",
+  "endDate": "2026-11-04T17:00:00-05:00",
+  "vault": "sdlc",
+  "scopeDigest": "12934abb8a86b6c348fd0972f654b2371b3cf26ef9f48ce0d3974e843aa2ea53",
+  "closureTask": "TKT-567"
+ },
+ "release": {
+  "repository": "https://github.com/mathd/ticketing_system",
+  "base": {
+   "ref": null,
+   "sha": "cc64181478ada4dd834d876cb8a05b094ca6b73e"
+  },
+  "candidate": {
+   "sha": "60d570d75d55c26f171238b63626c532fd6fd675",
+   "url": "https://github.com/mathd/ticketing_system/commit/60d570d75d55c26f171238b63626c532fd6fd675"
+  },
+  "publishTag": false,
+  "tag": null
+ },
+ "outcome": {
+  "readiness": "ready",
+  "headline": "Scanner operators get exact Entry refusal reasons and accurate queue and storage-wait feedback. Ready for the owner close decision; no tag or deployment.",
+  "summary": "All eleven functional members are Done. The owner added four correction members after round 3: TKT-574 fixed the storage-wait acceptance defect, TKT-577 fixed the unknown-cost label, TKT-578 patched Go to 1.27.4 for GO-2026-6859, and TKT-581 repaired the historical browser builds after the pnpm 11.12.0 deprecation.\n\nRound 4, the last round under the four-round cap, reviewed the frozen candidate b836c902 with gpt-6-luna at high effort in all four areas. Implementation approved with zero findings. Verification, retrospective and documentation raised Medium findings only; none was Critical or High. The DOC-1 guide correction is commit 60d570d7, the final candidate, with a fresh passing gate. It changes only docs/testing.md.\n\nThe gate passed at the final candidate. Browser, security, hermetic and Go-identity executions ran at merged main 5bbb14d3 or TKT-578 head 40e75699 and keep those identities; the candidate differs from 5bbb14d3 only in two guides. Native visibility ran at b836c902. Maintained B2 stays synthetic; sleep, suspension and bfcache are not claimed.\n\nOpen limits: the historical French checkout timeout (TKT-573), the unexplained App.exit test failure (TKT-583), the smoke.sh SIGPIPE race (TKT-584), the tracked S-2 evidence rewrite (TKT-582) and Docker port-forward failures on one smoke slot. All are Low and non-blocking. Coverage, complexity, active time, CI wait and spend stay unknown where records do not establish them. The historical clean-host bootstrap is unverified.\n\nThis report claims no owner close approval, tag or deployment. The owner close decision must name the candidate, the report commit, path and HTML digest, and the brief and scope digests."
+ },
+ "scope": {
+  "summary": "The original scope was TKT-512, TKT-565, TKT-566 and closure task TKT-567. The owner approved eight additions: TKT-568, TKT-569, TKT-570 and TKT-571 before round 3, then TKT-574 and TKT-577 after the round 3 documentation audit, then TKT-578 and TKT-581 during the correction work. All twelve remain members. The eleven functional members are Done. TKT-567 remains Building until the owner close decision. No member was removed.\n\nTKT-572, TKT-573, TKT-575, TKT-576, TKT-582, TKT-583 and TKT-584 are Backlog follow-ups outside S-3. The full baseline-to-candidate measurement includes external dependency, documentation and workflow changes. It is not a measurement of sprint-authored work alone.",
+  "items": [
+   {
+    "key": "TKT-512",
+    "title": "Scanner: queue freshness across tabs and the sync attempt lifecycle (TKT-315 incidental)",
+    "origin": "planned",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "Member accepted on its own ticket. The round 4 sprint review covers it as part of the combined candidate."
+   },
+   {
+    "key": "TKT-565",
+    "title": "Scanner Entry: complete exact reason text for the remaining readable rejections",
+    "origin": "planned",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "Member accepted on its own ticket. The round 4 sprint review covers it as part of the combined candidate."
+   },
+   {
+    "key": "TKT-566",
+    "title": "Scanner: retain combined denial-copy and mixed-sync journeys in the browser suite",
+    "origin": "planned",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "Member accepted on its own ticket. The round 4 sprint review covers it as part of the combined candidate."
+   },
+   {
+    "key": "TKT-568",
+    "title": "Patch Vite resolutions for CVE-2026-112942 and restore the security gate",
+    "origin": "added",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "Member accepted on its own ticket. The round 4 sprint review covers it as part of the combined candidate."
+   },
+   {
+    "key": "TKT-569",
+    "title": "Patch Go to 1.27.3 to clear GO-2026-6809",
+    "origin": "added",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "Member accepted on its own ticket. The round 4 sprint review covers it as part of the combined candidate."
+   },
+   {
+    "key": "TKT-570",
+    "title": "S-3: simplify the combined sprint diff before final validation",
+    "origin": "added",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "Member accepted on its own ticket. The round 4 sprint review covers it as part of the combined candidate."
+   },
+   {
+    "key": "TKT-571",
+    "title": "Patch golang.org/x/net to v0.62.0 for CVE-2026-78661",
+    "origin": "added",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "Member accepted on its own ticket. The round 4 sprint review covers it as part of the combined candidate."
+   },
+   {
+    "key": "TKT-574",
+    "title": "Scanner: keep transient storage waits distinct from unavailable storage",
+    "origin": "added",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "Owner-approved correction for the round 3 storage-wait acceptance defect (R3-DOC-2, IMPL-1). Merged at fa08d5d5."
+   },
+   {
+    "key": "TKT-577",
+    "title": "Sprint report: distinguish unavailable measured cost from a recorded zero",
+    "origin": "added",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "Owner-approved renderer correction for round 3 R3-DOC-4. Merged at 16ab629b. This report uses that renderer."
+   },
+   {
+    "key": "TKT-578",
+    "title": "Patch Go to 1.27.4 to clear GO-2026-6859",
+    "origin": "added",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "Owner-approved security patch after the scheduled scan found GO-2026-6859 on main. Merged at 5bbb14d3."
+   },
+   {
+    "key": "TKT-581",
+    "title": "Browser harness: build historical scanner baselines with pnpm 11.13.1",
+    "origin": "added",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "Owner-approved test-harness repair after the pnpm 11.12.0 deprecation broke the historical scanner builds. Merged at 8eee579a."
+   }
+  ]
+ },
+ "areas": {
+  "implementation": {
+   "status": "passed",
+   "decision": "HUMAN_REVIEW",
+   "round": 4,
+   "reviewers": [
+    "Independent area reviewer"
+   ],
+   "findings": {
+    "raised": 0,
+    "resolved": 0,
+    "deferred": 0
+   },
+   "summary": "Round 4 initial inspection and decision audit both approved with zero findings on the frozen packet at b836c902. The audit checked the approved brief and the decisions of TKT-574, TKT-577, TKT-578, TKT-581 and the TKT-570 simplification, and found no missed cut. The reviewer did not run tests; execution claims come from the packet. The later DOC-1 correction changes only docs/testing.md. No broader design correction was established.",
+   "evidence": [
+    {
+     "label": "Final-review independence blocker",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "b1bd4ca797ed2097a9df041f372eac49ec034ef9fe78e5ff05304edf480317e0"
+     }
+    },
+    {
+     "label": "Frozen round 4 packet",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "725754035822797d5ac8e3f6adf6eaca72bf22c056b26058fbed5b6655bed775"
+     }
+    },
+    {
+     "label": "Round 4 raw implementation lens results",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "7ffe707a493e40c8c750f4226448a96e5e08f42f93ecb21494097f7e59f73d59"
+     }
+    },
+    {
+     "label": "Owner-authorized report role mapping",
+     "url": null,
+     "ref": {
+      "key": "TKT-567",
+      "digest": "9658b98e40fdce99d92a5704d79b2755c4c3808cf6838d9e397ae6557cbe776b"
+     }
+    },
+    {
+     "label": "Round 4 canonical implementation record",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "5840af6a07afc00b89943765a670d7aa49faa304c6ad9b559c5dfa1a4031b62f"
+     }
+    }
+   ]
+  },
+  "verification": {
+   "status": "passed",
+   "decision": "HUMAN_REVIEW",
+   "round": 4,
+   "reviewers": [
+    "Independent area reviewer"
+   ],
+   "findings": {
+    "raised": 2,
+    "resolved": 2,
+    "deferred": 0
+   },
+   "summary": "The initial lens raised VER-1: criterion 4 needs the four area pairs and the committed report with matching board pointers, which the packet cannot contain. The audit classed it as a sequencing fact. It is rejected as a packet defect; check C8 and the report-artifact read-back after publication hold that proof. The audit raised VER-2: the packet omitted the TKT-578 exact-head gate and browser receipts at 40e75699. The evidence supplement adds them with digests, and keeps the first failed candidate browser run at 93673ca1 visible. An independent correction check accepted the VER-2 supplement.",
+   "evidence": [
+    {
+     "label": "Final-review independence blocker",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "b1bd4ca797ed2097a9df041f372eac49ec034ef9fe78e5ff05304edf480317e0"
+     }
+    },
+    {
+     "label": "Frozen round 4 packet",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "725754035822797d5ac8e3f6adf6eaca72bf22c056b26058fbed5b6655bed775"
+     }
+    },
+    {
+     "label": "Round 4 evidence supplement for VER-2 and RETRO-1",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "32eabca13c57a90da8915bf1aa02ed77138675b58de3c7f518bccffcd580068d"
+     }
+    },
+    {
+     "label": "Round 4 raw verification lens results",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "85c727f7af5f5ce53eb09aab04a8bf4b5d0d400872856224866cfbf36efedf14"
+     }
+    },
+    {
+     "label": "Owner-authorized report role mapping",
+     "url": null,
+     "ref": {
+      "key": "TKT-567",
+      "digest": "9658b98e40fdce99d92a5704d79b2755c4c3808cf6838d9e397ae6557cbe776b"
+     }
+    },
+    {
+     "label": "Round 4 canonical verification record",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "bdcf1b43c71b55d8258a7f69bf0094c22fbfb65d648960c95358835227a5c362"
+     }
+    },
+    {
+     "label": "Independent round 4 correction check",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "3d9fe7ab4b2acc3ade42874c8e0349fae08452c51ac403802d1462554092f3cd"
+     }
+    }
+   ]
+  },
+  "documentation": {
+   "status": "passed",
+   "decision": "HUMAN_REVIEW",
+   "round": 4,
+   "reviewers": [
+    "Independent area reviewer"
+   ],
+   "findings": {
+    "raised": 2,
+    "resolved": 2,
+    "deferred": 0
+   },
+   "summary": "The initial lens raised DOC-1 (Medium): docs/testing.md still named pnpm 11.12.0 for the historical builds, while both harnesses select and assert 11.13.1. Commit 60d570d7 corrects the guide text only; an independent correction check verified it, and the gate passed at that commit. The decision audit ran last on report draft 3 and the other three final area records. It verified sprint identity, the final candidate, scope, area records, the readiness, approval and publication states, every board pointer and the HTML. It raised DOC-A1 (Low): one diff-category measurement called the historical e17d7fd9 result current. This version labels it historical. The canonical contract returns HUMAN_REVIEW. Changes after the audited draft are limited to the documentation result, C8, the record pointers and the DOC-A1 label; a bounded independent report-check covers them.",
+   "evidence": [
+    {
+     "label": "Final-review independence blocker",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "b1bd4ca797ed2097a9df041f372eac49ec034ef9fe78e5ff05304edf480317e0"
+     }
+    },
+    {
+     "label": "Frozen round 4 packet",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "725754035822797d5ac8e3f6adf6eaca72bf22c056b26058fbed5b6655bed775"
+     }
+    },
+    {
+     "label": "Round 4 raw documentation initial lens result",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "0b3cb34a8d1ea94b47c8da4530e30bbdb326f71e1f95dd571273dd226cd2ce23"
+     }
+    },
+    {
+     "label": "Owner-authorized report role mapping",
+     "url": null,
+     "ref": {
+      "key": "TKT-567",
+      "digest": "9658b98e40fdce99d92a5704d79b2755c4c3808cf6838d9e397ae6557cbe776b"
+     }
+    },
+    {
+     "label": "DOC-1 correction and fresh gate at the final candidate",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "95913da2bad9cf31b7a84c3d055d2241977c8a55d95cc083bd178ae87e3daeac"
+     }
+    },
+    {
+     "label": "Round 4 canonical documentation record",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "6908ad85f9415d9c52aae0ce6a7c74217391ca01616be4e5dabf9a1688bfea93"
+     }
+    },
+    {
+     "label": "Independent round 4 correction check",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "3d9fe7ab4b2acc3ade42874c8e0349fae08452c51ac403802d1462554092f3cd"
+     }
+    }
+   ]
+  },
+  "retrospective": {
+   "status": "passed",
+   "decision": "HUMAN_REVIEW",
+   "round": 4,
+   "reviewers": [
+    "Independent area reviewer"
+   ],
+   "findings": {
+    "raised": 3,
+    "resolved": 3,
+    "deferred": 0
+   },
+   "summary": "The initial lens raised RETRO-1: the packet metrics snapshot was not coherent with the cutoff. The audit corrected its timing as RETRO-1A: the snapshot was taken at 05:37:22Z, 25 minutes 54 seconds before TKT-578 became Done at the 06:03:16Z cutoff, so its 10 Done and 2 open counts are stale. The audit also raised RETRO-2: owner-approved additions after review began put pressure on the shared four-round cap. This report uses the fresh 06:31:48Z capture for counts, treats cutoff-aligned per-member time as unknown, and adds the scope-amendment candidate P10. An independent correction check accepted these report corrections.",
+   "evidence": [
+    {
+     "label": "Final-review independence blocker",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "b1bd4ca797ed2097a9df041f372eac49ec034ef9fe78e5ff05304edf480317e0"
+     }
+    },
+    {
+     "label": "Frozen round 4 packet",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "725754035822797d5ac8e3f6adf6eaca72bf22c056b26058fbed5b6655bed775"
+     }
+    },
+    {
+     "label": "Round 4 evidence supplement for VER-2 and RETRO-1",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "32eabca13c57a90da8915bf1aa02ed77138675b58de3c7f518bccffcd580068d"
+     }
+    },
+    {
+     "label": "Round 4 raw retrospective lens results",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "f25e9429ddefa3d0969ce5b19337c33058d9c03a95bccfedf323809f00858cd0"
+     }
+    },
+    {
+     "label": "Owner-authorized report role mapping",
+     "url": null,
+     "ref": {
+      "key": "TKT-567",
+      "digest": "9658b98e40fdce99d92a5704d79b2755c4c3808cf6838d9e397ae6557cbe776b"
+     }
+    },
+    {
+     "label": "Round 4 canonical retrospective record",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "04d40663086b09b81047e635100508b233e62b2b91fe19b32b9671e8f3e05174"
+     }
+    },
+    {
+     "label": "Independent round 4 correction check",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "3d9fe7ab4b2acc3ade42874c8e0349fae08452c51ac403802d1462554092f3cd"
+     }
+    }
+   ]
+  }
+ },
+ "checks": [
+  {
+   "id": "C1",
+   "name": "Exact-candidate local gate",
+   "kind": "gate",
+   "required": true,
+   "status": "passed",
+   "command": "make check",
+   "detail": "Standalone make check passed at the reviewed candidate b836c902 (packet gate receipt) and again at the final candidate 60d570d7 after the DOC-1 correction. The authoritative verdict file is PASS with exit 0 for head 60d570d75d55c26f171238b63626c532fd6fd675. Its tree field is the gate input digest, not the Git tree.",
+   "evidence": [
+    {
+     "label": "Frozen round 4 packet",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "725754035822797d5ac8e3f6adf6eaca72bf22c056b26058fbed5b6655bed775"
+     }
+    },
+    {
+     "label": "DOC-1 correction and fresh gate at the final candidate",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "95913da2bad9cf31b7a84c3d055d2241977c8a55d95cc083bd178ae87e3daeac"
+     }
+    }
+   ],
+   "cost": null
+  },
+  {
+   "id": "C2",
+   "name": "Maintained real-browser journeys",
+   "kind": "e2e",
+   "required": true,
+   "status": "passed",
+   "command": "docs/sprints/S-2/evidence/TKT-563/run-make-browser.sh --historical-backup <file> --receipts <dir> (wraps make browser)",
+   "detail": "Enforced guarded full make browser passed at merged main 5bbb14d3 in 217 seconds, with Node 26.13.0, pnpm 12.18.0 and go1.27.4. Every spec passed, including the scanner suite and both historical journeys built with pnpm 11.13.1. The TKT-559 receipt was restored to 677c6e65. A second guarded run passed at TKT-578 head 40e75699. The first TKT-578 candidate run at 93673ca1 failed on the external pnpm 11.12.0 deprecation; TKT-581 repaired the harness. The final candidate differs from 5bbb14d3 only in docs/runbooks/scanner.md and docs/testing.md, so this execution is reused with its own commit identity.",
+   "evidence": [
+    {
+     "label": "Frozen round 4 packet",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "725754035822797d5ac8e3f6adf6eaca72bf22c056b26058fbed5b6655bed775"
+     }
+    },
+    {
+     "label": "Round 4 evidence supplement for VER-2 and RETRO-1",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "32eabca13c57a90da8915bf1aa02ed77138675b58de3c7f518bccffcd580068d"
+     }
+    },
+    {
+     "label": "TKT-581 accepted closeout",
+     "url": null,
+     "ref": {
+      "key": "TKT-581",
+      "digest": "a821fb1d1753efa01b83a556c1176c562003d1bdbfc759d43fce454bddd6560d"
+     }
+    },
+    {
+     "label": "Maintained scanner entrypoint",
+     "url": "https://github.com/mathd/ticketing_system/blob/60d570d75d55c26f171238b63626c532fd6fd675/test/browser/scanner.mjs"
+    }
+   ],
+   "cost": null
+  },
+  {
+   "id": "C3",
+   "name": "Security workflow on the accepted product inputs",
+   "kind": "other",
+   "required": true,
+   "status": "passed",
+   "command": null,
+   "detail": "Security workflow dispatch at merged main 5bbb14d3 (run 44682071829): changes, repository-scan, pnpm-audit and all eight govulncheck jobs succeeded. Two notification jobs were skipped and get no pass credit. The final candidate adds two guide files and one guide correction on top of 5bbb14d3; dependency inputs are unchanged. This is executed scan evidence, not a security guarantee. The PR-scoped scan does not re-scan unchanged Go code; the scheduled scan found GO-2026-6859, which TKT-578 fixed.",
+   "evidence": [
+    {
+     "label": "Security run at 5bbb14d3",
+     "url": "https://github.com/mathd/ticketing_system/actions/runs/44682071829"
+    },
+    {
+     "label": "Frozen round 4 packet",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "725754035822797d5ac8e3f6adf6eaca72bf22c056b26058fbed5b6655bed775"
+     }
+    },
+    {
+     "label": "TKT-578 accepted closeout",
+     "url": null,
+     "ref": {
+      "key": "TKT-578",
+      "digest": "8850df5aa71859491cc0823d60eb21e7feaf284f9f6447735fdce78b66e34050"
+     }
+    }
+   ],
+   "cost": null
+  },
+  {
+   "id": "C4",
+   "name": "Production-image builds and hermetic smoke",
+   "kind": "integration",
+   "required": true,
+   "status": "passed",
+   "command": "make smoke-hermetic",
+   "detail": "Local make smoke-hermetic passed at merged main 5bbb14d3: the production Dockerfiles built the images and the e2e and e2e-slow parts passed (smoke package 414.086 s). All six service images report go1.27.4. CI hermetic-smoke passed at TKT-578 head 40e75699 on attempt 2; attempt 1 hit the smoke.sh SIGPIPE race (TKT-584). Host service-test parts are covered by C1. The final candidate changes no Docker build input.",
+   "evidence": [
+    {
+     "label": "Frozen round 4 packet",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "725754035822797d5ac8e3f6adf6eaca72bf22c056b26058fbed5b6655bed775"
+     }
+    },
+    {
+     "label": "CI hermetic-smoke at 40e75699",
+     "url": "https://github.com/mathd/ticketing_system/actions/runs/44680076941"
+    },
+    {
+     "label": "TKT-578 accepted closeout",
+     "url": null,
+     "ref": {
+      "key": "TKT-578",
+      "digest": "8850df5aa71859491cc0823d60eb21e7feaf284f9f6447735fdce78b66e34050"
+     }
+    }
+   ],
+   "cost": null
+  },
+  {
+   "id": "C5",
+   "name": "Bounded simplification mutation and restoration proof",
+   "kind": "unit",
+   "required": true,
+   "status": "passed",
+   "command": null,
+   "detail": "Retained execution at c6fa397e, whose Git tree equals the accepted product tree, includes four unit mutations failing at the intended assertions, eight restored runs of four suites with 385 tests per run, and exact source restoration. The strict-repair browser mutant compiled, failed the intended repair wait, and has eight restored runs. The 98-file proof index has zero recorded hash mismatches. Historical execution is not relabelled as execution at e17d7fd9. TKT-574 later changed App.tsx and App.sync.test.tsx; its own mutation proof is in its closeout. This check proves the TKT-570 cuts only.",
+   "evidence": [
+    {
+     "label": "TKT-570 accepted closeout",
+     "url": null,
+     "ref": {
+      "key": "TKT-570",
+      "digest": "8469207dbef6cdba361dea9d3ed28de236a301362959d18b304d429c88806827"
+     }
+    },
+    {
+     "label": "Current mutation-only patches and restoration evidence",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "c92d90fcfca70069c382cd7a87ba26a9b4bd5b28ee0d31c27dcbf0dbdab36b03"
+     }
+    },
+    {
+     "label": "TKT-574 accepted closeout",
+     "url": null,
+     "ref": {
+      "key": "TKT-574",
+      "digest": "16047f5a73bcdf874d09b6749a02024a1dd9603220d53776d861c487746e925a"
+     }
+    }
+   ],
+   "cost": null
+  },
+  {
+   "id": "C6",
+   "name": "Native Chrome visibility-event delivery",
+   "kind": "e2e",
+   "required": true,
+   "status": "passed",
+   "command": "Standalone host-Chrome acceptance campaign",
+   "detail": "Standalone host-Chrome campaign at the reviewed candidate b836c902, re-targeted from the 91c8 campaign (root path, commit and project name only; helper sources byte-identical). Real hidden and visible tab transitions with focus and online suppressed. The listener-removal mutation failed the completed causal queue-read assertion as intended. Eight restored runs passed. Source was unchanged after the campaign. The final candidate changes only docs/testing.md. Maintained B2 remains synthetic; no suspension, device sleep or bfcache proof.",
+   "evidence": [
+    {
+     "label": "Frozen round 4 packet",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "725754035822797d5ac8e3f6adf6eaca72bf22c056b26058fbed5b6655bed775"
+     }
+    }
+   ],
+   "cost": null
+  },
+  {
+   "id": "C7",
+   "name": "Product LLM evaluation",
+   "kind": "llm_eval",
+   "required": true,
+   "status": "not_applicable",
+   "command": null,
+   "detail": "This sprint adds no product LLM behavior. Development-agent calls and reviews are not product LLM evaluations.",
+   "evidence": [],
+   "cost": null
+  },
+  {
+   "id": "C8",
+   "name": "Four independent final review pairs",
+   "kind": "manual",
+   "required": true,
+   "status": "passed",
+   "command": null,
+   "detail": "Four complete round 4 area pairs on one frozen packet, each run by gpt-6-luna at high effort in a fresh context. review_round.py sprint-round returned HUMAN_REVIEW for the combined round. Round 4 is the last round under the four-round cap. Earlier rounds and incomplete invocations get no approval credit.",
+   "evidence": [
+    {
+     "label": "Frozen round 4 packet",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "725754035822797d5ac8e3f6adf6eaca72bf22c056b26058fbed5b6655bed775"
+     }
+    },
+    {
+     "label": "Round 4 canonical implementation record",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "5840af6a07afc00b89943765a670d7aa49faa304c6ad9b559c5dfa1a4031b62f"
+     }
+    },
+    {
+     "label": "Round 4 canonical verification record",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "bdcf1b43c71b55d8258a7f69bf0094c22fbfb65d648960c95358835227a5c362"
+     }
+    },
+    {
+     "label": "Round 4 canonical retrospective record",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "04d40663086b09b81047e635100508b233e62b2b91fe19b32b9671e8f3e05174"
+     }
+    },
+    {
+     "label": "Round 4 canonical documentation record",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "6908ad85f9415d9c52aae0ce6a7c74217391ca01616be4e5dabf9a1688bfea93"
+     }
+    }
+   ],
+   "cost": null
+  }
+ ],
+ "measurements": [
+  {
+   "metric": "Sprint diff size",
+   "scope": "cc641814..60d570d7, full revisions in release identity",
+   "baseline": "170; +14,756/-7,348",
+   "candidate": "172; +15,059/-7,351",
+   "tool": "Git 2.43.0, shortstat and classified numstat",
+   "observation": "Baseline column is the round 3 candidate bbd7c964; candidate column is the final candidate. Values are files; added/removed lines. External-inclusive. Includes PRs #495-498, commits c4f5fb58, aae0d9ca, 57dc4f4e and 5cc05ad1, and the four correction members TKT-574, TKT-577, TKT-578 and TKT-581. The reviewed packet candidate b836c902 measured 172; +15,056/-7,351. The DOC-1 correction is +6/-3 in one file. Do not credit the entire diff as sprint-authored work."
+  },
+  {
+   "metric": "TKT-570 cut diff",
+   "scope": "aae0d9ca..c6fa397e, unchanged at e17d7fd9",
+   "baseline": null,
+   "candidate": "7; +19/-27",
+   "tool": "Git 2.43.0",
+   "observation": "Values are files; added/removed lines. Net -8 lines. Production: one file +3/-3. Tests and executable verification: five files +15/-22. Documentation: one file +1/-2. Baseline-relative diff totals can cancel within hunks, so their before/after difference is not the separate cut diff. Both focus tests and post-await applicability guards remain."
+  },
+  {
+   "metric": "Candidate diff categories",
+   "scope": "baseline..e17d7fd9, historical",
+   "baseline": null,
+   "candidate": "170 files",
+   "tool": "Exclusive classified numstat",
+   "observation": "Historical external-inclusive endpoint e17d7fd9, before the four correction members: production 2 files +301/-118; tests 22 +4,747/-206; documentation 97 +7,643/-4,092; tooling 35 +742/-260; lock/checksum 9 +1,318/-2,667; generated 5 +5/-5. Total 170 files +14,756/-7,348. Zero binary files. Classification does not establish test relevance or sprint authorship. The categories were not recalculated for the final candidate 60d570d7; the Sprint diff size measurement gives its totals (172 files, +15,059/-7,351)."
+  },
+  {
+   "metric": "Line coverage",
+   "scope": "web/scanner",
+   "baseline": null,
+   "candidate": null,
+   "tool": null,
+   "observation": "Not measured. The scanner package has no configured TypeScript coverage command or retained coverage output. Do not infer coverage from test count or set an invented target."
+  },
+  {
+   "metric": "Cyclomatic complexity",
+   "scope": "changed scanner code",
+   "baseline": null,
+   "candidate": null,
+   "tool": null,
+   "observation": "Not measured. No configured complexity tool or corresponding lint rule supplies a comparable result. Line counts below show size only."
+  },
+  {
+   "metric": "Scanner hotspot size",
+   "scope": "web/scanner/src/App.tsx",
+   "baseline": "553 lines",
+   "candidate": "724 lines",
+   "tool": "Git source line counts",
+   "observation": "Line count at cc641814 and at 60d570d7. Size is a signal to investigate, not a target."
+  },
+  {
+   "metric": "Scanner hotspot size",
+   "scope": "web/scanner/src/App.sync.test.tsx",
+   "baseline": "852 lines",
+   "candidate": "3514 lines",
+   "tool": "Git source line counts",
+   "observation": "Line count at cc641814 and at 60d570d7. Size is a signal to investigate, not a target."
+  },
+  {
+   "metric": "Scanner hotspot size",
+   "scope": "web/scanner/src/scan-result.ts",
+   "baseline": "106 lines",
+   "candidate": "122 lines",
+   "tool": "Git source line counts",
+   "observation": "Line count at cc641814 and at 60d570d7. Size is a signal to investigate, not a target."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-512 plan-review",
+   "baseline": null,
+   "candidate": "36 groups",
+   "tool": "Canonical ticket review records and primary crosswalk correction",
+   "observation": "Recorded detail: Rounds 1, 2, 3: 36 finding groups; 36 fixed. Historical member-round accounting, not final sprint approval. Generic reused IDs are separated by defect identity. Carry links and fix-induced defects remain visible. The round-2 decision audit corroborated these corrected counts; final report fidelity remains pending."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-512 ai-review",
+   "baseline": null,
+   "candidate": "7 groups",
+   "tool": "Canonical ticket review records and primary crosswalk correction",
+   "observation": "Rounds 1 and 2 contain seven distinct finding groups: six fixed, one originally deferred, zero rejected. I1, I2, A2 and A3 were later fixed in the scanner artifact; R2-I1 and R2-A1 are two separate fixes. Original A1 was deferred, then remediated through separately reviewed dependency repairs and verified integration. Later remediation does not rewrite the historical deferred disposition. No current deferred product defect is inferred. The original records remain unchanged."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-565 plan-review",
+   "baseline": null,
+   "candidate": "1 groups",
+   "tool": "Canonical ticket review records and primary crosswalk correction",
+   "observation": "Recorded detail: Rounds 1: 1 finding groups; 1 fixed. Historical member-round accounting, not final sprint approval. Generic reused IDs are separated by defect identity. Carry links and fix-induced defects remain visible. The round-2 decision audit corroborated these corrected counts; final report fidelity remains pending."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-565 ai-review",
+   "baseline": null,
+   "candidate": "1 groups",
+   "tool": "Canonical ticket review records and primary crosswalk correction",
+   "observation": "Recorded detail: Rounds 1: 1 finding groups; 1 fixed. Historical member-round accounting, not final sprint approval. Generic reused IDs are separated by defect identity. Carry links and fix-induced defects remain visible. The round-2 decision audit corroborated these corrected counts; final report fidelity remains pending."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-566 plan-review",
+   "baseline": null,
+   "candidate": "1 groups",
+   "tool": "Canonical ticket review records and primary crosswalk correction",
+   "observation": "Recorded detail: Rounds 1: 1 finding groups; 1 fixed. Historical member-round accounting, not final sprint approval. Generic reused IDs are separated by defect identity. Carry links and fix-induced defects remain visible. The round-2 decision audit corroborated these corrected counts; final report fidelity remains pending."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-566 ai-review",
+   "baseline": null,
+   "candidate": "0 groups",
+   "tool": "Canonical ticket review records and primary crosswalk correction",
+   "observation": "Recorded detail: Rounds 1: 0 finding groups; 0 fixed. Historical member-round accounting, not final sprint approval. Generic reused IDs are separated by defect identity. Carry links and fix-induced defects remain visible. The round-2 decision audit corroborated these corrected counts; final report fidelity remains pending."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-568 plan-review",
+   "baseline": null,
+   "candidate": "37 groups",
+   "tool": "Canonical ticket review records and primary crosswalk correction",
+   "observation": "Recorded detail: Rounds 1, 2, 3, 4, 5, 6, 7, 8: 37 finding groups; 36 fixed; 1 historical owner-accepted risk. Historical member-round accounting, not final sprint approval. Generic reused IDs are separated by defect identity. Carry links and fix-induced defects remain visible. The round-2 decision audit corroborated these corrected counts; final report fidelity remains pending."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-568 ai-review",
+   "baseline": null,
+   "candidate": "0 groups",
+   "tool": "Canonical ticket review records and primary crosswalk correction",
+   "observation": "Recorded detail: Rounds 1, 2: 0 finding groups; 0 fixed. Historical member-round accounting, not final sprint approval. Generic reused IDs are separated by defect identity. Carry links and fix-induced defects remain visible. The round-2 decision audit corroborated these corrected counts; final report fidelity remains pending."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-569 plan-review",
+   "baseline": null,
+   "candidate": "2 groups",
+   "tool": "Canonical ticket review records and primary crosswalk correction",
+   "observation": "Recorded detail: Rounds 1: 2 finding groups; 2 fixed. Historical member-round accounting, not final sprint approval. Generic reused IDs are separated by defect identity. Carry links and fix-induced defects remain visible. The round-2 decision audit corroborated these corrected counts; final report fidelity remains pending."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-569 ai-review",
+   "baseline": null,
+   "candidate": "0 groups",
+   "tool": "Canonical ticket review records and primary crosswalk correction",
+   "observation": "Recorded detail: Rounds 1: 0 finding groups; 0 fixed. Historical member-round accounting, not final sprint approval. Generic reused IDs are separated by defect identity. Carry links and fix-induced defects remain visible. The round-2 decision audit corroborated these corrected counts; final report fidelity remains pending."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-571 plan-review",
+   "baseline": null,
+   "candidate": "2 groups",
+   "tool": "Canonical ticket review records and primary crosswalk correction",
+   "observation": "Recorded detail: Rounds 1, 2, 3: 2 finding groups; 2 fixed. Historical member-round accounting, not final sprint approval. Generic reused IDs are separated by defect identity. Carry links and fix-induced defects remain visible. The round-2 decision audit corroborated these corrected counts; final report fidelity remains pending."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-571 ai-review",
+   "baseline": null,
+   "candidate": "0 groups",
+   "tool": "Canonical ticket review records and primary crosswalk correction",
+   "observation": "Recorded detail: Rounds 1: 0 finding groups; 0 fixed. Historical member-round accounting, not final sprint approval. Generic reused IDs are separated by defect identity. Carry links and fix-induced defects remain visible. The round-2 decision audit corroborated these corrected counts; final report fidelity remains pending."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-570 plan-review",
+   "baseline": null,
+   "candidate": "5 groups",
+   "tool": "Canonical ticket review records and primary crosswalk correction",
+   "observation": "Recorded detail: Rounds 1: 5 finding groups; 5 fixed. Historical member-round accounting, not final sprint approval. Generic reused IDs are separated by defect identity. Carry links and fix-induced defects remain visible. The round-2 decision audit corroborated these corrected counts; final report fidelity remains pending."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-570 ai-review",
+   "baseline": null,
+   "candidate": "0 groups",
+   "tool": "Canonical ticket review records and primary crosswalk correction",
+   "observation": "Recorded detail: Rounds 1: 0 finding groups; 0 fixed. Historical member-round accounting, not final sprint approval. Generic reused IDs are separated by defect identity. Carry links and fix-induced defects remain visible. The round-2 decision audit corroborated these corrected counts; final report fidelity remains pending."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-574 plan-review",
+   "baseline": null,
+   "candidate": "13 groups",
+   "tool": "Canonical ticket review records, latest record per round",
+   "observation": "Round 1: 13 findings (4 Medium, 6 Low, 3 Nit); 13 fixed."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-574 ai-review",
+   "baseline": null,
+   "candidate": "0 groups",
+   "tool": "Canonical ticket review records, latest record per round",
+   "observation": "Round 1: both lenses approved."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-577 plan-review",
+   "baseline": null,
+   "candidate": "11 groups",
+   "tool": "Canonical ticket review records, latest record per round",
+   "observation": "Round 1: 11 findings (1 Medium, 7 Low, 3 Nit); 11 fixed."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-577 ai-review",
+   "baseline": null,
+   "candidate": "0 groups",
+   "tool": "Canonical ticket review records, latest record per round",
+   "observation": "Round 1: both lenses approved."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-578 plan-review",
+   "baseline": null,
+   "candidate": "11 groups",
+   "tool": "Canonical ticket review records, latest record per round",
+   "observation": "Round 1: 11 findings (8 Low, 3 Nit); 11 fixed."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-578 ai-review",
+   "baseline": null,
+   "candidate": "0 groups",
+   "tool": "Canonical ticket review records, latest record per round",
+   "observation": "Round 1: both lenses approved."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-581 plan-review",
+   "baseline": null,
+   "candidate": "22 groups",
+   "tool": "Canonical ticket review records, latest record per round",
+   "observation": "Rounds 1-3: 23 findings, one carried by priorFinding, so 22 groups; 22 fixed. Round 2 had one High, which required round 3."
+  },
+  {
+   "metric": "Review convergence",
+   "scope": "TKT-581 ai-review",
+   "baseline": null,
+   "candidate": "2 groups",
+   "tool": "Canonical ticket review records, latest record per round",
+   "observation": "Round 1: two Medium audit findings on unenforced evidence drivers; 2 fixed."
+  },
+  {
+   "metric": "Review convergence totals",
+   "scope": "eleven functional members before the retrospective cutoff",
+   "baseline": null,
+   "candidate": "141 plan; 10 code",
+   "tool": "Derived canonical-record crosswalk",
+   "observation": "Plan: 24 ticket-rounds and 141 distinct groups, with 140 fixed and one historical owner-accepted package-age risk. Code: 13 ticket-rounds and 10 distinct groups, with nine fixed, one originally deferred and zero rejected. The four correction members add 57 plan groups over six rounds and two code groups over four rounds. Counts exclude closure-task reviews and incomplete invocations. The round 4 initial retrospective lens gave a provisional 138 plan and 10 code count; its audit did not verify that total. The difference is not resolved by these records."
+  },
+  {
+   "metric": "Observed execution durations",
+   "scope": "Recorded checks for the final candidate",
+   "baseline": null,
+   "candidate": "Five executions, with distinct execution commits",
+   "tool": "Individual command receipts",
+   "observation": "Guarded browser at 5bbb14d3: 217 s. Local hermetic smoke package at 5bbb14d3: 414.086 s. Native visibility at b836c902: mutation 16.2 s and eight restored runs of about 5.4 s each. Gates at b836c902 and 60d570d7: see C1 receipts. These executions keep their commits. They are not summed into active time or spend."
+  },
+  {
+   "metric": "Active work, review, verification, CI wait and idle cost",
+   "scope": "Sprint 3 through 2026-11-20T06:03:16+00:00",
+   "baseline": null,
+   "candidate": null,
+   "tool": null,
+   "observation": "n/a. Board status durations include unattended time, owner waits and a nine-day idle period on TKT-577. Parent and child operations overlap. Exclusive active work, review time, verification time, CI wait and unexplained idle cannot be separated."
+  },
+  {
+   "metric": "Financial spend",
+   "scope": "Sprint 3",
+   "baseline": null,
+   "candidate": null,
+   "tool": null,
+   "observation": "n/a. No complete retained billing source establishes financial spend. This is a separate limit from overlapping timing records. Missing spend is not zero."
+  },
+  {
+   "metric": "Historical review identity status",
+   "scope": "TKT-512",
+   "baseline": null,
+   "candidate": "5 stage-rounds",
+   "tool": "Canonical records and primary author-set correction",
+   "observation": "plan-review R1: recorded cross-model. Recorded distinct IDs do not establish actual execution where metadata is missing. plan-review R2: recorded cross-model. Recorded distinct IDs do not establish actual execution where metadata is missing. plan-review R3: recorded cross-model. Recorded distinct IDs do not establish actual execution where metadata is missing. ai-review R1: recorded cross-model. Recorded distinct IDs do not establish actual execution where metadata is missing. ai-review R2: same-model under owner D18. Historical D18 exception; this is not independent final-review credit. Actual identities, author contributions, notes and exact source digests are in the linked primary retrospective correction on S-3. The completed round-3 independent retrospective audit checked this historical accounting. Missing actual execution metadata remains unknown; the check does not recover it or turn historical same-model exceptions into independent approval."
+  },
+  {
+   "metric": "Historical review identity status",
+   "scope": "TKT-565",
+   "baseline": null,
+   "candidate": "2 stage-rounds",
+   "tool": "Canonical records and primary author-set correction",
+   "observation": "plan-review R1: same-model under owner D18. Historical D18 exception; this is not independent final-review credit. ai-review R1: same-model under owner D18. Historical D18 exception; this is not independent final-review credit. Actual identities, author contributions, notes and exact source digests are in the linked primary retrospective correction on S-3. The completed round-3 independent retrospective audit checked this historical accounting. Missing actual execution metadata remains unknown; the check does not recover it or turn historical same-model exceptions into independent approval."
+  },
+  {
+   "metric": "Historical review identity status",
+   "scope": "TKT-566",
+   "baseline": null,
+   "candidate": "2 stage-rounds",
+   "tool": "Canonical records and primary author-set correction",
+   "observation": "plan-review R1: recorded cross-model. Recorded distinct IDs do not establish actual execution where metadata is missing. ai-review R1: recorded cross-model. Recorded distinct IDs do not establish actual execution where metadata is missing. Actual identities, author contributions, notes and exact source digests are in the linked primary retrospective correction on S-3. The completed round-3 independent retrospective audit checked this historical accounting. Missing actual execution metadata remains unknown; the check does not recover it or turn historical same-model exceptions into independent approval."
+  },
+  {
+   "metric": "Historical review identity status",
+   "scope": "TKT-568",
+   "baseline": null,
+   "candidate": "10 stage-rounds",
+   "tool": "Canonical records and primary author-set correction",
+   "observation": "plan-review R1: recorded cross-model. Recorded distinct IDs do not establish actual execution where metadata is missing. plan-review R2: recorded cross-model. Recorded distinct IDs do not establish actual execution where metadata is missing. plan-review R3: recorded cross-model. Recorded distinct IDs do not establish actual execution where metadata is missing. plan-review R4: recorded cross-model. Recorded distinct IDs do not establish actual execution where metadata is missing. plan-review R5: recorded cross-model. Recorded distinct IDs do not establish actual execution where metadata is missing. ai-review R1: recorded cross-model. Recorded distinct IDs do not establish actual execution where metadata is missing. plan-review R6: recorded cross-model. Recorded distinct IDs do not establish actual execution where metadata is missing. plan-review R7: same-model under owner D18. Historical D18 exception; this is not independent final-review credit. plan-review R8: same-model under owner D18. Historical D18 exception; this is not independent final-review credit. ai-review R2: same-model under owner D18. Historical D18 exception; this is not independent final-review credit. Actual identities, author contributions, notes and exact source digests are in the linked primary retrospective correction on S-3. The completed round-3 independent retrospective audit checked this historical accounting. Missing actual execution metadata remains unknown; the check does not recover it or turn historical same-model exceptions into independent approval. Plan round 6 has no actual execution metadata. Preserve this unknown separately from its recorded identity."
+  },
+  {
+   "metric": "Historical review identity status",
+   "scope": "TKT-569",
+   "baseline": null,
+   "candidate": "2 stage-rounds",
+   "tool": "Canonical records and primary author-set correction",
+   "observation": "plan-review R1: recorded cross-model. Recorded distinct IDs do not establish actual execution where metadata is missing. ai-review R1: recorded cross-model. Recorded distinct IDs do not establish actual execution where metadata is missing. Actual identities, author contributions, notes and exact source digests are in the linked primary retrospective correction on S-3. The completed round-3 independent retrospective audit checked this historical accounting. Missing actual execution metadata remains unknown; the check does not recover it or turn historical same-model exceptions into independent approval. Plan round 1 has no actual execution metadata."
+  },
+  {
+   "metric": "Historical review identity status",
+   "scope": "TKT-570",
+   "baseline": null,
+   "candidate": "2 stage-rounds",
+   "tool": "Canonical records and primary author-set correction",
+   "observation": "plan-review R1: recorded cross-model. Recorded distinct IDs do not establish actual execution where metadata is missing. ai-review R1: recorded cross-model. Recorded distinct IDs do not establish actual execution where metadata is missing. Actual identities, author contributions, notes and exact source digests are in the linked primary retrospective correction on S-3. The completed round-3 independent retrospective audit checked this historical accounting. Missing actual execution metadata remains unknown; the check does not recover it or turn historical same-model exceptions into independent approval. Code round 1 executedModel is null."
+  },
+  {
+   "metric": "Historical review identity status",
+   "scope": "TKT-571",
+   "baseline": null,
+   "candidate": "4 stage-rounds",
+   "tool": "Canonical records and primary author-set correction",
+   "observation": "plan-review R1: same-model under owner D18. Historical D18 exception; this is not independent final-review credit. plan-review R2: same-model under owner D18. Historical D18 exception; this is not independent final-review credit. plan-review R3: same-model under owner D18. Historical D18 exception; this is not independent final-review credit. ai-review R1: recorded cross-model. Recorded distinct IDs do not establish actual execution where metadata is missing. Actual identities, author contributions, notes and exact source digests are in the linked primary retrospective correction on S-3. The completed round-3 independent retrospective audit checked this historical accounting. Missing actual execution metadata remains unknown; the check does not recover it or turn historical same-model exceptions into independent approval."
+  },
+  {
+   "metric": "Standalone native visibility campaign",
+   "scope": "b836c902 product inputs, round 4 acceptance proof",
+   "baseline": null,
+   "candidate": "1 intended mutation failure; 8 restored passes",
+   "tool": "Host Chrome 157.0.8103.38 and Playwright 1.65.0 noDefaults connection",
+   "observation": "Mutation 16.2 s and eight restored runs of 5.3 to 5.5 s each. Post-cutoff closure work; it does not enter historical active-time or spend estimates. No physical-device suspension or bfcache coverage is claimed."
+  },
+  {
+   "metric": "Sprint membership counts",
+   "scope": "S-3 board metrics captured 2026-11-20T06:31:48Z",
+   "baseline": null,
+   "candidate": "4 committed; 8 added; 0 removed; 12 members; 11 Done; 1 open",
+   "tool": "Board GET /metrics?sprint=S-3",
+   "observation": "The packet snapshot from 05:37:22Z showed 10 Done and 2 open because TKT-578 became Done at the 06:03:16Z cutoff (RETRO-1, RETRO-1A). Counts here come from the later capture and match the packet member states. Per-member seconds in both captures include time after Done and closure work after the cutoff, so cutoff-aligned per-member time is unknown."
+  }
+ ],
+ "risks": [
+  {
+   "id": "R-IDENTITY",
+   "severity": "Medium",
+   "area": "documentation",
+   "title": "Final reviewer contributed to the reviewed candidate",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "The owner resolved the pre-staged contribution authorship and selected gpt-6-luna, outside the full four-author set, for all final review pairs. The four correction members were implemented by claude-haiku-5-5 and claude-opus-5-5, already in the author set. The original identity failure and round 1 conflict remain historical.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Final-review independence blocker",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "b1bd4ca797ed2097a9df041f372eac49ec034ef9fe78e5ff05304edf480317e0"
+     }
+    },
+    {
+     "label": "Current guide clarification and next review basis",
+     "url": null,
+     "ref": {
+      "key": "TKT-567",
+      "digest": "006c388810aa2e248a2106ceb79c5a730e1722df246d96b15f2ebb306d31ba6d"
+     }
+    },
+    {
+     "label": "Round 3 complete independent implementation pair",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "2305e171d52dbb066965ce4211a4c447295d825c003062caa9d47651efc0142d"
+     }
+    },
+    {
+     "label": "Round 3 raw-only verification pair and preserved historical corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "76f3a84bdd1b48925ced00018644f031420dc4d21e9df3d044a0fc2b4cb9ac15"
+     }
+    },
+    {
+     "label": "Round 3 retrospective pair and independently verified factual corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "655769c804b590089eed470cea15c2097a880f781369c01cecb5936521c76845"
+     }
+    }
+   ]
+  },
+  {
+   "id": "IMPL-1",
+   "severity": "Low",
+   "area": "implementation",
+   "title": "Queue refresh can show an unavailable alert while storage is opening",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "TKT-574 keeps transient storage waits distinct from unavailable storage (fa08d5d5). Round 4 implementation review approved it.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical implementation inspection, no independent approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "e20d92239e53ed7b9e25e5927f638ff10e4a1fc5bc04a5bd15afb3b6f00a5ab7"
+     }
+    },
+    {
+     "label": "Round 3 complete independent implementation pair",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "2305e171d52dbb066965ce4211a4c447295d825c003062caa9d47651efc0142d"
+     }
+    },
+    {
+     "label": "Round 3 documentation pair and unresolved acceptance defect",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "a208fa320b2aeda3fe8d3a147d001a520df55bbf358b45414a645078370a11e8"
+     }
+    },
+    {
+     "label": "TKT-574 accepted closeout",
+     "url": null,
+     "ref": {
+      "key": "TKT-574",
+      "digest": "16047f5a73bcdf874d09b6749a02024a1dd9603220d53776d861c487746e925a"
+     }
+    },
+    {
+     "label": "Round 4 raw implementation lens results",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "7ffe707a493e40c8c750f4226448a96e5e08f42f93ecb21494097f7e59f73d59"
+     }
+    }
+   ]
+  },
+  {
+   "id": "IMPL-2",
+   "severity": "Low",
+   "area": "implementation",
+   "title": "Negative assertions name text that production cannot emit",
+   "status": "deferred",
+   "blocking": false,
+   "resolution": "A test constant and three absence assertions appear inert. Existing assertions still check real read and write diagnostics. A possible follow-up cut is about four lines; no cut is applied in this closure task.  Retained in TKT-575 as an incidental investigation. The final independent pair approved the current candidate and established no additional required cut. No deletion or product correction is authorized by this report.",
+   "followup": "TKT-575",
+   "evidence": [
+    {
+     "label": "Historical implementation inspection, no independent approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "e20d92239e53ed7b9e25e5927f638ff10e4a1fc5bc04a5bd15afb3b6f00a5ab7"
+     }
+    },
+    {
+     "label": "Round 3 complete independent implementation pair",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "2305e171d52dbb066965ce4211a4c447295d825c003062caa9d47651efc0142d"
+     }
+    }
+   ]
+  },
+  {
+   "id": "IMPL-3",
+   "severity": "Low",
+   "area": "implementation",
+   "title": "Two early focus and pairing tests may repeat stronger tests",
+   "status": "deferred",
+   "blocking": false,
+   "resolution": "The proposed 26-line deletion needs a decision audit. The approved simplification plan deliberately retained both focus tests because zero reconciliation calls and zero flattened sent IDs are different assertions. The later initial inspection argues that retained non-empty fixtures cover the distinction. The final implementation audit supports retaining the approved distinctions; no proposed deletion is approved.  Retained in TKT-575 as an incidental investigation. The final independent pair approved the current candidate and established no additional required cut. No deletion or product correction is authorized by this report.",
+   "followup": "TKT-575",
+   "evidence": [
+    {
+     "label": "Historical implementation inspection, no independent approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "e20d92239e53ed7b9e25e5927f638ff10e4a1fc5bc04a5bd15afb3b6f00a5ab7"
+     }
+    },
+    {
+     "label": "Round 3 complete independent implementation pair",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "2305e171d52dbb066965ce4211a4c447295d825c003062caa9d47651efc0142d"
+     }
+    }
+   ]
+  },
+  {
+   "id": "IMPL-4",
+   "severity": "Low",
+   "area": "implementation",
+   "title": "PostgreSQL base-distribution change lacks an existing-volume upgrade note",
+   "status": "deferred",
+   "blocking": false,
+   "resolution": "The candidate changes postgres:18.4-bookworm to 18.6-trixie while retaining pgdata. Official platform guidance supports a conditional collation-version risk after an OS change. No disposable-volume upgrade or mismatch in this project was observed. A future note or experiment must preserve that distinction.  Retained in TKT-576 as an incidental investigation. The final independent pair approved the current candidate and established no additional required cut. No deletion or product correction is authorized by this report.",
+   "followup": "TKT-576",
+   "evidence": [
+    {
+     "label": "Historical implementation inspection, no independent approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "e20d92239e53ed7b9e25e5927f638ff10e4a1fc5bc04a5bd15afb3b6f00a5ab7"
+     }
+    },
+    {
+     "label": "Round 3 complete independent implementation pair",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "2305e171d52dbb066965ce4211a4c447295d825c003062caa9d47651efc0142d"
+     }
+    }
+   ]
+  },
+  {
+   "id": "IMPL-5",
+   "severity": "Low",
+   "area": "implementation",
+   "title": "Three earlier sync tests may be subsets of later cases",
+   "status": "deferred",
+   "blocking": false,
+   "resolution": "The historical initial inspection proposed about 71 lines of further test cuts. This is a sampled comparison, not a complete redundancy proof for the 3,282-line file. Retained assertions, mutant reachability and repeated restored runs would be required before future deletion.  Retained in TKT-575 as an incidental investigation. The final independent pair approved the current candidate and established no additional required cut. No deletion or product correction is authorized by this report.",
+   "followup": "TKT-575",
+   "evidence": [
+    {
+     "label": "Historical implementation inspection, no independent approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "e20d92239e53ed7b9e25e5927f638ff10e4a1fc5bc04a5bd15afb3b6f00a5ab7"
+     }
+    },
+    {
+     "label": "Round 3 complete independent implementation pair",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "2305e171d52dbb066965ce4211a4c447295d825c003062caa9d47651efc0142d"
+     }
+    }
+   ]
+  },
+  {
+   "id": "IMPL-6",
+   "severity": "Low",
+   "area": "implementation",
+   "title": "Three retained unknown-reason rows may repeat one input class",
+   "status": "deferred",
+   "blocking": false,
+   "resolution": "The approved simplification decision explicitly retained these presenter, Exit and browser leads. The historical initial inspection proposes deleting them. The final implementation audit supports the retained decisions; no additional cut was established. A browser-fixture change requires its own mutation and restored-run proof.  Retained in TKT-575 as an incidental investigation. The final independent pair approved the current candidate and established no additional required cut. No deletion or product correction is authorized by this report.",
+   "followup": "TKT-575",
+   "evidence": [
+    {
+     "label": "Historical implementation inspection, no independent approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "e20d92239e53ed7b9e25e5927f638ff10e4a1fc5bc04a5bd15afb3b6f00a5ab7"
+     }
+    },
+    {
+     "label": "Round 3 complete independent implementation pair",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "2305e171d52dbb066965ce4211a4c447295d825c003062caa9d47651efc0142d"
+     }
+    }
+   ]
+  },
+  {
+   "id": "IMPL-7",
+   "severity": "Low",
+   "area": "implementation",
+   "title": "The failed-write safety matrix may repeat reason-independent behavior",
+   "status": "deferred",
+   "blocking": false,
+   "resolution": "The historical initial inspection proposes removing 14 mapped-reason rows and 56 expanded App cases while retaining distinct malformed and unknown classes. This is a follow-up proposal. No reduced matrix or replacement proof is accepted here.  Retained in TKT-575 as an incidental investigation. The final independent pair approved the current candidate and established no additional required cut. No deletion or product correction is authorized by this report.",
+   "followup": "TKT-575",
+   "evidence": [
+    {
+     "label": "Historical implementation inspection, no independent approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "e20d92239e53ed7b9e25e5927f638ff10e4a1fc5bc04a5bd15afb3b6f00a5ab7"
+     }
+    },
+    {
+     "label": "Round 3 complete independent implementation pair",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "2305e171d52dbb066965ce4211a4c447295d825c003062caa9d47651efc0142d"
+     }
+    }
+   ]
+  },
+  {
+   "id": "VER-1",
+   "severity": "Medium",
+   "area": "verification",
+   "title": "Required hermetic proof was missing from the original packet",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "The primary executed make smoke-hermetic on the exact product candidate. Production images built and e2e/e2e-slow passed with source preserved. This supplies the required proof; it does not erase the original omission or validate reviewer independence.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical verification audit",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "64ccd77d94bb754e52beb28fc2a77a9b041b30dd1cfabb0bfe1aabed390960ad"
+     }
+    },
+    {
+     "label": "Exact-candidate hermetic receipt and image identities",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "a23d077b21df6ce6f94b5878091eb03341e99225355221f6cfb68236b8f3c224"
+     }
+    },
+    {
+     "label": "Round 3 raw-only verification pair and preserved historical corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "76f3a84bdd1b48925ced00018644f031420dc4d21e9df3d044a0fc2b4cb9ac15"
+     }
+    }
+   ]
+  },
+  {
+   "id": "VER-2",
+   "severity": "Low",
+   "area": "verification",
+   "title": "The historical French checkout timeout has no known cause",
+   "status": "deferred",
+   "blocking": false,
+   "resolution": "The failing run reached the simulated payment bridge but not the confirmation page within 30 seconds. The all-mode runner removed the stack before server-state capture. English checkout in that run, an unchanged retry, and later full candidate runs passed. No deployment is authorized and the storefront journey is outside the scanner release criteria. This supports a narrow non-blocking classification, subject to independent review. It proves neither cause nor repair.",
+   "followup": "TKT-573",
+   "evidence": [
+    {
+     "label": "Historical verification audit",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "64ccd77d94bb754e52beb28fc2a77a9b041b30dd1cfabb0bfe1aabed390960ad"
+     }
+    },
+    {
+     "label": "TKT-570 accepted closeout",
+     "url": null,
+     "ref": {
+      "key": "TKT-570",
+      "digest": "8469207dbef6cdba361dea9d3ed28de236a301362959d18b304d429c88806827"
+     }
+    }
+   ]
+  },
+  {
+   "id": "VER-3",
+   "severity": "Low",
+   "area": "verification",
+   "title": "Native visibility proof independently accepted",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "The standalone 91c8 native tab-switch campaign passed its intended causal-read mutation and eight restored runs. The clean round-3 verification pair accepted it against the unchanged sprint criterion. Maintained B2 remains synthetic. This is no claim about sleep, suspension or bfcache.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical verification audit",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "64ccd77d94bb754e52beb28fc2a77a9b041b30dd1cfabb0bfe1aabed390960ad"
+     }
+    },
+    {
+     "label": "TKT-512 accepted closeout",
+     "url": null,
+     "ref": {
+      "key": "TKT-512",
+      "digest": "b983715ab3d46493a0111c45b7e77ed1031f4e1304d6219e622e56b28b9590ba"
+     }
+    },
+    {
+     "label": "Standalone native visibility execution receipt",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "308b21edd15df209189f8a30fe53bc6510811496ad8b4aba96b8351b375c70d8"
+     }
+    },
+    {
+     "label": "Round 3 raw-only verification pair and preserved historical corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "76f3a84bdd1b48925ced00018644f031420dc4d21e9df3d044a0fc2b4cb9ac15"
+     }
+    }
+   ]
+  },
+  {
+   "id": "VER-4",
+   "severity": "Low",
+   "area": "verification",
+   "title": "Coverage and complexity lack configured measurements",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "The report discloses absent coverage and complexity measurements without inventing scores or thresholds. The current verification pair confirms these limits. Disclosure resolves the reporting issue; it does not supply the absent measurements.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical verification audit",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "64ccd77d94bb754e52beb28fc2a77a9b041b30dd1cfabb0bfe1aabed390960ad"
+     }
+    },
+    {
+     "label": "Round 3 raw-only verification pair and preserved historical corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "76f3a84bdd1b48925ced00018644f031420dc4d21e9df3d044a0fc2b4cb9ac15"
+     }
+    }
+   ]
+  },
+  {
+   "id": "VER-5",
+   "severity": "Low",
+   "area": "verification",
+   "title": "Three current mutation patches were missing from the proof index",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "The original assertion that the mutants were absent is refuted by retained mutation-only patches under integration-aae0. The 98-file index omitted them. The primary hashed and read the three patches, checked restoration, and posted their complete contents and SHA-256 values as a retrievable board supplement. Historical mutation execution keeps its actual revision.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical verification audit",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "64ccd77d94bb754e52beb28fc2a77a9b041b30dd1cfabb0bfe1aabed390960ad"
+     }
+    },
+    {
+     "label": "Current mutation-only patches and restoration evidence",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "c92d90fcfca70069c382cd7a87ba26a9b4bd5b28ee0d31c27dcbf0dbdab36b03"
+     }
+    },
+    {
+     "label": "Round 3 raw-only verification pair and preserved historical corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "76f3a84bdd1b48925ced00018644f031420dc4d21e9df3d044a0fc2b4cb9ac15"
+     }
+    }
+   ]
+  },
+  {
+   "id": "DOC-1",
+   "severity": "Medium",
+   "area": "documentation",
+   "title": "Historical scanner builds have undocumented browser prerequisites",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "The current guide correction documents both historical Git objects, current and historical pnpm selection, offline caches and frozen installs. It does not claim a completed clean-host bootstrap. The current gate passed. The round-3 documentation audit checked the corrected scanner guidance and its stated proof limits. The historical clean-host bootstrap remains unverified.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical documentation inspection, no independent approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "2e7ffe8fbef67c99a9032cb83122e6e35397f7b864fe2b7451813cf529d62b86"
+     }
+    },
+    {
+     "label": "Current guide clarification and next review basis",
+     "url": null,
+     "ref": {
+      "key": "TKT-567",
+      "digest": "006c388810aa2e248a2106ceb79c5a730e1722df246d96b15f2ebb306d31ba6d"
+     }
+    },
+    {
+     "label": "Round 3 documentation pair and unresolved acceptance defect",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "a208fa320b2aeda3fe8d3a147d001a520df55bbf358b45414a645078370a11e8"
+     }
+    }
+   ]
+  },
+  {
+   "id": "DOC-2",
+   "severity": "Medium",
+   "area": "documentation",
+   "title": "Report role labels need an explicit owner-authorized schema mapping",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "TKT-567 D13 now explicitly maps preparedBy to Primary author and valid decided reviewers to Independent area reviewer. Actual identities stay in canonical board records under the owner directive. Only completed area pairs receive a reviewer role label. Documentation remains pending in this edition. The renderer label comparison is not proof of independence and no human authorship is claimed.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical documentation inspection, no independent approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "2e7ffe8fbef67c99a9032cb83122e6e35397f7b864fe2b7451813cf529d62b86"
+     }
+    },
+    {
+     "label": "Owner-authorized report role mapping",
+     "url": null,
+     "ref": {
+      "key": "TKT-567",
+      "digest": "9658b98e40fdce99d92a5704d79b2755c4c3808cf6838d9e397ae6557cbe776b"
+     }
+    }
+   ]
+  },
+  {
+   "id": "DOC-3",
+   "severity": "Low",
+   "area": "documentation",
+   "title": "Two external workflow commits were missing from attribution",
+   "status": "resolved",
+   "blocking": true,
+   "resolution": "The owner and source provenance resolve both external workflow authors. The full author inventory now drives the independent final-review selection. Round 1 remains a failed-identity attempt, not an approval.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical documentation inspection, no independent approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "2e7ffe8fbef67c99a9032cb83122e6e35397f7b864fe2b7451813cf529d62b86"
+     }
+    },
+    {
+     "label": "Final-review independence blocker",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "b1bd4ca797ed2097a9df041f372eac49ec034ef9fe78e5ff05304edf480317e0"
+     }
+    },
+    {
+     "label": "Current guide clarification and next review basis",
+     "url": null,
+     "ref": {
+      "key": "TKT-567",
+      "digest": "006c388810aa2e248a2106ceb79c5a730e1722df246d96b15f2ebb306d31ba6d"
+     }
+    }
+   ]
+  },
+  {
+   "id": "DOC-4",
+   "severity": "Low",
+   "area": "documentation",
+   "title": "The browser runner rewrites tracked historical evidence",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "The guides state that the maintained timing runner rewrites tracked S-2 evidence and require pre-run preservation, exact restoration and separate fresh evidence. Accepted browser proof retained restoration receipts. No historical archive was changed by the guide correction.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical documentation inspection, no independent approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "2e7ffe8fbef67c99a9032cb83122e6e35397f7b864fe2b7451813cf529d62b86"
+     }
+    },
+    {
+     "label": "Current guide clarification and next review basis",
+     "url": null,
+     "ref": {
+      "key": "TKT-567",
+      "digest": "006c388810aa2e248a2106ceb79c5a730e1722df246d96b15f2ebb306d31ba6d"
+     }
+    }
+   ]
+  },
+  {
+   "id": "DOC-5",
+   "severity": "Nit",
+   "area": "documentation",
+   "title": "Maintained scanner journeys need a short documentation map",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "The current testing guide names maintained scanner helpers and their runner wiring. This is guide work only; it adds no framework or browser assertion.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical documentation inspection, no independent approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "2e7ffe8fbef67c99a9032cb83122e6e35397f7b864fe2b7451813cf529d62b86"
+     }
+    },
+    {
+     "label": "Current guide clarification and next review basis",
+     "url": null,
+     "ref": {
+      "key": "TKT-567",
+      "digest": "006c388810aa2e248a2106ceb79c5a730e1722df246d96b15f2ebb306d31ba6d"
+     }
+    }
+   ]
+  },
+  {
+   "id": "DOC-6",
+   "severity": "Nit",
+   "area": "documentation",
+   "title": "The reused path manifest has a pre-acceptance status label",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "This report calls it a pre-acceptance path inventory reused for content. Actual member status comes from the frozen board facts. The hashed manifest is not rewritten.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical documentation inspection, no independent approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "2e7ffe8fbef67c99a9032cb83122e6e35397f7b864fe2b7451813cf529d62b86"
+     }
+    }
+   ]
+  },
+  {
+   "id": "DOC-7",
+   "severity": "Nit",
+   "area": "documentation",
+   "title": "Eleven successful workflow jobs are not eleven security scans",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "C3 distinguishes 10 scan jobs from one change-filter job. Two skipped notification jobs receive no pass credit.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical documentation inspection, no independent approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "2e7ffe8fbef67c99a9032cb83122e6e35397f7b864fe2b7451813cf529d62b86"
+     }
+    }
+   ]
+  },
+  {
+   "id": "RETRO-1",
+   "severity": "Medium",
+   "area": "retrospective",
+   "title": "Convergence must retain the historical accepted risk",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "Primary correction separates TKT-568 plan R1:I1 from 83 fixed plan groups. It was first fixed, then replaced by owner D13 package-age risk acceptance. The related later disclosure finding remains separately counted.   The round-3 retrospective record and independent exact-v6 correction check support the corrected facts. Original findings and source records remain unchanged. The final documentation audit checks this edition for fidelity.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical retrospective audit",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "938cacb9fa3612c33b20f34dcc4e5ba99453cd65da820b697f3e9c1ddb4e4187"
+     }
+    },
+    {
+     "label": "Primary retrospective corrections, independent check pending",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "41d93d6efa0932f6e90d2c2566b86a96b5de5c9736e1725f857fc03434a0bb31"
+     }
+    },
+    {
+     "label": "Round 2 retrospective findings and corrections, no final approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "8c5436bd7d1f5f574528ca1a8db593659ef3c180029a06ff5d8db9bd2bedac9a"
+     }
+    },
+    {
+     "label": "Round 3 retrospective pair and independently verified factual corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "655769c804b590089eed470cea15c2097a880f781369c01cecb5936521c76845"
+     }
+    }
+   ]
+  },
+  {
+   "id": "RETRO-2",
+   "severity": "Medium",
+   "area": "retrospective",
+   "title": "Historical identity accounting needs per-round status",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "Primary derived facts retain all 27 member stage-round identity rows. The original initial claim that two full model IDs were aliases was refuted by the audit. Requested and recorded identities remain distinct; missing executed-model metadata is not invented. Same-model owner exceptions are stated separately from cross-model records.  The round-3 retrospective record and independent exact-v6 correction check support the corrected facts. Original findings and source records remain unchanged. The final documentation audit checks this edition for fidelity.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical retrospective audit",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "938cacb9fa3612c33b20f34dcc4e5ba99453cd65da820b697f3e9c1ddb4e4187"
+     }
+    },
+    {
+     "label": "Primary retrospective corrections, independent check pending",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "41d93d6efa0932f6e90d2c2566b86a96b5de5c9736e1725f857fc03434a0bb31"
+     }
+    },
+    {
+     "label": "Round 2 retrospective findings and corrections, no final approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "8c5436bd7d1f5f574528ca1a8db593659ef3c180029a06ff5d8db9bd2bedac9a"
+     }
+    },
+    {
+     "label": "Round 3 retrospective pair and independently verified factual corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "655769c804b590089eed470cea15c2097a880f781369c01cecb5936521c76845"
+     }
+    }
+   ]
+  },
+  {
+   "id": "RETRO-3",
+   "severity": "Low",
+   "area": "retrospective",
+   "title": "The operation ledger does not cover the October members",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "The retrospective states the ledger covers only November TKT-566, TKT-570 and TKT-571 work. October closeouts remain separate sources. The ledger cannot establish full sprint active time or spend.  The round-3 retrospective record and independent exact-v6 correction check support the corrected facts. Original findings and source records remain unchanged. The final documentation audit checks this edition for fidelity.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical retrospective audit",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "938cacb9fa3612c33b20f34dcc4e5ba99453cd65da820b697f3e9c1ddb4e4187"
+     }
+    },
+    {
+     "label": "Primary retrospective corrections, independent check pending",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "41d93d6efa0932f6e90d2c2566b86a96b5de5c9736e1725f857fc03434a0bb31"
+     }
+    },
+    {
+     "label": "Round 2 retrospective findings and corrections, no final approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "8c5436bd7d1f5f574528ca1a8db593659ef3c180029a06ff5d8db9bd2bedac9a"
+     }
+    },
+    {
+     "label": "Round 3 retrospective pair and independently verified factual corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "655769c804b590089eed470cea15c2097a880f781369c01cecb5936521c76845"
+     }
+    }
+   ]
+  },
+  {
+   "id": "RETRO-4",
+   "severity": "Low",
+   "area": "retrospective",
+   "title": "A fixture correction introduced a later review finding",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "TKT-512 code R1:A3 led to a fixture timing defect found as round-2 R2-I1. They remain separate defect groups, with canonical round-2 priorFindings as the status source. The later supplement only corroborates that record.  The round-3 retrospective record and independent exact-v6 correction check support the corrected facts. Original findings and source records remain unchanged. The final documentation audit checks this edition for fidelity.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical retrospective audit",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "938cacb9fa3612c33b20f34dcc4e5ba99453cd65da820b697f3e9c1ddb4e4187"
+     }
+    },
+    {
+     "label": "Primary retrospective corrections, independent check pending",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "41d93d6efa0932f6e90d2c2566b86a96b5de5c9736e1725f857fc03434a0bb31"
+     }
+    },
+    {
+     "label": "Round 2 retrospective findings and corrections, no final approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "8c5436bd7d1f5f574528ca1a8db593659ef3c180029a06ff5d8db9bd2bedac9a"
+     }
+    },
+    {
+     "label": "Round 3 retrospective pair and independently verified factual corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "655769c804b590089eed470cea15c2097a880f781369c01cecb5936521c76845"
+     }
+    }
+   ]
+  },
+  {
+   "id": "RETRO-5",
+   "severity": "Nit",
+   "area": "retrospective",
+   "title": "Duration definitions were mixed",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "This draft labels individual command seconds and the larger wrapper wall-clock spans separately. They are not productive work or financial spend.  The round-3 retrospective record and independent exact-v6 correction check support the corrected facts. Original findings and source records remain unchanged. The final documentation audit checks this edition for fidelity.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical retrospective audit",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "938cacb9fa3612c33b20f34dcc4e5ba99453cd65da820b697f3e9c1ddb4e4187"
+     }
+    },
+    {
+     "label": "Primary retrospective corrections, independent check pending",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "41d93d6efa0932f6e90d2c2566b86a96b5de5c9736e1725f857fc03434a0bb31"
+     }
+    },
+    {
+     "label": "Round 2 retrospective findings and corrections, no final approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "8c5436bd7d1f5f574528ca1a8db593659ef3c180029a06ff5d8db9bd2bedac9a"
+     }
+    },
+    {
+     "label": "Round 3 retrospective pair and independently verified factual corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "655769c804b590089eed470cea15c2097a880f781369c01cecb5936521c76845"
+     }
+    }
+   ]
+  },
+  {
+   "id": "RETRO-6",
+   "severity": "Nit",
+   "area": "retrospective",
+   "title": "A provisional simplification status became stale",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "TKT-570 reached Done at 2026-11-10T03:53:00Z, before the frozen cutoff. No later-pending caveat is used to discount its review records.  The round-3 retrospective record and independent exact-v6 correction check support the corrected facts. Original findings and source records remain unchanged. The final documentation audit checks this edition for fidelity.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical retrospective audit",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "938cacb9fa3612c33b20f34dcc4e5ba99453cd65da820b697f3e9c1ddb4e4187"
+     }
+    },
+    {
+     "label": "Primary retrospective corrections, independent check pending",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "41d93d6efa0932f6e90d2c2566b86a96b5de5c9736e1725f857fc03434a0bb31"
+     }
+    },
+    {
+     "label": "Round 2 retrospective findings and corrections, no final approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "8c5436bd7d1f5f574528ca1a8db593659ef3c180029a06ff5d8db9bd2bedac9a"
+     }
+    },
+    {
+     "label": "Round 3 retrospective pair and independently verified factual corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "655769c804b590089eed470cea15c2097a880f781369c01cecb5936521c76845"
+     }
+    }
+   ]
+  },
+  {
+   "id": "RETRO-A1",
+   "severity": "Medium",
+   "area": "retrospective",
+   "title": "Owner routing steering did not promptly reach the effective brief",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "The owner said the alternate reviewer was available again on October 22 in TKT-569 D6/D7. Five November 9 briefs still contained an older provider restriction. Same-model exceptions continued under owner D18. The owner clarified routing before the cutoff; it is a historical propagation failure, not an unresolved old owner decision. The later external-author conflict was separately resolved before the renewed final-review attempt.  The round-3 retrospective record and independent exact-v6 correction check support the corrected facts. Original findings and source records remain unchanged. The final documentation audit checks this edition for fidelity.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical retrospective audit",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "938cacb9fa3612c33b20f34dcc4e5ba99453cd65da820b697f3e9c1ddb4e4187"
+     }
+    },
+    {
+     "label": "Primary retrospective corrections, independent check pending",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "41d93d6efa0932f6e90d2c2566b86a96b5de5c9736e1725f857fc03434a0bb31"
+     }
+    },
+    {
+     "label": "Round 2 retrospective findings and corrections, no final approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "8c5436bd7d1f5f574528ca1a8db593659ef3c180029a06ff5d8db9bd2bedac9a"
+     }
+    },
+    {
+     "label": "Round 3 retrospective pair and independently verified factual corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "655769c804b590089eed470cea15c2097a880f781369c01cecb5936521c76845"
+     }
+    }
+   ]
+  },
+  {
+   "id": "RETRO-A2",
+   "severity": "Low",
+   "area": "retrospective",
+   "title": "Some historical author sets omit primary plan and COS text",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "One consistent author rule includes inherited plan and COS text. This identifies TKT-571 plan rounds 1-3 as same-model reviews under the historical D18 exception, although its closeout incorrectly claims distinct identities. TKT-569 inherited primary text is also retained in the author set.  The round-3 retrospective record and independent exact-v6 correction check support the corrected facts. Original findings and source records remain unchanged. The final documentation audit checks this edition for fidelity.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical retrospective audit",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "938cacb9fa3612c33b20f34dcc4e5ba99453cd65da820b697f3e9c1ddb4e4187"
+     }
+    },
+    {
+     "label": "Primary retrospective corrections, independent check pending",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "41d93d6efa0932f6e90d2c2566b86a96b5de5c9736e1725f857fc03434a0bb31"
+     }
+    },
+    {
+     "label": "Round 2 retrospective findings and corrections, no final approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "8c5436bd7d1f5f574528ca1a8db593659ef3c180029a06ff5d8db9bd2bedac9a"
+     }
+    },
+    {
+     "label": "Round 3 retrospective pair and independently verified factual corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "655769c804b590089eed470cea15c2097a880f781369c01cecb5936521c76845"
+     }
+    }
+   ]
+  },
+  {
+   "id": "RETRO-A3",
+   "severity": "Low",
+   "area": "retrospective",
+   "title": "Extra dependency-plan rounds need their actual causes",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "TKT-568 round 5 followed a premature contract invocation after round-4 approvals. Round 6 changed the Go basis. Round 7 corrected R6:I1 High under the primary interpretation of next pass, not an explicit owner statement of a new numeric limit. Round 8 added Undici scope. The draft does not describe all eight as necessary dependency defects.  The round-3 retrospective record and independent exact-v6 correction check support the corrected facts. Original findings and source records remain unchanged. The final documentation audit checks this edition for fidelity.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical retrospective audit",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "938cacb9fa3612c33b20f34dcc4e5ba99453cd65da820b697f3e9c1ddb4e4187"
+     }
+    },
+    {
+     "label": "Primary retrospective corrections, independent check pending",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "41d93d6efa0932f6e90d2c2566b86a96b5de5c9736e1725f857fc03434a0bb31"
+     }
+    },
+    {
+     "label": "Round 2 retrospective findings and corrections, no final approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "8c5436bd7d1f5f574528ca1a8db593659ef3c180029a06ff5d8db9bd2bedac9a"
+     }
+    },
+    {
+     "label": "Round 3 retrospective pair and independently verified factual corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "655769c804b590089eed470cea15c2097a880f781369c01cecb5936521c76845"
+     }
+    }
+   ]
+  },
+  {
+   "id": "RETRO-A4",
+   "severity": "Low",
+   "area": "retrospective",
+   "title": "The historical package-age exception ended before this candidate",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "The D13 exposure ended at package maturity on October 22. External PR #496 removed the exclusion; the candidate resolves Vite 8.3.6 and 8.3.7. The historical High is retained in the retrospective, not presented as an unresolved current High. Historical closeouts are not rewritten.  The round-3 retrospective record and independent exact-v6 correction check support the corrected facts. Original findings and source records remain unchanged. The final documentation audit checks this edition for fidelity.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical retrospective audit",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "938cacb9fa3612c33b20f34dcc4e5ba99453cd65da820b697f3e9c1ddb4e4187"
+     }
+    },
+    {
+     "label": "Primary retrospective corrections, independent check pending",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "41d93d6efa0932f6e90d2c2566b86a96b5de5c9736e1725f857fc03434a0bb31"
+     }
+    },
+    {
+     "label": "Round 2 retrospective findings and corrections, no final approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "8c5436bd7d1f5f574528ca1a8db593659ef3c180029a06ff5d8db9bd2bedac9a"
+     }
+    },
+    {
+     "label": "Round 3 retrospective pair and independently verified factual corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "655769c804b590089eed470cea15c2097a880f781369c01cecb5936521c76845"
+     }
+    }
+   ]
+  },
+  {
+   "id": "RETRO-A5",
+   "severity": "Nit",
+   "area": "retrospective",
+   "title": "Retrospective citations need exact finding and completion references",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "The recap-format example cites TKT-570 R1:A3, not its unrelated attribution finding. Its actual Done time is 03:53:00Z.   The round-3 retrospective record and independent exact-v6 correction check support the corrected facts. Original findings and source records remain unchanged. The final documentation audit checks this edition for fidelity.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Historical retrospective audit",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "938cacb9fa3612c33b20f34dcc4e5ba99453cd65da820b697f3e9c1ddb4e4187"
+     }
+    },
+    {
+     "label": "Primary retrospective corrections, independent check pending",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "41d93d6efa0932f6e90d2c2566b86a96b5de5c9736e1725f857fc03434a0bb31"
+     }
+    },
+    {
+     "label": "Round 2 retrospective findings and corrections, no final approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "8c5436bd7d1f5f574528ca1a8db593659ef3c180029a06ff5d8db9bd2bedac9a"
+     }
+    },
+    {
+     "label": "Round 3 retrospective pair and independently verified factual corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "655769c804b590089eed470cea15c2097a880f781369c01cecb5936521c76845"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R2-RETRO-1",
+   "severity": "Medium",
+   "area": "retrospective",
+   "title": "Round 2: retrospective-disposition-misclassification",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "Report 84 unique plan findings as 83 fixed and one historical owner-accepted risk. For TKT-568, report 37 groups, 36 fixed and one accepted risk. Keep R4-A10 as a separate fixed disclosure finding. State that the Vite age exposure was time-bounded and ended after the package matured; do not describe the risk acceptance itself as a fix or as a current blocker.  Original initial and audit results are unchanged. The round-3 retrospective record and independent exact-v6 correction check support the corrected facts. Original findings and source records remain unchanged. The final documentation audit checks this edition for fidelity.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Round 2 retrospective findings and corrections, no final approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "8c5436bd7d1f5f574528ca1a8db593659ef3c180029a06ff5d8db9bd2bedac9a"
+     }
+    },
+    {
+     "label": "Round 3 retrospective pair and independently verified factual corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "655769c804b590089eed470cea15c2097a880f781369c01cecb5936521c76845"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R2-RETRO-2",
+   "severity": "Low",
+   "area": "retrospective",
+   "title": "Round 2: retrospective-evidence-misattribution",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "Remove TKT-568 from the incomplete-invocation evidence, or cite a retained record that establishes the claimed invocations. Keep the proposed trial as a proposal supported by TKT-566 and TKT-570, and do not imply that it has owner approval.  Original initial and audit results are unchanged. The round-3 retrospective record and independent exact-v6 correction check support the corrected facts. Original findings and source records remain unchanged. The final documentation audit checks this edition for fidelity.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Round 2 retrospective findings and corrections, no final approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "8c5436bd7d1f5f574528ca1a8db593659ef3c180029a06ff5d8db9bd2bedac9a"
+     }
+    },
+    {
+     "label": "Round 3 retrospective pair and independently verified factual corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "655769c804b590089eed470cea15c2097a880f781369c01cecb5936521c76845"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R2-RETRO-3",
+   "severity": "Low",
+   "area": "retrospective",
+   "title": "Round 2: round-cap-provenance-omission",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "Add a concise note that rounds 5 through 8 used the owner authorizations in D14, D19, D25, and D27. Summarize the recorded causes, including that round 5 followed a premature contract invocation rather than a new dependency defect. Preserve the unchanged cap rule and do not imply that a new sprint cap was set.  Original initial and audit results are unchanged. The round-3 retrospective record and independent exact-v6 correction check support the corrected facts. Original findings and source records remain unchanged. The final documentation audit checks this edition for fidelity.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Round 2 retrospective findings and corrections, no final approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "8c5436bd7d1f5f574528ca1a8db593659ef3c180029a06ff5d8db9bd2bedac9a"
+     }
+    },
+    {
+     "label": "Round 3 retrospective pair and independently verified factual corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "655769c804b590089eed470cea15c2097a880f781369c01cecb5936521c76845"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R2-RETRO-4",
+   "severity": "Low",
+   "area": "retrospective",
+   "title": "Round 2: review-identity-provenance-omission",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "Add these identity limits to the historical-routing or limitations text. Distinguish recorded and requested model IDs from executed-model metadata, preserve null or absent metadata as unknown, and state that TKT-571's COS text counts as primary authorship. Do not alter historical records or infer aliases between the distinct full model IDs retained on the board.  Original initial and audit results are unchanged. The round-3 retrospective record and independent exact-v6 correction check support the corrected facts. Original findings and source records remain unchanged. The final documentation audit checks this edition for fidelity.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Round 2 retrospective findings and corrections, no final approval",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "8c5436bd7d1f5f574528ca1a8db593659ef3c180029a06ff5d8db9bd2bedac9a"
+     }
+    },
+    {
+     "label": "Round 3 retrospective pair and independently verified factual corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "655769c804b590089eed470cea15c2097a880f781369c01cecb5936521c76845"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R2-VER-1",
+   "severity": "Medium",
+   "area": "verification",
+   "title": "Round 2: required native visibility proof was missing",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "The standalone native campaign supplies the missing executed boundary, and the complete clean round-3 verification pair independently accepted it. Execution remains at 91c8. The sprint criterion was not waived; the original Medium finding remains in history.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Standalone native visibility execution receipt",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "308b21edd15df209189f8a30fe53bc6510811496ad8b4aba96b8351b375c70d8"
+     }
+    },
+    {
+     "label": "Round 3 raw-only verification pair and preserved historical corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "76f3a84bdd1b48925ced00018644f031420dc4d21e9df3d044a0fc2b4cb9ac15"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R3-RETRO-1",
+   "severity": "Medium",
+   "area": "retrospective",
+   "title": "Round 3: Historical review disposition conflated with later remediation status.",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "Count the original A1 disposition as deferred. Report its later remediation and ended exposure separately. Keep the four later-fixed disclosures distinct from the two round-2 fixed dispositions, and state that rejected findings were zero. The exact v6 correction was independently verified and the canonical round 3 retrospective record passes the hand-off contract. Original finding ID, severity and evidence remain unchanged.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Round 3 retrospective corrections, independent verification pending",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "d6de0dcf4a3133b334dc645382468df19d66c99a49b535dd054e72d122fb83ae"
+     }
+    },
+    {
+     "label": "Round 3 retrospective pair and independently verified corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "655769c804b590089eed470cea15c2097a880f781369c01cecb5936521c76845"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R3-RETRO-2",
+   "severity": "Medium",
+   "area": "retrospective",
+   "title": "Round 3: RETRO-2 report correction",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "Retain RETRO-1's original severity and history. In the TKT-512 ai-review measurement, report six fixed and one deferred across seven groups; explain that A1 was later remediated by separate dependency repairs. Keep I1, I2, A2 and A3 distinct from R2-I1 and R2-A1, and report zero rejected. The exact v6 correction was independently verified and the canonical round 3 retrospective record passes the hand-off contract. Original finding ID, severity and evidence remain unchanged.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Round 3 retrospective corrections, independent verification pending",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "d6de0dcf4a3133b334dc645382468df19d66c99a49b535dd054e72d122fb83ae"
+     }
+    },
+    {
+     "label": "Round 3 retrospective pair and independently verified corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "655769c804b590089eed470cea15c2097a880f781369c01cecb5936521c76845"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R3-RETRO-3",
+   "severity": "Medium",
+   "area": "retrospective",
+   "title": "Round 3: RETRO-3 report correction",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "Use 83 fixed plan groups plus the separate accepted-risk group; report 18 plan-review rounds and 9 ai-review rounds. Count carries only with explicit carry links or verified defect identity, not generic reused IDs. The exact v6 correction was independently verified and the canonical round 3 retrospective record passes the hand-off contract. Original finding ID, severity and evidence remain unchanged.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Round 3 retrospective corrections, independent verification pending",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "d6de0dcf4a3133b334dc645382468df19d66c99a49b535dd054e72d122fb83ae"
+     }
+    },
+    {
+     "label": "Round 3 retrospective pair and independently verified corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "655769c804b590089eed470cea15c2097a880f781369c01cecb5936521c76845"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R3-RETRO-4",
+   "severity": "Low",
+   "area": "retrospective",
+   "title": "Round 3: RETRO-4 report correction",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "Remove the TKT-568 example unless a retained execution record supports the number of exhausted invocations and repeated inspection. Keep TKT-566 and TKT-570 incomplete invocation evidence separate from TKT-568's eight completed, owner-authorized plan rounds and its early contract handling. Describe owner next-pass wording as authorization only where an explicit numeric round authorization is recorded. The exact v6 correction was independently verified and the canonical round 3 retrospective record passes the hand-off contract. Original finding ID, severity and evidence remain unchanged.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Round 3 retrospective corrections, independent verification pending",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "d6de0dcf4a3133b334dc645382468df19d66c99a49b535dd054e72d122fb83ae"
+     }
+    },
+    {
+     "label": "Round 3 retrospective pair and independently verified corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "655769c804b590089eed470cea15c2097a880f781369c01cecb5936521c76845"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R3-DOC-1",
+   "severity": "Low",
+   "area": "documentation",
+   "title": "Risk title did not distinguish execution from independent acceptance",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "The independent v8 documentation audit verified the corrected title against the completed verification pair. The original v6 finding and intervening editions remain unchanged. No native sleep, suspension or bfcache claim is added.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Round 3 documentation initial finding and title correction record",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "79c5b6726d321376ecf923b91aebc34d958b2013f1f841e220dc4c807fc95476"
+     }
+    },
+    {
+     "label": "Round 3 documentation pair and unresolved acceptance defect",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "a208fa320b2aeda3fe8d3a147d001a520df55bbf358b45414a645078370a11e8"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R3-VER-1",
+   "severity": "Medium",
+   "area": "verification",
+   "title": "A discarded initial review opened prior-review narrative",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "The original process finding was valid. A strict raw-only replacement initial and fresh audit completed on the unchanged artifact, with retained checkpoint coverage attributed. Discarded approvals remain invalid. This is a review correction, not a product fix.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Round 3 raw-only verification pair and preserved historical corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "76f3a84bdd1b48925ced00018644f031420dc4d21e9df3d044a0fc2b4cb9ac15"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R3-VER-2",
+   "severity": "Low",
+   "area": "verification",
+   "title": "The alleged gate-log digest discrepancy compared different artifacts",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "Rejected with counter-evidence. The captured 113045-byte log equals the full 112841-byte inner log plus the exact 204-byte verdict suffix. The fresh audit recomputed the bytes and hashes. The original sound receipt and historical finding remain unchanged; no fix or rerun is claimed.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Round 3 raw-only verification pair and preserved historical corrections",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "76f3a84bdd1b48925ced00018644f031420dc4d21e9df3d044a0fc2b4cb9ac15"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R3-DOC-2",
+   "severity": "Medium",
+   "area": "documentation",
+   "title": "Storage-wait feedback violates the accepted criterion",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "Owner added TKT-574 to S-3. It merged at fa08d5d5 with mutation proof and passing gates and browser runs. Round 4 implementation review checked its decisions.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Round 3 documentation pair and unresolved acceptance defect",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "a208fa320b2aeda3fe8d3a147d001a520df55bbf358b45414a645078370a11e8"
+     }
+    },
+    {
+     "label": "Owner approval: add TKT-574 and TKT-577",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "2cb525d7bfe750ef3d87785afcc7f63bf97edc863cde147eb822184f9da3e9cf"
+     }
+    },
+    {
+     "label": "TKT-574 accepted closeout",
+     "url": null,
+     "ref": {
+      "key": "TKT-574",
+      "digest": "16047f5a73bcdf874d09b6749a02024a1dd9603220d53776d861c487746e925a"
+     }
+    },
+    {
+     "label": "Round 4 raw implementation lens results",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "7ffe707a493e40c8c750f4226448a96e5e08f42f93ecb21494097f7e59f73d59"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R3-DOC-3",
+   "severity": "Low",
+   "area": "documentation",
+   "title": "Historical identity-check status was stale",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "The identity measurements state that the independent retrospective check completed; missing execution metadata stays unknown. The round 4 documentation audit reviewed the report text.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Round 3 documentation pair and unresolved acceptance defect",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "a208fa320b2aeda3fe8d3a147d001a520df55bbf358b45414a645078370a11e8"
+     }
+    },
+    {
+     "label": "Round 4 raw documentation initial lens result",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "0b3cb34a8d1ea94b47c8da4530e30bbdb326f71e1f95dd571273dd226cd2ce23"
+     }
+    },
+    {
+     "label": "Round 4 canonical documentation record",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "6908ad85f9415d9c52aae0ce6a7c74217391ca01616be4e5dabf9a1688bfea93"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R3-DOC-4",
+   "severity": "Low",
+   "area": "documentation",
+   "title": "Unknown measured cost is displayed as None",
+   "status": "resolved",
+   "blocking": false,
+   "resolution": "Owner added TKT-577 to S-3. The renderer now shows the localized unknown label when no cost is recorded (16ab629b). This report is rendered with it.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Round 3 documentation pair and unresolved acceptance defect",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "a208fa320b2aeda3fe8d3a147d001a520df55bbf358b45414a645078370a11e8"
+     }
+    },
+    {
+     "label": "Owner approval: add TKT-574 and TKT-577",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "2cb525d7bfe750ef3d87785afcc7f63bf97edc863cde147eb822184f9da3e9cf"
+     }
+    },
+    {
+     "label": "TKT-577 accepted closeout",
+     "url": null,
+     "ref": {
+      "key": "TKT-577",
+      "digest": "d4070f223c2fc6bfad8db690ce7167e3f4f8edaf9d39974196a8ca3f672e6dfe"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R4-VER-1",
+   "severity": "Medium",
+   "area": "verification",
+   "title": "Round 4: criterion 4 proof is not in the packet",
+   "status": "resolved",
+   "blocking": false,
+   "followup": null,
+   "resolution": "Rejected as a packet defect. The packet must exist before the reviews and the report, so it cannot hold them; the audit classed the finding as a sequencing fact, and the independent correction check found that argument sound. The criterion 4 proof is recorded outside the packet: check C8 holds the combined round 4 result, and the report-artifact records on S-3 and TKT-567 hold the committed-byte read-back, which can only follow publication. Until both exist, criterion 4 stays pending.",
+   "evidence": [
+    {
+     "label": "Round 4 raw verification lens results",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "85c727f7af5f5ce53eb09aab04a8bf4b5d0d400872856224866cfbf36efedf14"
+     }
+    },
+    {
+     "label": "Independent round 4 correction check",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "3d9fe7ab4b2acc3ade42874c8e0349fae08452c51ac403802d1462554092f3cd"
+     }
+    },
+    {
+     "label": "Round 4 canonical verification record",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "bdcf1b43c71b55d8258a7f69bf0094c22fbfb65d648960c95358835227a5c362"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R4-VER-2",
+   "severity": "Medium",
+   "area": "verification",
+   "title": "Round 4: TKT-578 exact-head receipts were missing from the packet",
+   "status": "resolved",
+   "blocking": false,
+   "followup": null,
+   "resolution": "The evidence supplement adds the 40e75699 gate verdict and log, guarded browser context and log, and binary identities, with SHA-256. The failed 93673ca1 run stays disclosed.",
+   "evidence": [
+    {
+     "label": "Round 4 evidence supplement for VER-2 and RETRO-1",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "32eabca13c57a90da8915bf1aa02ed77138675b58de3c7f518bccffcd580068d"
+     }
+    },
+    {
+     "label": "Round 4 raw verification lens results",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "85c727f7af5f5ce53eb09aab04a8bf4b5d0d400872856224866cfbf36efedf14"
+     }
+    },
+    {
+     "label": "Independent round 4 correction check",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "3d9fe7ab4b2acc3ade42874c8e0349fae08452c51ac403802d1462554092f3cd"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R4-DOC-1",
+   "severity": "Medium",
+   "area": "documentation",
+   "title": "Round 4: testing guide named the wrong historical pnpm version",
+   "status": "resolved",
+   "blocking": false,
+   "followup": null,
+   "resolution": "Commit 60d570d7 changes docs/testing.md to state pnpm 11.13.1 for the extracted historical copies and pnpm 12.18.0 for the current workspace. Correction diff SHA-256 5475ba886a4cdde003e26b13ddcaabe8cb3bbdac40c49d8c1e423633fbd23d96. Fresh gate PASS at the final candidate.",
+   "evidence": [
+    {
+     "label": "Round 4 raw documentation initial lens result",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "0b3cb34a8d1ea94b47c8da4530e30bbdb326f71e1f95dd571273dd226cd2ce23"
+     }
+    },
+    {
+     "label": "DOC-1 correction and fresh gate at the final candidate",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "95913da2bad9cf31b7a84c3d055d2241977c8a55d95cc083bd178ae87e3daeac"
+     }
+    },
+    {
+     "label": "Independent round 4 correction check",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "3d9fe7ab4b2acc3ade42874c8e0349fae08452c51ac403802d1462554092f3cd"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R4-RETRO-1",
+   "severity": "Medium",
+   "area": "retrospective",
+   "title": "Round 4: metrics snapshot not coherent with the cutoff",
+   "status": "resolved",
+   "blocking": false,
+   "followup": null,
+   "resolution": "Counts come from the fresh 06:31:48Z capture. Cutoff-aligned per-member time is reported as unknown.",
+   "evidence": [
+    {
+     "label": "Round 4 evidence supplement for VER-2 and RETRO-1",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "32eabca13c57a90da8915bf1aa02ed77138675b58de3c7f518bccffcd580068d"
+     }
+    },
+    {
+     "label": "Round 4 raw retrospective lens results",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "f25e9429ddefa3d0969ce5b19337c33058d9c03a95bccfedf323809f00858cd0"
+     }
+    },
+    {
+     "label": "Independent round 4 correction check",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "3d9fe7ab4b2acc3ade42874c8e0349fae08452c51ac403802d1462554092f3cd"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R4-RETRO-1A",
+   "severity": "Medium",
+   "area": "retrospective",
+   "title": "Round 4: metrics snapshot timing was misread",
+   "status": "resolved",
+   "blocking": false,
+   "followup": null,
+   "resolution": "The audit corrected RETRO-1: the snapshot is from 05:37:22Z, before TKT-578 Done at the 06:03:16Z cutoff. The audit reused the ID RETRO-1; the record stores it as RETRO-1A with priorFinding R4:RETRO-1.",
+   "evidence": [
+    {
+     "label": "Round 4 evidence supplement for VER-2 and RETRO-1",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "32eabca13c57a90da8915bf1aa02ed77138675b58de3c7f518bccffcd580068d"
+     }
+    },
+    {
+     "label": "Round 4 raw retrospective lens results",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "f25e9429ddefa3d0969ce5b19337c33058d9c03a95bccfedf323809f00858cd0"
+     }
+    },
+    {
+     "label": "Independent round 4 correction check",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "3d9fe7ab4b2acc3ade42874c8e0349fae08452c51ac403802d1462554092f3cd"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R4-RETRO-2",
+   "severity": "Medium",
+   "area": "retrospective",
+   "title": "Round 4: repeated scope additions and review-cap pressure were not connected",
+   "status": "resolved",
+   "blocking": false,
+   "followup": null,
+   "resolution": "The retrospective summary now records the pattern and candidate P10 proposes a scope-amendment check.",
+   "evidence": [
+    {
+     "label": "Round 4 raw retrospective lens results",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "f25e9429ddefa3d0969ce5b19337c33058d9c03a95bccfedf323809f00858cd0"
+     }
+    },
+    {
+     "label": "Independent round 4 correction check",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "3d9fe7ab4b2acc3ade42874c8e0349fae08452c51ac403802d1462554092f3cd"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R-TKT-582",
+   "severity": "Low",
+   "area": "documentation",
+   "title": "Plain make browser rewrites tracked S-2 timing evidence",
+   "status": "deferred",
+   "blocking": false,
+   "followup": "TKT-582",
+   "resolution": "The candidate guide states the rewrite and the preservation steps. Only the TKT-563 wrapper restores the file. A structural fix is outside S-3.",
+   "evidence": [
+    {
+     "label": "Frozen round 4 packet",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "725754035822797d5ac8e3f6adf6eaca72bf22c056b26058fbed5b6655bed775"
+     }
+    },
+    {
+     "label": "TKT-581 accepted closeout",
+     "url": null,
+     "ref": {
+      "key": "TKT-581",
+      "digest": "a821fb1d1753efa01b83a556c1176c562003d1bdbfc759d43fce454bddd6560d"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R-TKT-583",
+   "severity": "Low",
+   "area": "verification",
+   "title": "One unexplained scanner App.exit feed-401 test failure in a merged gate run",
+   "status": "deferred",
+   "blocking": false,
+   "followup": "TKT-583",
+   "resolution": "Zero failures in 36 reproductions and later gates passed. That does not establish a cause.",
+   "evidence": [
+    {
+     "label": "Frozen round 4 packet",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "725754035822797d5ac8e3f6adf6eaca72bf22c056b26058fbed5b6655bed775"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R-TKT-584",
+   "severity": "Low",
+   "area": "verification",
+   "title": "smoke.sh grep -q under pipefail can fail the hermetic smoke",
+   "status": "deferred",
+   "blocking": false,
+   "followup": "TKT-584",
+   "resolution": "Seen twice in CI hermetic-smoke; reruns passed. The race is in the test script, not product code.",
+   "evidence": [
+    {
+     "label": "Frozen round 4 packet",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "725754035822797d5ac8e3f6adf6eaca72bf22c056b26058fbed5b6655bed775"
+     }
+    },
+    {
+     "label": "TKT-578 accepted closeout",
+     "url": null,
+     "ref": {
+      "key": "TKT-578",
+      "digest": "8850df5aa71859491cc0823d60eb21e7feaf284f9f6447735fdce78b66e34050"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R-DOCKER",
+   "severity": "Low",
+   "area": "verification",
+   "title": "Docker Desktop port forwarding failed on one smoke slot",
+   "status": "open",
+   "blocking": false,
+   "followup": null,
+   "resolution": "Two merged gate runs failed when the host forwarder refused slot 17600. Runs from a worktree with another slot passed. Host environment, no product change. Cause not established.",
+   "evidence": [
+    {
+     "label": "Frozen round 4 packet",
+     "url": null,
+     "ref": {
+      "key": "S-3",
+      "digest": "725754035822797d5ac8e3f6adf6eaca72bf22c056b26058fbed5b6655bed775"
+     }
+    },
+    {
+     "label": "TKT-581 accepted closeout",
+     "url": null,
+     "ref": {
+      "key": "TKT-581",
+      "digest": "a821fb1d1753efa01b83a556c1176c562003d1bdbfc759d43fce454bddd6560d"
+     }
+    }
+   ]
+  }
+ ],
+ "followups": [
+  {
+   "key": "TKT-572",
+   "title": "Clarify stale recovery-runbook ownership",
+   "reason": "The TKT-570 plan excluded a pre-existing ownership reference from its bounded sprint cleanup."
+  },
+  {
+   "key": "TKT-573",
+   "title": "Investigate the historical French checkout timeout",
+   "reason": "VER-2. The original failing stack was torn down before server-state capture. The cause remains unknown."
+  },
+  {
+   "key": "TKT-575",
+   "title": "Scanner tests: verify the retained redundancy leads before any further cuts",
+   "reason": "Historical incidental leads IMPL-2, IMPL-3, IMPL-5, IMPL-6, IMPL-7. Outside S-3. Investigation and any later correction require their own scope and proof."
+  },
+  {
+   "key": "TKT-576",
+   "title": "PostgreSQL: check the persisted-volume implications of the base-distribution update",
+   "reason": "Historical incidental leads IMPL-4. Outside S-3. Investigation and any later correction require their own scope and proof."
+  },
+  {
+   "key": "TKT-582",
+   "title": "Keep make browser from rewriting tracked S-2 timing evidence",
+   "reason": "Risk R-TKT-582, found in TKT-581 plan review."
+  },
+  {
+   "key": "TKT-583",
+   "title": "Investigate the unexplained scanner App.exit feed-401 test failure",
+   "reason": "Risk R-TKT-583."
+  },
+  {
+   "key": "TKT-584",
+   "title": "Remove the grep -q and pipefail SIGPIPE race from smoke.sh",
+   "reason": "Risk R-TKT-584."
+  }
+ ],
+ "retrospective": {
+  "summary": "Cutoff: 2026-11-20T06:03:16+00:00, when TKT-578 became Done. Closure-task work after that instant is excluded. The board capture at 06:31:48Z shows four originally committed members, eight approved additions, twelve members, eleven Done and one open closure task. No member was removed and no membership history gap was reported. The packet's earlier 05:37:22Z snapshot predates TKT-578 Done and is not used for counts.\n\nFor the seven members reviewed in round 3, primary synthesis counts 84 plan finding groups over 18 ticket-rounds: 83 fixed and one historical owner-accepted package-age risk. It counts eight code finding groups over nine ticket-rounds: seven fixed and one originally deferred, with zero rejected. The deferred TKT-512 A1 group was later remediated through separate dependency repairs. That repair does not rewrite its original disposition. The round 3 decision audit confirms the 84 plan-group and 18 plan-round totals. Its correction preserves the original code-review deferral separately from later remediation. Earlier review results remain unchanged. Reused IDs are not global defect identities. A TKT-512 fixture fix introduced a separate later defect, and the TKT-568 disclosure finding remains separate from the risk it describes.\n\nHistorical independence was uneven. Same-model reviews under owner D18 include TKT-512 code round 2; both TKT-565 stages; TKT-568 plan rounds 7-8 and code round 2; and TKT-571 plan rounds 1-3 when primary COS text is counted. Other records name different models, but execution metadata is missing for the TKT-568 plan round 6 and TKT-569 plan round 1, and null for the TKT-570 code round 1. Recorded IDs do not prove execution identity. The primary-authored COS text in TKT-571 counts as authorship. Recorded distinct full IDs must not be collapsed into aliases. These exceptions do not authorize same-model final review.\n\nOwner steering on October 22 did not promptly replace older routing clauses. The owner clarified the final-review choice before this cutoff. The newly discovered external workflow authorship later invalidated the first final-review attempt. The report keeps that failure visible and does not convert its useful findings into independent approval.\n\nThe retained operation ledger has 171 entries and covers only the November TKT-566, TKT-570 and TKT-571 campaigns. It omits the October members and includes overlapping parent and child operations. Successful operations, intentional mutation failures, usage errors and board-availability failures are different outcomes. They are not a single gate-failure count.\n\nImplementation time: n/a. Review time: n/a. Exclusive verification time: n/a. CI wait: n/a. Unexplained idle: n/a. The records cannot separate these costs. Board status durations are elapsed attribution, including unattended waits, not productive work. Financial spend is separately n/a because retained billing is incomplete. Individual executed command durations are listed as such in measurements. Coverage and complexity remain unmeasured for the stated tool limits.\n\nThe design signal is concentrated sync and queue-observation state in App.tsx, with extensive rendering-tier interleaving tests. A plain-module extraction is a future design candidate; this closure task makes no architectural change. The process proposals below also remain pending human selection. No proposal has been adopted automatically.\n\nThe eight TKT-568 plan rounds retain their owner-steering references D14, D19, D25 and D27 for rounds 5-8. Round 5 followed a premature contract call, round 6 a new Go basis, round 7 the R6-I1 correction, and round 8 Undici scope. Round 7 used the primary interpretation of the next-pass wording from the owner; that wording did not name a new numeric limit. These historical extensions do not reset the current final-review cap. The package-age exception is historical owner acceptance, not a completed fix; its exposure ended when the package matured.\n\nScope additions after review began are a repeated pattern. The owner approved TKT-574 and TKT-577 after the round 3 documentation audit, then TKT-578 and TKT-581 during that correction work. Each addition needed its own pipeline, fresh proof and a new frozen packet, while only one sprint-review round remained under the cap. Nothing recorded the remaining review capacity at approval time. Candidate P10 proposes that check.\n\nCorrection members, by the same counting: TKT-574, TKT-577 and TKT-578 passed plan and code review in one round each. TKT-581 needed three plan rounds for a 24-line test change because its execution context and evidence binding were under-specified, and its code audit found two unenforced evidence drivers. TKT-577's one-line fix carried a large proof plan; its closeout judged that cost proportionate for an owner-signed report. Across eleven members the totals are 141 plan groups over 24 ticket-rounds and 10 code groups over 13 ticket-rounds (measurements).\n\nLate discoveries: the scheduled Go vulnerability scan found GO-2026-6859 after the PR-scoped scan skipped unchanged code (TKT-578). Browser verification exposed the pnpm 11.12.0 deprecation (TKT-581). Resumed browser runs exposed the tracked S-2 evidence rewrite (TKT-582). TKT-583, TKT-584 and the Docker port-forward failures remain observations; passing retries do not establish their causes.",
+  "candidates": [
+   {
+    "id": "P1",
+    "type": "process",
+    "observation": "Owner routing steering did not promptly supersede older brief clauses in TKT-569, TKT-512 and later continuation briefs.",
+    "proposal": "Trial a single step that records the superseding brief before the next stage after owner steering. Count stale clauses in a later sprint.",
+    "recommendation": "trial",
+    "humanChoice": "pending",
+    "destination": null,
+    "evidence": [
+     {
+      "label": "Historical retrospective audit",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "938cacb9fa3612c33b20f34dcc4e5ba99453cd65da820b697f3e9c1ddb4e4187"
+      }
+     },
+     {
+      "label": "Primary retrospective corrections, independent check pending",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "41d93d6efa0932f6e90d2c2566b86a96b5de5c9736e1725f857fc03434a0bb31"
+      }
+     }
+    ]
+   },
+   {
+    "id": "P2",
+    "type": "process",
+    "observation": "TKT-571 and TKT-569 author accounting omitted primary or inherited plan and COS contributions. The final sprint author inventory also missed external workflow commits.",
+    "proposal": "Trial one author-set checklist covering product, tests, workflow code, inherited plans, COS and report text before each independent call.",
+    "recommendation": "trial",
+    "humanChoice": "pending",
+    "destination": null,
+    "evidence": [
+     {
+      "label": "Historical retrospective audit",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "938cacb9fa3612c33b20f34dcc4e5ba99453cd65da820b697f3e9c1ddb4e4187"
+      }
+     },
+     {
+      "label": "Primary retrospective corrections, independent check pending",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "41d93d6efa0932f6e90d2c2566b86a96b5de5c9736e1725f857fc03434a0bb31"
+      }
+     }
+    ]
+   },
+   {
+    "id": "P3",
+    "type": "process",
+    "observation": "Several historical review records retain the selected model but no executed-model metadata.",
+    "proposal": "Retain requested and actual executed identities separately. Record unknown execution honestly when the provider supplies no fact.",
+    "recommendation": "trial",
+    "humanChoice": "pending",
+    "destination": null,
+    "evidence": [
+     {
+      "label": "Historical retrospective audit",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "938cacb9fa3612c33b20f34dcc4e5ba99453cd65da820b697f3e9c1ddb4e4187"
+      }
+     },
+     {
+      "label": "Primary retrospective corrections, independent check pending",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "41d93d6efa0932f6e90d2c2566b86a96b5de5c9736e1725f857fc03434a0bb31"
+      }
+     }
+    ]
+   },
+   {
+    "id": "P4",
+    "type": "process",
+    "observation": "TKT-512 and TKT-565 fixes needed fixture and observation corrections; one fixture correction introduced a new timing defect.",
+    "proposal": "Trial explicit observation boundaries and coordinated transaction release in fixture plans. Require the intended mutant failure before crediting stability runs.",
+    "recommendation": "trial",
+    "humanChoice": "pending",
+    "destination": null,
+    "evidence": [
+     {
+      "label": "Historical retrospective audit",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "938cacb9fa3612c33b20f34dcc4e5ba99453cd65da820b697f3e9c1ddb4e4187"
+      }
+     },
+     {
+      "label": "Primary retrospective corrections, independent check pending",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "41d93d6efa0932f6e90d2c2566b86a96b5de5c9736e1725f857fc03434a0bb31"
+      }
+     }
+    ]
+   },
+   {
+    "id": "P5",
+    "type": "skill",
+    "observation": "Recap checks repeatedly found omitted COS qualifiers. TKT-570 R1:A3 is one concrete example.",
+    "proposal": "Trial a COS-to-proof checklist for recap fidelity. Keep every qualifier that changes acceptance.",
+    "recommendation": "trial",
+    "humanChoice": "pending",
+    "destination": null,
+    "evidence": [
+     {
+      "label": "Historical retrospective audit",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "938cacb9fa3612c33b20f34dcc4e5ba99453cd65da820b697f3e9c1ddb4e4187"
+      }
+     },
+     {
+      "label": "Primary retrospective corrections, independent check pending",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "41d93d6efa0932f6e90d2c2566b86a96b5de5c9736e1725f857fc03434a0bb31"
+      }
+     }
+    ]
+   },
+   {
+    "id": "P6",
+    "type": "process",
+    "observation": "TKT-566 records two incomplete audit invocations; TKT-570 records two partial initial code-review attempts before bounded research and completion. These support the proposed trial. TKT-568 completed extra rounds and premature contract handling are separate observations; the retained evidence does not establish two exhausted audit invocations there. TKT-574 and TKT-581 also retain incomplete audit invocations before a complete same-artifact review.",
+    "proposal": "Trial bounded reads and an explicit completeness check before contract invocation. Keep invocation retries separate from complete rounds.",
+    "recommendation": "trial",
+    "humanChoice": "pending",
+    "destination": null,
+    "evidence": [
+     {
+      "label": "Historical retrospective audit",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "938cacb9fa3612c33b20f34dcc4e5ba99453cd65da820b697f3e9c1ddb4e4187"
+      }
+     },
+     {
+      "label": "Primary retrospective corrections, independent check pending",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "41d93d6efa0932f6e90d2c2566b86a96b5de5c9736e1725f857fc03434a0bb31"
+      }
+     },
+     {
+      "label": "Round 3 retrospective corrections, independent verification pending",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "d6de0dcf4a3133b334dc645382468df19d66c99a49b535dd054e72d122fb83ae"
+      }
+     },
+     {
+      "label": "Round 4 raw retrospective lens results",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "f25e9429ddefa3d0969ce5b19337c33058d9c03a95bccfedf323809f00858cd0"
+      }
+     },
+     {
+      "label": "TKT-574 accepted closeout",
+      "url": null,
+      "ref": {
+       "key": "TKT-574",
+       "digest": "16047f5a73bcdf874d09b6749a02024a1dd9603220d53776d861c487746e925a"
+      }
+     }
+    ]
+   },
+   {
+    "id": "P7",
+    "type": "process",
+    "observation": "External dependency and build-file changes were present in the candidate but outside the latest PR-triggered hermetic proof.",
+    "proposal": "Trial a candidate-wide changed-input map before freezing the packet. Compare direct external commits with every required proof trigger.",
+    "recommendation": "trial",
+    "humanChoice": "pending",
+    "destination": null,
+    "evidence": [
+     {
+      "label": "Historical retrospective audit",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "938cacb9fa3612c33b20f34dcc4e5ba99453cd65da820b697f3e9c1ddb4e4187"
+      }
+     },
+     {
+      "label": "Primary retrospective corrections, independent check pending",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "41d93d6efa0932f6e90d2c2566b86a96b5de5c9736e1725f857fc03434a0bb31"
+      }
+     }
+    ]
+   },
+   {
+    "id": "P8",
+    "type": "adr",
+    "observation": "The App now owns queue observations, lifecycle checks and ordering tickets, while App.sync.test.tsx has 3,514 lines at the final candidate.",
+    "proposal": "Evaluate whether sync and queue observation should move to a plain module. First compare retained contracts and test tiers; do not assume extraction is already justified.",
+    "recommendation": "no_action",
+    "humanChoice": "pending",
+    "destination": null,
+    "evidence": [
+     {
+      "label": "Primary retrospective corrections, independent check pending",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "41d93d6efa0932f6e90d2c2566b86a96b5de5c9736e1725f857fc03434a0bb31"
+      }
+     },
+     {
+      "label": "Historical implementation inspection, no independent approval",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "e20d92239e53ed7b9e25e5927f638ff10e4a1fc5bc04a5bd15afb3b6f00a5ab7"
+      }
+     }
+    ]
+   },
+   {
+    "id": "P9",
+    "type": "skill",
+    "observation": "TKT-571 had an acceptance proof with no permitted execution path. TKT-577 assigned verification claims to gates that did not run the changed code. TKT-574 found non-discriminating fixture assertions. TKT-581 needed three plan rounds because execution context and evidence binding were under-specified.",
+    "proposal": "Trial a short verification-plan example in sdlc-ticket quality-practices that binds each claim to its target, command, toolchain, checkout, SHA, output artifact, assertion and mutation. Evaluate later plan rounds and evidence-plan corrections.",
+    "recommendation": "trial",
+    "humanChoice": "pending",
+    "destination": null,
+    "evidence": [
+     {
+      "label": "Round 4 raw retrospective lens results",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "f25e9429ddefa3d0969ce5b19337c33058d9c03a95bccfedf323809f00858cd0"
+      }
+     },
+     {
+      "label": "TKT-581 accepted closeout",
+      "url": null,
+      "ref": {
+       "key": "TKT-581",
+       "digest": "a821fb1d1753efa01b83a556c1176c562003d1bdbfc759d43fce454bddd6560d"
+      }
+     },
+     {
+      "label": "TKT-574 accepted closeout",
+      "url": null,
+      "ref": {
+       "key": "TKT-574",
+       "digest": "16047f5a73bcdf874d09b6749a02024a1dd9603220d53776d861c487746e925a"
+      }
+     }
+    ]
+   },
+   {
+    "id": "P10",
+    "type": "process",
+    "observation": "Four owner-approved additions came after review had begun (TKT-574 and TKT-577 after round 3; TKT-578 and TKT-581 during the correction work), with one sprint-review round left under the cap.",
+    "proposal": "Trial a scope-amendment check: before the owner approves an addition, state the dependent work, the packet refresh it forces and the remaining review rounds. Evaluate whether later amendments state the remaining budget at approval.",
+    "recommendation": "trial",
+    "humanChoice": "pending",
+    "destination": null,
+    "evidence": [
+     {
+      "label": "Round 4 raw retrospective lens results",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "f25e9429ddefa3d0969ce5b19337c33058d9c03a95bccfedf323809f00858cd0"
+      }
+     },
+     {
+      "label": "Owner approval: add TKT-574 and TKT-577",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "2cb525d7bfe750ef3d87785afcc7f63bf97edc863cde147eb822184f9da3e9cf"
+      }
+     },
+     {
+      "label": "Owner approval: add TKT-578",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "54179ee286bc08e93dc36ba23a73d780d087938d0cd2e94032674392063d4b13"
+      }
+     },
+     {
+      "label": "Owner approval: add TKT-581",
+      "url": null,
+      "ref": {
+       "key": "S-3",
+       "digest": "5521ab0eddcd5138c24778a9f3f7e6de5c5003bc85e6e91e5e16d8a7bb1a218e"
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "decision": {
+  "approval": {
+   "status": "pending",
+   "approver": null,
+   "decidedAt": null,
+   "ref": null,
+   "sprint": null,
+   "scopeDigest": null,
+   "candidate": null,
+   "reportDigest": null,
+   "reportUrl": null,
+   "tag": null,
+   "note": "Exact owner close approval is requested after report publication, byte read-back and matching board pointers."
+  },
+  "tagPublication": {
+   "status": "not_required",
+   "tag": null,
+   "candidate": null,
+   "object": null,
+   "verifiedAt": null,
+   "evidence": []
+  }
+ }
+}
