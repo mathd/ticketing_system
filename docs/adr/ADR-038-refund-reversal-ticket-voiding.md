@@ -8,6 +8,11 @@ Accepted (TKT-157; decision taken under the owner-waived gates of that run, reco
 and on epic TKT-9). Second slice of TKT-9. **Extended by TKT-161** with the capacity-return half.
 Consumed by TKT-158 (exchange) and TKT-159 (event-cancellation bulk refund).
 
+**Amended by TKT-527 (2026-11-20)** — *§3 and §5 only.* A new refund does not select an exchanged
+ticket. When exchanged tickets leave too few eligible tickets, Access refuses with a definite **409**
+instead of the issuance **503**. An existing refund still replays its original selection. The
+replaced wording is kept at each changed section.
+
 Builds on [ADR-037](./ADR-037-post-purchase-refund-money-protocol.md), which returned the money and
 deliberately left the seat sold and the ticket valid.
 
@@ -43,8 +48,17 @@ changes no signed bytes. A new canonical *field* would.
 
 ### 3. Selection is deterministic; stability comes from the event id, not a second table
 
-Which q of Q tickets get voided: **the lowest ticket ids ascending, among those not yet refunded.**
-Deterministic, and it needs no issuance ordinal that does not exist.
+Which q of Q tickets get voided: **the lowest ticket ids ascending, among tickets with neither a
+refunded nor an exchanged event.** Deterministic, and it needs no issuance ordinal that does not
+exist.
+
+> **Amended by TKT-527.** The original text was: "the lowest ticket ids ascending, among those not
+> yet refunded." An exchanged ticket is already void (ADR-039), so a refund that selects it voids
+> nothing and leaves an eligible ticket live. Eligibility is per ticket, not per order. Whole-order
+> exchange is current policy (TKT-158), not a property of the trail, so the rule stays correct if
+> partial exchange arrives. The exchange check runs only for a ticket with no refund event. A ticket
+> that this refund already voided is classified as its own first, so the replay below still answers
+> for a refund that an older writer committed on an exchanged ticket.
 
 Deterministic is not sufficient. Recomputed after a first pass, "the lowest unrefunded ids" selects
 the **next** q — a replayed refund would void the order twice over. So the choice has to be
@@ -96,6 +110,25 @@ unqualified claim "a refunded ticket stops working at the gate" was too broad.
 Issuance is asynchronous — commerce's outbox → JetStream → access — so a prompt refund can genuinely
 outrun it. Access answers **503** and voids nothing. Reading that as "voided zero tickets" would
 report a discharged obligation nobody discharged, and the refund would look complete forever.
+
+> **Amended by TKT-527.** The original rule had one shortage outcome: "Access answers **503** and
+> voids nothing." There are now two, and both apply only after the replay check of §3. A refund id
+> that already voided its tickets replays them first.
+>
+> - Too few eligible tickets, and **at least one** otherwise unrefunded ticket of the order is
+>   exchanged: Access answers **409** `{"error":"not enough refundable tickets after exchange"}` and
+>   writes nothing. The exchanged tickets are already void, so a retry cannot succeed. The text is
+>   different from the 409 for refund-id reuse.
+> - Too few eligible tickets, and no otherwise unrefunded ticket of the order is exchanged: the
+>   issuance **503** above, unchanged. This includes an order whose exchanged tickets all carry a
+>   refund event.
+>
+> The check reads only the organizer's own locked tickets, so another organizer still gets the
+> 503 and cannot learn of the exchange. Commerce keeps the ticket obligation outstanding for any
+> non-200 and writes no completion marker, so this refund's capacity-return obligation also stays
+> outstanding until the row parks after its bounded attempts. The exchange may already have
+> returned the same source capacity under its own operation
+> ([order recovery](../runbooks/order-recovery.md)).
 
 ### 6. Reversal progress is nullable timestamps, and the money path never fails on it
 

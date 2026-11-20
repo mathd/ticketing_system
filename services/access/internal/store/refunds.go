@@ -15,8 +15,10 @@ import (
 // be true and neither is free: the SELECTION must be deterministic, and it must be
 // STABLE across a replay.
 //
-// Selection is the lowest ticket ids ascending among the order's not-yet-refunded
-// tickets — deterministic, and available without inventing an issuance ordinal. It is
+// Selection is the lowest ticket ids ascending among the order's tickets with neither
+// a refunded nor an exchanged event (amended by TKT-527; it was "not-yet-refunded"
+// tickets). An exchanged ticket is already void, so a refund must not void it again.
+// The rule is deterministic, and available without inventing an issuance ordinal. It is
 // not stable on its own: recomputing it after a first pass would skip the tickets
 // that pass voided and select the NEXT q, voiding the order twice over.
 //
@@ -39,6 +41,12 @@ import (
 // after checkout can genuinely arrive first. Treating that as "voided zero tickets"
 // would report success for an obligation nobody discharged.
 var ErrTicketsNotIssued = errors.New("order does not have enough unrefunded tickets")
+
+// ErrRefundTicketsExchanged reports that the order does not have q tickets a new refund
+// can void because exchanged tickets are not eligible (TKT-527, ADR-038 §5). It does not
+// wrap ErrTicketsNotIssued. The refusal is definite, and the issuance answer means "not
+// yet". The API returns this text with a 409.
+var ErrRefundTicketsExchanged = errors.New("not enough refundable tickets after exchange")
 
 // ErrRefundBatchConflict reports the same refund id replayed against a different
 // order or quantity.
@@ -117,7 +125,12 @@ func (p *Postgres) RefundOrderTickets(ctx context.Context, org, order, refundID 
 	// The per-ticket replay resolves BEFORE any selection and appends nothing —
 	// appendLifecycle's own contract is that idempotency is settled before it is
 	// called, never inside it.
+	//
+	// The exchange check is only in the no-refund branch (TKT-527). A ticket with a
+	// refund event is classified by that event first, so a refund that an older writer
+	// committed on an exchanged ticket still replays.
 	var mine, free []uuid.UUID
+	var sawExchanged bool
 	for _, id := range all {
 		voidedBy, err := refundThatVoided(ctx, tx, id)
 		if err != nil {
@@ -125,6 +138,14 @@ func (p *Postgres) RefundOrderTickets(ctx context.Context, org, order, refundID 
 		}
 		switch {
 		case voidedBy == uuid.Nil:
+			exchanged, err := ticketExchanged(ctx, tx, id)
+			if err != nil {
+				return TicketRefundBatch{}, err
+			}
+			if exchanged {
+				sawExchanged = true
+				continue
+			}
 			free = append(free, id)
 		case voidedBy == refundEventID(refundID, id):
 			mine = append(mine, id)
@@ -138,6 +159,12 @@ func (p *Postgres) RefundOrderTickets(ctx context.Context, org, order, refundID 
 	}
 
 	if int32(len(free)) < quantity {
+		// An exchanged ticket is already void, so waiting does not make it eligible.
+		// sawExchanged is read only from this organizer's locked tickets, so the
+		// refusal cannot disclose another organizer's exchange.
+		if sawExchanged {
+			return TicketRefundBatch{}, ErrRefundTicketsExchanged
+		}
 		return TicketRefundBatch{}, fmt.Errorf("%w: %d of %d available", ErrTicketsNotIssued, len(free), quantity)
 	}
 	selected := free[:quantity]
@@ -176,8 +203,9 @@ func (p *Postgres) RefundOrderTickets(ctx context.Context, org, order, refundID 
 }
 
 // refundThatVoided returns the id of the `refunded` lifecycle event on a ticket, or
-// uuid.Nil when the ticket has not been voided. The event id is what identifies the
-// refund that wrote it.
+// uuid.Nil when the ticket has no refund event. uuid.Nil does not mean the ticket is
+// live: it can already have an exchange event (TKT-527). The event id is what
+// identifies the refund that wrote it.
 func refundThatVoided(ctx context.Context, tx *sql.Tx, ticketID uuid.UUID) (uuid.UUID, error) {
 	var eventID uuid.UUID
 	err := tx.QueryRowContext(ctx, `SELECT id FROM lifecycle_events WHERE ticket_id=$1 AND event_type='refunded'`, ticketID).Scan(&eventID)

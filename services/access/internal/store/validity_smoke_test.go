@@ -212,20 +212,22 @@ func TestValidityAfterExchangeUnderOneReference(t *testing.T) {
 	assertVerdicts(t, got, want, types)
 }
 
-// Exchange, then refund, through Access's own writers. Commerce refuses this sequence
-// today (BindOrderRefund refuses an exchanged order), so it is reachable only here. The
-// precedence still decides it, and it must match the gate: refund first.
+// Exchange, then refund: a HISTORICAL history. Commerce refuses this sequence
+// (BindOrderRefund refuses an exchanged order). Older Access writers could still append
+// a refund after an exchange through a direct internal call. Access now excludes
+// exchanged tickets from new refunds (TKT-527), so the refund is seeded with a signed
+// append on one known exchanged source. The precedence still decides such a history,
+// and it must match the gate: refund first.
 func TestValidityAfterExchangeThenRefund(t *testing.T) {
 	ctx := context.Background()
 	db := migratedDB(t, ctx)
 	st := New(db, testConfig(t))
 	org := uuid.New()
 	source, ref, sourceIDs, replacementIDs := exchangeUnderSourceRef(t, ctx, db, st, org)
-	batch, err := st.RefundOrderTickets(ctx, org, source, uuid.New(), 1)
-	if err != nil {
-		t.Fatalf("refund after exchange: %v", err)
+	both := sourceIDs[0]
+	if _, err := st.appendLifecycleForTest(ctx, both, source, org, "refunded"); err != nil {
+		t.Fatalf("seed the historical refund after exchange: %v", err)
 	}
-	both := batch.TicketIDs[0]
 
 	got, types := verdicts(t, ctx, st, ref)
 	if !hasType(types[both], "exchanged") || !hasType(types[both], "refunded") {

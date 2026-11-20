@@ -67,10 +67,11 @@ var lifecycleEffects = map[string]lifecycleEffect{
 // resend or an admission recorded after a void is a fact about a dead ticket, not a
 // reinstatement (all three writers accept a voided ticket).
 //
-// Refund before exchange is the scan path's order. Commerce today refuses to refund an
-// exchanged order and to exchange a refunded one, so a history with both is reachable
-// only through Access's own writers; the precedence still decides it, so that the page
-// and the gate agree if it ever happens.
+// Refund before exchange is the scan path's order. Commerce refuses to refund an
+// exchanged order and to exchange a refunded one. A history with both is HISTORICAL:
+// older Access writers could append a refund after an exchange through a direct internal
+// call. Access now excludes exchanged tickets from new refunds (TKT-527). The precedence
+// still decides such a history, so that the page and the gate agree.
 //
 // A type that is not in lifecycleEffects keeps the verdict, as the gate does. The
 // forcing test makes that case unreachable through a migration.

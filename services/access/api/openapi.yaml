@@ -66,10 +66,13 @@ paths:
     post:
       operationId: refundTickets
       summary: Void a refund's share of an order's tickets (internal; commerce only)
-      # TKT-157 / ADR-038. Selection is the lowest unrefunded ticket ids ascending,
-      # made stable across a replay by the refund-derived lifecycle event id.
+      # TKT-157 / ADR-038. Selection is the lowest ticket ids ascending among tickets
+      # with neither a refunded nor an exchanged event (TKT-527), made stable across a
+      # replay by the refund-derived lifecycle event id.
       # 503 means "not yet": issuance is asynchronous, so a refund can outrun it, and
       # the caller must keep the obligation rather than read it as "nothing to void".
+      # 409 is also a definite refusal when exchanged tickets leave too few eligible
+      # tickets (TKT-527), with a different error text from refund-id reuse.
       parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/TicketRefundCreate'}}}}
       responses:

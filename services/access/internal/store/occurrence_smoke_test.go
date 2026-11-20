@@ -1569,11 +1569,12 @@ func TestReconcileExchangedBrokenChainRecordsQuarantineWithoutConflictAlarm(t *t
 // file and fail only this one, with a count of two. That is the mutation it
 // exists to catch.
 //
-// Construction order is forced and was verified in both directions:
-// SwitchExchange refuses an already-VOIDED source (ErrSourceTicketsAlreadyVoided,
-// exchanges.go:151), so refund-first is impossible; RefundOrderTickets selects on
-// refundThatVoided alone (refunds.go:120), so an exchanged ticket is still
-// refundable. Exchange, then refund.
+// Construction order is forced: SwitchExchange refuses an already-VOIDED source
+// (ErrSourceTicketsAlreadyVoided), so refund-first is impossible. The state is a
+// HISTORICAL one. Older Access writers could append a refund after an exchange
+// through a direct internal call. Access now excludes exchanged tickets from new
+// refunds (TKT-527), so the refund is seeded with a signed append on this exchanged
+// ticket. Exchange, then refund.
 // F′ deliberately CANNOT detect removal of the exchanged guard: with both facts
 // present, ticketRefunded still answers true and TKT-269's half still owes the
 // one alarm this asserts. That is not a hole — it is what makes F′ specifically
@@ -1593,7 +1594,9 @@ func TestReconcileRefundedAndExchangedTicketOwesExactlyOneAlarm(t *testing.T) {
 	st := New(db, testConfig(t))
 	s := issueTicket(t, ctx, st, uuid.New())
 	exchangeOwnTicket(t, ctx, st, s)
-	refundOwnTicket(t, ctx, st, s)
+	if _, err := st.appendLifecycleForTest(ctx, s.ticketID, s.id.OrderID, s.id.OrganizerID, "refunded"); err != nil {
+		t.Fatalf("seed the historical refund after exchange: %v", err)
+	}
 	requireVoidingFacts(t, ctx, db, s.ticketID, "exchanged", "refunded")
 
 	occ := uuid.New()

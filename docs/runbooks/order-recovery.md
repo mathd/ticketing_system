@@ -115,6 +115,12 @@ A refund has two obligations beyond the money: the tickets must be **voided** an
 outstanding by an access outage, an unset `ACCESS_URL`, or a refund that outruns issuance (access
 answers `503` — "not yet", not "nothing to void").
 
+When exchanged tickets leave too few eligible tickets, the exchanged tickets are already void and
+Commerce logs `reversal obligation not discharged` with status 409. Commerce leaves this refund's
+ticket-voiding and capacity-return obligations outstanding and retries until the row parks
+(TKT-527, ADR-038 §5). The exchange may already have returned the same source capacity under its
+own operation, so check the exchange's `capacity_returned_at` to see recorded exchange progress.
+
 Since TKT-163 a background runner in commerce drives them to completion. **No operator action is
 needed for the ordinary case**, and replaying the refund by hand is no longer the recovery path.
 
@@ -133,7 +139,7 @@ ORDER BY created_at DESC;
 
 | State | Means |
 |---|---|
-| `voided=f`, attempts rising, `parked_at` null | Access is unavailable or has not issued the tickets yet. Retrying on backoff; nothing to do. |
+| `voided=f`, attempts rising, `parked_at` null | Ticket voiding is outstanding. Read the downstream status in the Commerce WARN `reversal obligation not discharged` for this `operation_id`. `503`: Access has not issued the tickets yet; status `0` with an error: Access is unreachable. Both retry on backoff; nothing to do. `409`: an exchange shortage (TKT-527) or refund-ID reuse; retries cannot succeed, and the row parks. |
 | `voided=t`, `capacity_back=f`, `parked_at` null | The tickets no longer admit; the seat has not come back. Under-selling, which is the safe direction. Retrying. |
 | `parked_at` set | **The runner has given up** after `reversal_attempts` reached 10 without progress. `reversal_last_error` says which half kept failing. This needs a human. |
 | Both timestamps set | Complete. The row is no longer claimed or scanned. |
