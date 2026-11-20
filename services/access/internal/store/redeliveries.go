@@ -145,7 +145,7 @@ func redeliveryMessageID(organizer uuid.UUID, key string, ticketID uuid.UUID) uu
 // and returns the order's tickets with the message id each one is to be sent under.
 //
 // ONLY COMMERCIALLY VALID TICKETS (TKT-526, ADR-068 amendment). A ticket with a
-// `refunded` or `exchanged` fact is skipped, by the predicate the refund writer uses.
+// `refunded` or `exchanged` fact is skipped (ticketCommerciallyVoid).
 // An order whose issued tickets are all void returns ErrRedeliveryNoEligibleTickets
 // before the key lookup, the bound and any insert. A fresh claim stores the count of
 // valid tickets and mints attempts only for them. A replay returns only its key's
@@ -308,9 +308,9 @@ func (p *Postgres) ClaimRedelivery(ctx context.Context, org, order uuid.UUID, ke
 // ORIGINAL ids: re-deriving them would be right today and silently wrong the moment
 // the derivation changes, and the stored row is the record of what was actually sent.
 //
-// The caller passes only the tickets that are still valid (TKT-526). An attempt on a
-// voided ticket is not read: if it is still pending it is terminal, and if it was
-// accepted, the call that accepted it already counted it.
+// The caller passes only the tickets that are still valid (TKT-526). A replay excludes
+// an attempt on a voided ticket whether it is accepted or pending. A pending one is
+// terminal.
 func loadRedeliveryAttempts(ctx context.Context, tx *sql.Tx, org uuid.UUID, key string, all []RedeliveryTicket) ([]RedeliveryTicket, error) {
 	out := make([]RedeliveryTicket, 0, len(all))
 	for _, t := range all {

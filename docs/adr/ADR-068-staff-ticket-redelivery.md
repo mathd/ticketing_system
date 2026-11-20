@@ -10,9 +10,11 @@ guard stays an inline check on access's `/internal/` surface. **ADR-057 decided 
 credential question for inventory, and its reasoning transfers exactly** — the difference from
 ADR-053, which answered the other way, is set out below.
 
-**Amended by TKT-526 (2026-11-20)** — *adds one section after §6.* A staff resend sends only
-tickets that are not refunded or exchanged. An order with no such ticket gets a definite **409**.
-The other sections are unchanged.
+**Amended by TKT-526 (2026-11-20)** — *adds one section after §6.* A staff resend claims only
+tickets that are not refunded or exchanged when the claim reads them. An order with no such ticket
+gets a definite **409**. Eligibility is checked at claim time, not at the transport hand-off: a
+refund or an exchange that commits after the claim can come before the hand-off, and the mark then
+skips the acceptance update and the lifecycle append. The other sections are unchanged.
 
 ## Context
 
@@ -143,13 +145,16 @@ bound on capability re-emission per order, not an anti-abuse control.
 
 ### Amended by TKT-526: resend only commercially valid tickets (2026-11-20)
 
-The owner chose option (a) on 2026-10-12: a staff resend does not send a refunded or exchanged
-ticket, on a fresh request or on a replay. This section applies to the staff resend only. The first
-delivery on issuance (`MarkDelivered`) is out of scope.
+The owner chose option (a) on 2026-10-12: a staff resend does not claim a refunded or exchanged
+ticket, on a fresh request or on a replay. Eligibility is checked at claim time. A refund or an
+exchange that commits after the claim can come before the transport hand-off, so the transport can
+still take that message. The mark then skips the acceptance update and the lifecycle append (see
+**The mark** below). This section applies to the staff resend only. The first delivery on issuance
+(`MarkDelivered`) is out of scope.
 
 **The verdict.** A ticket is eligible when its lifecycle history has no `refunded` and no
-`exchanged` event. The store reads this with `ticketCommerciallyVoid`, the predicate the refund
-writer already uses. It agrees with the guest page verdict of
+`exchanged` event. The store reads this with `ticketCommerciallyVoid`, the predicate the exchange
+writer already uses (`SwitchExchange`). It agrees with the guest page verdict of
 [ADR-012 § TKT-355](./ADR-012-ticket-issuance-and-qr-credentials.md) for every lifecycle type the
 database admits. `TestEveryLifecycleTypeHasAValidityEffect` compares the two for each type.
 

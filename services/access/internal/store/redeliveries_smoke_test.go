@@ -695,7 +695,9 @@ func TestClaimRedeliverySkipsVoidedTickets(t *testing.T) {
 
 // COS-3. A replay rechecks eligibility. Four tickets cover every combination of
 // accepted or pending and voided or valid. Only the valid attempts come back, with their
-// original message ids and acceptance, and the stored request keeps its first count.
+// original message ids and acceptance, and the stored request keeps its first count. The
+// valid pending attempt stores an id that the derivation does not produce, so the replay
+// must read the stored id and not recompute it.
 func TestClaimRedeliveryReplaySkipsVoidedAttempts(t *testing.T) {
 	for _, kind := range partialVoids() {
 		t.Run(kind.name, func(t *testing.T) {
@@ -717,6 +719,17 @@ func TestClaimRedeliveryReplaySkipsVoidedAttempts(t *testing.T) {
 			for _, tk := range first.Tickets {
 				msgs[tk.TicketID] = tk.MessageID
 			}
+			// The eligible pending attempt on sorted[3] holds a stored id that the current
+			// derivation does not produce, so a replay that recomputes ids cannot pass.
+			stored := uuid.New()
+			if _, err := db.ExecContext(ctx, `UPDATE redelivery_attempts SET message_id=$1 WHERE organizer_id=$2 AND idempotency_key=$3 AND ticket_id=$4`,
+				stored, org, key, sorted[3]); err != nil {
+				t.Fatal(err)
+			}
+			if stored == redeliveryMessageID(org, key, sorted[3]) {
+				t.Fatal("seeded state is wrong: the stored id equals the derived id")
+			}
+			msgs[sorted[3]] = stored
 			// sorted[0] will be voided after acceptance, sorted[2] stays valid after it.
 			for _, id := range []uuid.UUID{sorted[0], sorted[2]} {
 				if err := st.MarkRedelivered(ctx, org, key, id, msgs[id]); err != nil {
@@ -932,30 +945,36 @@ func holdUncommittedVoid(t *testing.T, ctx context.Context, st *Postgres, db *sq
 	return tx, pid, eventID
 }
 
+// The ticket-lock statements of the two calls under test, as LIKE patterns.
+const (
+	markLockStatement  = "%FROM tickets WHERE id=$1 FOR UPDATE%"
+	claimLockStatement = "%FROM tickets%WHERE order_id=$1 AND organizer_id=$2 ORDER BY id FOR UPDATE%"
+)
+
 // waitForTicketLockWait returns once a backend blocked by blockerPID waits on the
-// ticket-lock statement. It fails if the call under test returns first, or waits on
-// anything else until the deadline.
-func waitForTicketLockWait(t *testing.T, ctx context.Context, db *sql.DB, blockerPID int, done <-chan error) {
+// ticket-lock statement that lockStatement matches. It fails if the call under test
+// returns first, or waits on anything else until the deadline.
+func waitForTicketLockWait(t *testing.T, ctx context.Context, db *sql.DB, blockerPID int, lockStatement string, done <-chan error) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		select {
 		case err := <-done:
-			t.Fatalf("MarkRedelivered returned %v before it waited on the ticket lock: the lock window was not exercised", err)
+			t.Fatalf("the call under test returned %v before it waited on the ticket lock: the lock window was not exercised", err)
 		default:
 		}
 		var waiting int
 		if err := db.QueryRowContext(ctx, `
 			SELECT count(*) FROM pg_stat_activity
 			WHERE $1 = ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock' AND query LIKE $2`,
-			blockerPID, "%FROM tickets WHERE id=$1 FOR UPDATE%").Scan(&waiting); err != nil {
+			blockerPID, lockStatement).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting > 0 {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("MarkRedelivered never waited on the ticket lock held by the void")
+			t.Fatal("the call under test never waited on the ticket lock held by the void")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -990,7 +1009,7 @@ func TestMarkRedeliveredSkipsTicketsVoidedWhileWaiting(t *testing.T) {
 			voidTx, blockerPID, voidEvent := holdUncommittedVoid(t, ctx, st, db, sorted[0], kind.event)
 			done := make(chan error, 1)
 			go func() { done <- st.MarkRedelivered(ctx, org, key, sorted[0], msg) }()
-			waitForTicketLockWait(t, ctx, db, blockerPID, done)
+			waitForTicketLockWait(t, ctx, db, blockerPID, markLockStatement, done)
 			if err := voidTx.Commit(); err != nil {
 				t.Fatal(err)
 			}
@@ -1016,5 +1035,86 @@ func TestMarkRedeliveredSkipsTicketsVoidedWhileWaiting(t *testing.T) {
 				t.Errorf("the resend event has %d integrity rows, want 0", n)
 			}
 		})
+	}
+}
+
+// COS-1 and COS-3 at the claim site. A void that commits while a fresh claim or a replay
+// waits for the ticket lock wins: the claim excludes that ticket. The voided ticket has the
+// lower id, so the claim waits on it first. Eligibility read in the locking statement would
+// use the snapshot taken before the wait and return the voided ticket.
+func TestClaimRedeliverySkipsTicketsVoidedWhileWaiting(t *testing.T) {
+	for _, kind := range partialVoids() {
+		for _, replay := range []bool{false, true} {
+			name := kind.name + "/fresh"
+			if replay {
+				name = kind.name + "/replay"
+			}
+			t.Run(name, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				db := migratedDB(t, ctx)
+				st := New(db, testConfig(t))
+				org := uuid.New()
+				order, sorted, _ := issueOrder(t, ctx, st, org, 2)
+				const key = "key-claim-void-while-waiting"
+				if replay {
+					first, err := st.ClaimRedelivery(ctx, org, order, key)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(first.Tickets) != 2 {
+						t.Fatalf("seeded state is wrong: the live claim returned %d tickets, want 2", len(first.Tickets))
+					}
+				}
+				before := readRedeliveryState(t, ctx, db)
+				for _, id := range sorted {
+					requireStepTypes(t, id, before.Histories[id], "issued")
+				}
+				seededRequests, seededAttempts := 0, 0
+				if replay {
+					seededRequests, seededAttempts = 1, 2
+				}
+				if len(before.Requests) != seededRequests || len(before.Attempts) != seededAttempts {
+					t.Fatalf("seeded state is wrong: %+v", before)
+				}
+
+				voidTx, blockerPID, voidEvent := holdUncommittedVoid(t, ctx, st, db, sorted[0], kind.event)
+				var claim RedeliveryClaim
+				done := make(chan error, 1)
+				go func() {
+					c, err := st.ClaimRedelivery(ctx, org, order, key)
+					claim = c
+					done <- err
+				}()
+				waitForTicketLockWait(t, ctx, db, blockerPID, claimLockStatement, done)
+				if err := voidTx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				select {
+				case err = <-done:
+				case <-time.After(10 * time.Second):
+					t.Fatal("ClaimRedelivery did not return after the void committed")
+				}
+
+				msg := redeliveryMessageID(org, key, sorted[1])
+				want := redeliveryState{Histories: cloneHistories(before.Histories), Requests: before.Requests, Attempts: before.Attempts}
+				want.Histories[sorted[0]] = append(want.Histories[sorted[0]], lifecycleStep{ID: voidEvent, Type: kind.event})
+				if !replay {
+					want.Requests = []redeliveryRequestRow{{OrganizerID: org, Key: key, OrderID: order, Count: 1}}
+					want.Attempts = []redeliveryAttemptRow{{OrganizerID: org, Key: key, TicketID: sorted[1], MessageID: msg}}
+				}
+				if err != nil {
+					t.Errorf("claim after the void won the lock: %v — the order still has one valid ticket", err)
+				} else {
+					wantTickets := []claimedTicket{{TicketID: sorted[1], MessageID: msg}}
+					if got := claimedTickets(claim); claim.Replay != replay || claim.OrderID != order || !reflect.DeepEqual(got, wantTickets) {
+						t.Errorf("claim = order %s replay %t tickets %+v, want order %s replay %t and only the valid ticket %+v",
+							claim.OrderID, claim.Replay, got, order, replay, wantTickets)
+					}
+				}
+				requireRedeliveryState(t, ctx, db, want)
+			})
+		}
 	}
 }

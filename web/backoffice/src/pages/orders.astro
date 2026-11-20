@@ -194,9 +194,10 @@ if (Astro.request.method === 'POST') {
           // refusal — not-found, not-yet, too-many, refused — sent nothing in this
           // call, and telling the operator "this may have gone out" about one of
           // those would stop them retrying something they should retry. Access's
-          // "no eligible tickets" 409 (TKT-526) is such a refusal: every ticket is
-          // refunded or exchanged, so nothing is left to resend under this key,
-          // even if an earlier call under the same key sent mail.
+          // "no eligible tickets" 409 (TKT-526) is such a refusal: the refused call
+          // sent nothing, and no eligible attempt remains under this key. An earlier
+          // call under the same key may have sent mail, and a new key can still
+          // claim eligible tickets.
           ambiguous: outcome.kind === 'ambiguous',
         };
         Astro.response.status = outcome.kind === 'not-found' ? 404 : 200;
