@@ -125,9 +125,25 @@ run does **not** own is terminal at once: repairing it would need that refund's 
 which the ledger row does not carry, so retrying would only re-read the same state until the budget
 ran out.
 
-Attempts are charged at **claim** time, and **refunded when a claim is released undriven** (a
-shutdown, a lapsed lease) — the same thing `AbandonRecoveryClaim` does. Without the refund a row can
-arrive at its first real ambiguous failure with its budget already spent on work that never happened.
+**Amended by TKT-521.** Claiming a row costs no attempt. A retryable failure that `record` handles
+costs one attempt per pass, whether or not the refund unit was called: a commerce database failure
+before the refund or void call is charged the same as a driven failure. Below the cap, the charge keeps
+the lease, which stays the backoff. At the cap, the terminal write records the last failure and charges
+the final attempt. When `RunOnce` or `record` observes cancellation before the drive, the row is handed
+back at zero cost, because the interruption belongs to the worker and not to the row; otherwise a
+rolling restart spends a row's budget on work that never happened. The `record` hand-back after a drive
+costs one attempt. If `finalize` observes cancellation while handling a failed outcome, it hands the row
+back and charges one attempt regardless of whether the refund unit ran.
+
+Bulk refund also charges failed undriven passes beyond checkout recovery's failed-drive rule
+([ADR-016](./ADR-016-checkout-recovery-state-machine.md)) because the bulk refund claim query has no
+attempts predicate and a persistent pre-drive failure would otherwise recur after every lease. The
+charge gives such a row a terminal, reported `failed/internal` verdict with no money moved, and §3 makes
+a new run safe. The `attempts` column comment in migration 0012 ("Charged per claim") is older than this
+rule and stays as applied; this section governs.
+
+Before TKT-300 this paragraph said attempts were charged at **claim** time and refunded when a claim
+was released undriven. The TKT-331 "Correction to §5" below records that change.
 
 The bound is what keeps §5 compatible with the report: a run only becomes readable (`200`) once every
 row is terminal, so an unbounded retry would make the report unreachable. This is why the `attempts`
@@ -342,10 +358,15 @@ backoff lease, and hands back the rest of a batch at shutdown before it checks i
 both would change a helper the two draining runners share. The bulk-refund loop stays local; the
 detached hand-back (`worklease.HandBackUndriven`) is still shared.
 
-**Correction to §5.** §5 says attempts are charged at **claim** time and refunded when a claim is
-released undriven. That has been false since TKT-300: the charge follows a **drive**, and an undriven
-claim is released without a charge. [ADR-063](./ADR-063-exchange-reversal-reconciliation.md)'s TKT-300
-amendment and `bulkrefund/runner.go` (`record`, `chargeDriven`, `finalize`) describe the current rule.
+**Correction to §5.** §5 said attempts are charged at **claim** time and refunded when a claim is
+released undriven. TKT-300 ended claim-time charging. **Amended by TKT-521:** amended §5 states what a
+failed pass and an undriven hand-back cost. In short, a retryable failed pass costs one attempt whether
+or not the refund unit ran, and an undriven hand-back at the `RunOnce` or `record` cancellation check
+costs nothing. The rules of this section are unchanged: a ledger row is driven at most once per pass,
+and a duplicate skipped in a pass keeps the lease its claim renewed.
+[ADR-063](./ADR-063-exchange-reversal-reconciliation.md) leaves the cost of each outcome to each runner
+("each store still decides in SQL what an outcome costs"). `bulkrefund/runner.go` (`record`,
+`chargeDriven`, `finalize`) implements the rule.
 
 **Evidence.** `bulkrefund/runner_test.go` lapses one row's lease in the middle of a pass (the fake's
 `beforeClaim` hook), which the old between-passes `expireLeases` could not express. The tests pin: one
@@ -362,10 +383,9 @@ consistency, not a guarantee against a writer with access to the commerce databa
 ## Amendment (2026-10-11, TKT-332) — the detached charge's bound is recorded, not tightened
 
 A retryable outcome below the budget is charged by `bulkrefund/runner.go` `chargeDriven`, without
-releasing the lease (TKT-300; [ADR-063](./ADR-063-exchange-reversal-reconciliation.md)'s TKT-300
-amendment has the accounting, and the TKT-331 "Correction to §5" above has why §5's claim-time rule no
-longer holds). The charge runs on `context.WithoutCancel` of the caller's context, with two tries of
-5 s each. `record`'s cancellation check and this call are not atomic, so a cancellation that lands
+releasing the lease (TKT-300). **Amended by TKT-521:** §5 has the accounting rule, and the TKT-331
+"Correction to §5" above has its history. The charge runs on `context.WithoutCancel` of the caller's
+context, with two tries of 5 s each. `record`'s cancellation check and this call are not atomic, so a cancellation that lands
 between them reaches the charge and not the abandon path, and the detached context is the only reason
 that charge lands. TKT-300 recorded the cost of that context and did not act on it. This amendment
 decides it.
@@ -379,10 +399,11 @@ latency and no shutdown requirement supports a shorter timeout, so a shorter one
 
 - **Charge time per row:** up to 10 s (2 × 5 s). It is reachable only while the database refuses this
   write. `record`'s retryable branch charges **any** retryable outcome below the budget, whether or not
-  the refund unit was called: a `LookupRefund`, `OrderState` or `FixQuantity` error before the drive
-  gives a retryable `internal` outcome through `record(..., false)`, and that attempt is charged too.
-  Whether a failure before the drive SHOULD consume the budget is an open question, tracked by
-  TKT-521; this amendment does not change the behaviour.
+  the refund unit was called. **Amended by TKT-521:** this is the settled rule of §5, not an open
+  question. Six failure returns before the drive give a retryable `internal` outcome through
+  `record(..., false)`, across four commerce database methods: the reads `LookupRefund` and
+  `OrderState`, and the writes `FixQuantity` and `ClearQuantity`. Each such pass is charged, so its
+  charge can also take this time.
 - **Charge time per batch:** up to 80 s at the default batch of 8. That is the charge cost of a full
   batch in which every row ends with a retryable outcome and every charge write times out twice. It is **not** the
   delay after a cancellation (see the corrections below).

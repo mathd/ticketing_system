@@ -506,7 +506,9 @@ func AbandonCancellationClaim(ctx context.Context, db *sql.DB, w CancellationWor
 	return err
 }
 
-// ChargeCancellationAttempt records one driven attempt and leaves everything else alone.
+// ChargeCancellationAttempt records one attempt for a retryable failed pass and leaves
+// everything else alone. The pass may have failed before the refund unit ran; it is charged
+// all the same, and the lease stays (TKT-521).
 //
 // It exists because a retryable failure must be charged WITHOUT releasing its claim: the
 // retained lease is the backoff (see the runner's `record`), so the charge cannot ride

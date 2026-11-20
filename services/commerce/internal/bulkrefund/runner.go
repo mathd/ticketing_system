@@ -41,8 +41,10 @@ type Store interface {
 	// (0012_cancellation_refunds.sql:95-99).
 	Finalize(ctx context.Context, w store.CancellationWork, out store.CancellationOutcome, charge bool) error
 	Abandon(ctx context.Context, w store.CancellationWork, charge bool) error
-	// ChargeAttempt records one driven attempt WITHOUT releasing the lease, which is what
-	// a retryable failure needs: the lease is the backoff and must stay.
+	// ChargeAttempt records one attempt for a retryable failed pass WITHOUT releasing the
+	// lease, which is what a retryable failure needs: the lease is the backoff and must
+	// stay. The pass may have failed before the refund unit ran; it is charged all the
+	// same (TKT-521).
 	ChargeAttempt(ctx context.Context, w store.CancellationWork) error
 	CompleteRuns(ctx context.Context) (int, error)
 }
@@ -241,8 +243,10 @@ func (r *Runner) RunOnce(ctx context.Context) int {
 			// The context is checked per ORDER, not per batch: an interrupted runner must
 			// leave the rest of its claim reclaimable rather than half-driving it.
 			if ctx.Err() != nil {
-				// Never driven, so it costs no attempt (TKT-300: the charge follows a
-				// drive rather than the claim, so this is an omission, not a refund).
+				// Never driven, so the hand-back costs no attempt. The interruption
+				// belongs to the worker, not to the row (TKT-300 moved the charge off
+				// the claim; TKT-521). A failed pass of the row's own costs one, driven
+				// or not: see `record`.
 				r.abandon(w, false)
 				continue
 			}
@@ -276,7 +280,11 @@ func (r *Runner) abandon(w store.CancellationWork, charge bool) {
 		}, slog.Default(), "cancellation")
 }
 
-// chargeDriven records one driven attempt on a detached, bounded context, retrying once.
+// chargeDriven records one attempt for a retryable failed pass below the cap, on a
+// detached, bounded context, retrying once.
+//
+// The name is historical (TKT-300). The helper charges ANY retryable failed pass below the
+// cap, including one that failed before the refund unit ran (TKT-521; see `record`).
 //
 // Both halves matter and each closes a loss the other cannot:
 //
@@ -297,8 +305,8 @@ func (r *Runner) abandon(w store.CancellationWork, charge bool) {
 // COST, since the context is detached and so cannot be cancelled: up to 10s of charge time
 // per row (two tries of 5s). That is only reachable while the database is refusing THIS
 // write. `record` reaches here for ANY retryable outcome below the budget, driven or not:
-// a LookupRefund, OrderState or FixQuantity error before the drive is a retryable
-// `internal` outcome and is charged too. Whether it should be is open (TKT-521). After a
+// a LookupRefund, OrderState, FixQuantity or ClearQuantity error before the drive is a
+// retryable `internal` outcome and is charged too, by the rule `record` states. After a
 // cancellation only the row in flight keeps charging: RunOnce checks the context before
 // each new drive. Of the rows remaining in the batch, it hands back only those NOT already
 // driven in this pass, each hand-back on its own 5s context; a row already driven in this
@@ -443,7 +451,9 @@ func (r *Runner) record(ctx context.Context, w store.CancellationWork, out store
 	// actually called — an undriven claim must cost nothing, or a rolling restart spends a
 	// row's budget on work that never happened, and a driven one must cost its attempt, or
 	// a cancellation window recurring at exactly that point holds the row below the cap
-	// forever and its run never completes.
+	// forever and its run never completes. This is the INTERRUPTION rule only. A failed
+	// pass that is not interrupted is the row's own failure and is charged below, driven
+	// or not (TKT-521).
 	if ctx.Err() != nil {
 		r.abandon(w, drove)
 		return false
@@ -458,22 +468,28 @@ func (r *Runner) record(ctx context.Context, w store.CancellationWork, out store
 	// a row is driven at most once per pass and the lease spaces the passes.
 	//
 	// The attempt is charged here, without releasing the lease (TKT-300). The charge and
-	// the lease are separate things: the charge records that a drive happened, the lease
-	// is the backoff. Releasing here to get the charge written would undo the paragraph
-	// above.
+	// the lease are separate things: the charge records a failed pass, the lease is the
+	// backoff. Releasing here to get the charge written would undo the paragraph above.
 	//
 	// The comparison is against w.Attempts+1 and not w.Attempts. w.Attempts is the count
-	// as observed at claim, and since the charge moved after the drive it no longer
-	// includes this one — so comparing the bare value would allow a SIXTH drive of an
+	// as observed at claim, and since the charge moved off the claim it no longer
+	// includes this pass — so comparing the bare value would allow a SIXTH drive of an
 	// ambiguous failure, one where the money may already have moved. That is the off-by-one
 	// the accounting move creates, and it is the whole reason this line changed.
 	if attempts := w.Attempts + 1; retryable(out) && attempts < maxAttempts {
-		// The drive already happened, so this attempt is OWED, and losing it is not a
-		// cosmetic miscount: the row comes back after its lease with its old count, which
-		// is one more drive of an ambiguous failure than the budget allows. Under the old
-		// claim-time accounting the charge was banked before the drive and could not be
-		// lost this way, so this window belongs to the accounting move and is closed here
-		// rather than left as a known gap.
+		// This pass failed, so this attempt is OWED, whether or not the refund unit ran.
+		// The budget counts failed passes, not drives (TKT-521, owner decision (b)): the
+		// claim query has no attempts predicate, so a persistent commerce database failure
+		// before the drive would otherwise recur after every lease and never reach a
+		// verdict. A lookup, order-state or quantity-write failure is charged here exactly
+		// as a driven failure is.
+		//
+		// Losing the charge is not a cosmetic miscount: the row comes back after its lease
+		// with its old count, which permits one extra pass. For a driven ambiguous failure
+		// that is one more drive than the budget allows. Under the old claim-time
+		// accounting the charge was banked before the drive and could not be lost this
+		// way, so this window belongs to the accounting move and is closed here rather than
+		// left as a known gap.
 		//
 		// Charged on a detached context and retried once; chargeDriven carries the
 		// reasoning, and ChargeCancellationAttempt's compare-and-set on the claim-time
@@ -702,8 +718,10 @@ func (r *Runner) finalize(ctx context.Context, w store.CancellationWork, out sto
 	// as a context error and is handled in `process` before ever reaching here, so a failure
 	// that survives both checks is a genuine one, and committing it is correct.
 	if ctx.Err() != nil && out.Outcome == "failed" {
-		// Driven: the refund unit already ran, so this attempt is charged even though no
-		// verdict is being recorded.
+		// Charged whether or not the refund unit ran: this path does not know `drove`, and
+		// the failed outcome is charged like any failed pass even though no verdict is
+		// recorded. Unlike the undriven hand-backs in RunOnce and `record`, this late
+		// hand-back costs one attempt (ADR-040 §5, TKT-521).
 		r.abandon(w, true)
 		return false
 	}
