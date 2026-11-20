@@ -190,10 +190,14 @@ if (Astro.request.method === 'POST') {
         action = {
           kind: 'redelivery-refused',
           message: outcome.message,
-          // Only an ambiguous result may have sent mail. A decided refusal —
-          // not-found, not-yet, too-many, refused — did not, and telling the
-          // operator "this may have gone out" about one of those would stop them
-          // retrying something they should retry.
+          // Only an ambiguous result may have sent mail in this call. A decided
+          // refusal — not-found, not-yet, too-many, refused — sent nothing in this
+          // call, and telling the operator "this may have gone out" about one of
+          // those would stop them retrying something they should retry. Access's
+          // "no eligible tickets" 409 (TKT-526) is such a refusal: the refused call
+          // sent nothing, and no eligible attempt remains under this key. An earlier
+          // call under the same key may have sent mail, and a new key can still
+          // claim eligible tickets.
           ambiguous: outcome.kind === 'ambiguous',
         };
         Astro.response.status = outcome.kind === 'not-found' ? 404 : 200;
@@ -202,9 +206,11 @@ if (Astro.request.method === 'POST') {
           // resume the work access may have half-done.
           unresolvedRedeliveries.note(staff.organizerId, outstandingResend ?? parsed.value);
         } else if (settledTheOutstandingKey) {
-          // A decided refusal means access did nothing under THIS key. Only that
-          // clears it — a refusal of some other key says nothing about the one still
-          // outstanding.
+          // A decided refusal means access did nothing under THIS key in this call,
+          // and after a no-eligible refusal nothing is left to resume under it. Only
+          // that clears it — a refusal of some other key says nothing about the one
+          // still outstanding. The next form then gets a fresh key, which can claim
+          // tickets that are still valid, subject to the per-order bound.
           unresolvedRedeliveries.clear(staff.organizerId, parsed.value.orderId);
         }
       }
@@ -450,7 +456,9 @@ const resendForm =
       {action.kind === 'redelivered' && (
         <>
           {/* Access's OWN count, not the number of tickets this page happens to
-              have rendered: on a replay it is the original request's. */}
+              have rendered. On a replay it counts the original request's tickets
+              that are still valid (TKT-526), so it can be smaller than the first
+              answer. */}
           <p>
             {action.redelivery.replay
               ? 'This resend had already been sent — access replayed it rather than sending again.'

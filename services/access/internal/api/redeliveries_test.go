@@ -3,6 +3,11 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
@@ -292,5 +297,66 @@ func TestTheTransportReceivesTheResolvedAddressAndTheCapabilityLink(t *testing.T
 	}
 	if m2.count() != 0 {
 		t.Fatalf("%d messages were sent despite the address lookup failing", m2.count())
+	}
+}
+
+// redeliveryClaimInput is one ClaimRedelivery call as the store received it.
+type redeliveryClaimInput struct {
+	org, order uuid.UUID
+	key        string
+}
+
+// recordingRedeliveryStore records each claim's input and answers with claimErr. It
+// counts marks, so a test can prove a refused claim led to no mark.
+type recordingRedeliveryStore struct {
+	mu       sync.Mutex
+	claims   []redeliveryClaimInput
+	marks    int
+	claimErr error
+}
+
+func (r *recordingRedeliveryStore) ClaimRedelivery(_ context.Context, org, order uuid.UUID, key string) (store.RedeliveryClaim, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.claims = append(r.claims, redeliveryClaimInput{org: org, order: order, key: key})
+	return store.RedeliveryClaim{}, r.claimErr
+}
+
+func (r *recordingRedeliveryStore) MarkRedelivered(context.Context, uuid.UUID, string, uuid.UUID, uuid.UUID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.marks++
+	return nil
+}
+
+// TKT-526 COS-5, at the tier that classifies the error. The real router, with response
+// validation on, must answer a no-eligible refusal with 409 and the exact body, and a
+// refused claim sends nothing. The store tests prove when the sentinel is returned; only
+// this test proves the status, the body, and the contract declaration.
+func TestRedeliveryRouteRefusesNoEligibleTickets(t *testing.T) {
+	order, org := uuid.New(), uuid.New()
+	const key = "no-eligible-key"
+	rs := &recordingRedeliveryStore{claimErr: fmt.Errorf("%w: every ticket is void", store.ErrRedeliveryNoEligibleTickets)}
+	m := &countingMailer{}
+	server := newTestServer(nil, nil, internalTok).WithStaffWriteCredential(staffTok).
+		WithRedeliveryStore(rs).WithRedelivery(staticAddressBook{email: "buyer@example.test"}, m, "https://tickets.test")
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/orders/"+order.String()+"/redeliveries",
+		strings.NewReader(`{"organizer_id":"`+org.String()+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(staffWriteHeader, staffTok)
+	req.Header.Set("Idempotency-Key", key)
+	rec := httptest.NewRecorder()
+	server.Router(nil, true).ServeHTTP(rec, req)
+
+	requireExactJSON(t, rec, http.StatusConflict, map[string]any{"error": "no eligible tickets for this resend"})
+	if want := []redeliveryClaimInput{{org: org, order: order, key: key}}; !reflect.DeepEqual(rs.claims, want) {
+		t.Errorf("claims = %+v, want exactly %+v", rs.claims, want)
+	}
+	if n := m.count(); n != 0 {
+		t.Errorf("a refused resend sent %d messages, want 0", n)
+	}
+	if rs.marks != 0 {
+		t.Errorf("a refused resend marked %d tickets, want 0", rs.marks)
 	}
 }

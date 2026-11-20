@@ -66,6 +66,12 @@ var ErrRedeliveryKeyConflict = errors.New("idempotency key reused with a differe
 // RedeliveryBound distinct requests inside RedeliveryWindow.
 var ErrRedeliveryBoundExceeded = errors.New("order has reached its redelivery bound")
 
+// ErrRedeliveryNoEligibleTickets reports that the claim has no commercially valid ticket
+// to send (TKT-526). Either every issued ticket of the order in the organizer's scope is
+// refunded or exchanged, or a replay's key holds attempts only for such tickets. It is a
+// decided refusal: nothing is written and nothing is sent.
+var ErrRedeliveryNoEligibleTickets = errors.New("no eligible tickets for this resend")
+
 // RedeliveryTicket is one ticket to resend, with the message id minted for THIS
 // request. BuyerID and GuestOrderRef are here because the caller must resolve the
 // address and build the capability link; neither is ever persisted by this package
@@ -83,6 +89,11 @@ type RedeliveryTicket struct {
 	// partway leaves attempt rows with nothing sent against them, and a replay that
 	// did not distinguish those would report the whole order delivered when some of
 	// it never left (ai-review F2).
+	//
+	// A claim returns only tickets that were valid when it read them under the ticket
+	// locks (TKT-526), so false here means an eligible pending attempt. A pending
+	// attempt on a ticket that a refund or an exchange voided is terminal: a replay
+	// does not return it, and any later retry or reconciliation must exclude it.
 	Accepted bool
 }
 
@@ -132,6 +143,14 @@ func redeliveryMessageID(organizer uuid.UUID, key string, ticketID uuid.UUID) uu
 
 // ClaimRedelivery binds an idempotency key to an order, enforces the per-order bound
 // and returns the order's tickets with the message id each one is to be sent under.
+//
+// ONLY COMMERCIALLY VALID TICKETS (TKT-526, ADR-068 amendment). A ticket with a
+// `refunded` or `exchanged` fact is skipped (ticketCommerciallyVoid).
+// An order whose issued tickets are all void returns ErrRedeliveryNoEligibleTickets
+// before the key lookup, the bound and any insert. A fresh claim stores the count of
+// valid tickets and mints attempts only for them. A replay returns only its key's
+// attempts on tickets that are still valid, and refuses when none is left. An order
+// with no ticket rows in the organizer's scope is still ErrTicketsNotIssued.
 //
 // On a FIRST claim those ids are minted here; on a replay they are read back from the
 // attempt rows, so a resume re-sends under the id the first attempt used. Stated
@@ -203,6 +222,27 @@ func (p *Postgres) ClaimRedelivery(ctx context.Context, org, order uuid.UUID, ke
 		return RedeliveryClaim{}, fmt.Errorf("%w: order has no issued tickets", ErrTicketsNotIssued)
 	}
 
+	// TKT-526: only commercially valid tickets are resent. The check runs under the
+	// ticket locks taken above, so a refund or an exchange either committed before
+	// this read or waits for this claim to commit. The order's tickets are already in
+	// the organizer's scope, so the refusal below discloses nothing about another
+	// organizer's order. It comes before the key lookup, the bound and every insert: an
+	// all-voided order is refused the same way whether the key is new, bound to this
+	// order or bound to another one, and the refusal writes nothing.
+	eligible := make([]RedeliveryTicket, 0, len(all))
+	for _, t := range all {
+		void, err := ticketCommerciallyVoid(ctx, tx, t.TicketID)
+		if err != nil {
+			return RedeliveryClaim{}, fmt.Errorf("check eligibility of ticket %s: %w", t.TicketID, err)
+		}
+		if !void {
+			eligible = append(eligible, t)
+		}
+	}
+	if len(eligible) == 0 {
+		return RedeliveryClaim{}, ErrRedeliveryNoEligibleTickets
+	}
+
 	// The key binds to one order, checked BEFORE the bound: a replay must not be
 	// refused by a quota it already passed once.
 	var boundOrder uuid.UUID
@@ -213,9 +253,16 @@ func (p *Postgres) ClaimRedelivery(ctx context.Context, org, order uuid.UUID, ke
 		if boundOrder != order {
 			return RedeliveryClaim{}, ErrRedeliveryKeyConflict
 		}
-		claimed, err := loadRedeliveryAttempts(ctx, tx, org, key, all)
+		// A replay resumes only the attempts its key minted for tickets that are still
+		// valid. It never mints an attempt for an eligible ticket outside the key, and
+		// it refuses rather than report an empty success: a request whose every attempt
+		// is on a voided ticket has nothing left to send.
+		claimed, err := loadRedeliveryAttempts(ctx, tx, org, key, eligible)
 		if err != nil {
 			return RedeliveryClaim{}, err
+		}
+		if len(claimed) == 0 {
+			return RedeliveryClaim{}, ErrRedeliveryNoEligibleTickets
 		}
 		return RedeliveryClaim{OrderID: order, Tickets: claimed, Replay: true}, tx.Commit()
 	case !errors.Is(err, sql.ErrNoRows):
@@ -233,7 +280,7 @@ func (p *Postgres) ClaimRedelivery(ctx context.Context, org, order uuid.UUID, ke
 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO redelivery_requests(organizer_id,idempotency_key,order_id,ticket_count) VALUES($1,$2,$3,$4)`,
-		org, key, order, len(all)); err != nil {
+		org, key, order, len(eligible)); err != nil {
 		// Two requests reusing one key against DIFFERENT orders lock disjoint ticket
 		// rows, so nothing above serializes them: both see no binding and race here.
 		// The loser surfaces 23505 once the winner commits. Returning it raw would
@@ -245,21 +292,25 @@ func (p *Postgres) ClaimRedelivery(ctx context.Context, org, order uuid.UUID, ke
 		return RedeliveryClaim{}, err
 	}
 
-	for i := range all {
-		all[i].MessageID = redeliveryMessageID(org, key, all[i].TicketID)
+	for i := range eligible {
+		eligible[i].MessageID = redeliveryMessageID(org, key, eligible[i].TicketID)
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO redelivery_attempts(organizer_id,idempotency_key,ticket_id,message_id) VALUES($1,$2,$3,$4)`,
-			org, key, all[i].TicketID, all[i].MessageID); err != nil {
-			return RedeliveryClaim{}, fmt.Errorf("claim redelivery of ticket %s: %w", all[i].TicketID, err)
+			org, key, eligible[i].TicketID, eligible[i].MessageID); err != nil {
+			return RedeliveryClaim{}, fmt.Errorf("claim redelivery of ticket %s: %w", eligible[i].TicketID, err)
 		}
 	}
-	return RedeliveryClaim{OrderID: order, Tickets: all}, tx.Commit()
+	return RedeliveryClaim{OrderID: order, Tickets: eligible}, tx.Commit()
 }
 
 // loadRedeliveryAttempts reads back the message ids a previous claim minted, in the
 // same ticket order the caller was given the first time. A replay must hand back the
 // ORIGINAL ids: re-deriving them would be right today and silently wrong the moment
 // the derivation changes, and the stored row is the record of what was actually sent.
+//
+// The caller passes only the tickets that are still valid (TKT-526). A replay excludes
+// an attempt on a voided ticket whether it is accepted or pending. A pending one is
+// terminal.
 func loadRedeliveryAttempts(ctx context.Context, tx *sql.Tx, org uuid.UUID, key string, all []RedeliveryTicket) ([]RedeliveryTicket, error) {
 	out := make([]RedeliveryTicket, 0, len(all))
 	for _, t := range all {
@@ -296,6 +347,9 @@ func loadRedeliveryAttempts(ctx context.Context, tx *sql.Tx, org uuid.UUID, key 
 //
 // Idempotency is settled HERE, before appendLifecycle, never inside it — the append
 // path's own contract (lifecycle.go). A repeat commits without appending.
+//
+// A ticket voided after the claim is a successful no-op (TKT-526): its attempt stays
+// pending, which makes it terminal, and the trail gains nothing.
 func (p *Postgres) MarkRedelivered(ctx context.Context, org uuid.UUID, key string, ticketID, messageID uuid.UUID) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -316,6 +370,25 @@ func (p *Postgres) MarkRedelivered(ctx context.Context, org uuid.UUID, key strin
 	}
 	if id.OrganizerID != org {
 		return ErrTicketCredential
+	}
+
+	// TKT-526: a refund or an exchange that committed while this call waited for the
+	// ticket lock wins. The check is a separate statement after the lock, so it reads
+	// the committed void; folded into the locking statement it would read the snapshot
+	// taken before the wait. It follows the organizer check, so another organizer's
+	// voided ticket is still refused rather than answered with success.
+	//
+	// A voided ticket's attempt stays pending and is TERMINAL. Setting accepted_at
+	// alone would claim the trail recorded the hand-off, and appending would record a
+	// resend of a dead ticket. Success lets the caller go on to the other tickets. The
+	// transport may already have taken the message, so the trail can lack that
+	// hand-off (ADR-068, Amended by TKT-526).
+	void, err := ticketCommerciallyVoid(ctx, tx, ticketID)
+	if err != nil {
+		return fmt.Errorf("check eligibility of ticket %s: %w", ticketID, err)
+	}
+	if void {
+		return tx.Commit()
 	}
 
 	res, err := tx.ExecContext(ctx, `

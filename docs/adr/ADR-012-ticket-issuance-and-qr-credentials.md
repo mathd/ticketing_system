@@ -99,9 +99,14 @@ that the response carries. It does not store the verdict, and there is no migrat
 2. If not, and the history has an `exchanged` event, the verdict is voided with reason `exchanged`.
 3. If not, the verdict is valid.
 
-The order of the events has no effect. A later event does not restore validity. Access can record
-`delivered`, `redelivered` and admission events after a void, and each of them is a fact about a dead
-ticket.
+The order of the events has no effect. A later event does not restore validity. Access can record a
+first `delivered` event and admission events after a void. A history can also hold a historical
+`redelivered` event after a void. Each of them is a fact about a dead ticket and has no effect on
+validity. A staff resend uses the same commercial verdict: it skips a refunded or exchanged ticket
+([ADR-068 § Amended by TKT-526](./ADR-068-staff-ticket-redelivery.md#amended-by-tkt-526-resend-only-commercially-valid-tickets-2026-11-20)).
+
+> **Amended by TKT-526.** The original text was: "Access can record `delivered`, `redelivered` and
+> admission events after a void, and each of them is a fact about a dead ticket."
 
 **Refund precedence.** Rule 1 comes before rule 2 because the live gate checks in the same order. The
 single-entry scan and the pass scan check for a refund first and for an exchange second (`postgres.go`
@@ -142,8 +147,11 @@ and what it does not.
 verdict and shows "Service unavailable" (503). It does not fall back to history. An old storefront
 ignores the new field and continues to work.
 
-**Follow-ups, not fixed here.** A staff resend selects every ticket of the order, voided tickets
-included, and records `redelivered` on them.
+**Follow-ups, not fixed here.** None remain from this amendment. The staff resend follow-up is
+closed by [ADR-068 § Amended by TKT-526](./ADR-068-staff-ticket-redelivery.md#amended-by-tkt-526-resend-only-commercially-valid-tickets-2026-11-20).
+
+> **Amended by TKT-526.** This paragraph said: "A staff resend selects every ticket of the order,
+> voided tickets included, and records `redelivered` on them." TKT-526 fixed that.
 
 > **Amended by TKT-527.** This paragraph also said: "The refund writer counts an exchanged ticket as
 > refundable. Commerce blocks this path today." TKT-527 fixed that. The refund writer no longer

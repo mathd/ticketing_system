@@ -40,7 +40,7 @@ this register when adding an ADR or changing its status. Preserve existing decis
 | ADR-009 | [Contract-first service APIs (OpenAPI + oapi-codegen) and the domain-event envelope](ADR-009-contract-first-apis.md) | Accepted |
 | ADR-010 | [PostgreSQL claim transaction and hold lifecycle](ADR-010-postgres-claim-transaction.md) | Accepted |
 | ADR-011 | [Checkout finalization and canonical money journal](ADR-011-checkout-journal-protocol.md) | Accepted |
-| ADR-012 | [Ticket issuance, lifecycle and QR credential boundary](ADR-012-ticket-issuance-and-qr-credentials.md) | Accepted; amended by TKT-527 |
+| ADR-012 | [Ticket issuance, lifecycle and QR credential boundary](ADR-012-ticket-issuance-and-qr-credentials.md) | Accepted; amended by TKT-527, TKT-526 |
 | ADR-013 | [Concurrent-occupancy capping is out of the reservation claim core](ADR-013-occupancy-capping-scoped-exception.md) | Accepted scoped exception to ADR-005 |
 | ADR-014 | [Typed dated-slot implementation choices](ADR-014-typed-dated-slot-implementation.md) | Accepted |
 | ADR-015 | [Series and season grouping with slot-derived lifecycle](ADR-015-series-season-grouping-and-lifecycle.md) | Accepted |
@@ -96,7 +96,7 @@ this register when adding an ADR or changing its status. Preserve existing decis
 | ADR-065 | [Parked recovery orders are a gauge, not an alarm](ADR-065-parked-recovery-order-observability.md) | Accepted |
 | ADR-066 | [Scanners pull a voided-ticket feed, and the staleness ceiling is the scanner's to enforce](ADR-066-scanner-voided-ticket-feed.md) | Accepted; amended by ADR-085 |
 | ADR-067 | [A wedged exchange is unwound by an operator, and the refusal is decided by payments](ADR-067-wedged-exchange-operator-unwind.md) | Accepted |
-| ADR-068 | [Staff re-delivery of a completed order's tickets](ADR-068-staff-ticket-redelivery.md) | Accepted |
+| ADR-068 | [Staff re-delivery of a completed order's tickets](ADR-068-staff-ticket-redelivery.md) | Accepted; amended by TKT-526 |
 | ADR-069 | [The payment token is opaque to commerce, and an exchange upgrade needs a real one](ADR-069-opaque-payment-tokens-and-exchange-upgrade-instruments.md) | Accepted |
 | ADR-070 | [The reversal claims' organizer check is a column comparison, not a correlated subquery](ADR-070-indexable-reversal-claim-scoping.md) | Accepted |
 | ADR-071 | [Cross-service ordering is an honest-caller guarantee, enforced in the caller and declared at the boundary](ADR-071-internal-mutation-ordering-honest-caller.md) | Accepted |
