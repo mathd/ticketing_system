@@ -674,7 +674,7 @@ def cost_text(data: dict[str, Any]) -> str:
             money(amount, currency, data["report"]["language"])
             for currency, amount in sorted(totals.items())
         )
-        or LABELS[data["report"]["language"]]["none"]
+        or LABELS[data["report"]["language"]]["unknown"]
     )
 
 
