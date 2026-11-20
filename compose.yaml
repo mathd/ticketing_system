@@ -174,7 +174,7 @@ services:
         --filter "platform.access.admission-policy-conflict.alarm" --pull --deliver all --ack explicit --defaults
 
   lgtm:
-    image: grafana/otel-lgtm:0.40.0@sha256:72e05804790e6e0d8c0b70a6d5ff1f721ef7b203463374631e99aa3429bd0cf6
+    image: grafana/otel-lgtm:0.41.0@sha256:2e3290657f2f2a256c7a9175f097424a3ac5b54840741ace433e108e109348b6
     restart: unless-stopped
     # TKT-337: the versioned checkout-path dashboard. Mount the provider as ONE
     # file: a directory mount over the image's provisioning/dashboards would
