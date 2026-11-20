@@ -18,15 +18,23 @@ export async function oldReader({ browser, BASE, token, check, fixture }) {
     return { path, sha256: sha(bytes) };
   });
   assert.equal(manifest.find(row => row.path === 'web/scanner/src/occurrences.ts').sha256, '0b8ea0c89c4f75ece7ce306d27d1a28ec4824365adef154faac172c624413bfc');
-  assert.equal(execFileSync('pnpm',['--version'],{ cwd: source }).toString().trim(),'11.12.0');
   try {
+    // The manifest above records the original baseline bytes. Only the extracted
+    // copy's package.json is changed below, to pick a non-deprecated pnpm for the build.
+    const packagePath = join(source,'package.json');
+    const packageJson = JSON.parse(readFileSync(packagePath,'utf8'));
+    packageJson.packageManager = 'pnpm@11.13.1';
+    writeFileSync(packagePath,`${JSON.stringify(packageJson,null,2)}\n`);
+    const pnpmVersion = execFileSync('pnpm',['--version'],{ cwd: source }).toString().trim();
+    console.log('B3 old reader build pnpm', pnpmVersion);
+    assert.equal(pnpmVersion,'11.13.1');
     for (const args of [['install','--offline','--frozen-lockfile'],['--filter','scanner','build']]) {
       try { execFileSync('pnpm',args,{ cwd: source, stdio: 'pipe', timeout: 120000 }); }
       catch (error) { throw new Error(`B3 prerequisite failed: pnpm ${args.join(' ')}: ${error.stderr?.toString() || error.message}`); }
     }
     const dist = join(source,'web/scanner/dist');
     const assets = new Map([['/scanner/', readFileSync(join(dist,'index.html'))], ['/scanner/favicon.svg', readFileSync(join(dist,'favicon.svg'))], ...readdirSync(join(dist,'assets')).map(name => [`/scanner/assets/${name}`, readFileSync(join(dist,'assets',name))])]);
-    console.log('B3 frozen source manifest', JSON.stringify({ base, pnpm: '11.12.0', combined: sha(JSON.stringify(manifest)), files: manifest, assets: [...assets].map(([path, bytes]) => ({ path, sha256: sha(bytes) })) }));
+    console.log('B3 frozen source manifest', JSON.stringify({ base, pnpm: pnpmVersion, combined: sha(JSON.stringify(manifest)), files: manifest, assets: [...assets].map(([path, bytes]) => ({ path, sha256: sha(bytes) })) }));
     const context = await browser.newContext({ baseURL: BASE });
     const old = await context.newPage(), loaded = [], routeErrors = [];
     const scans = [], reconciliations = [];
