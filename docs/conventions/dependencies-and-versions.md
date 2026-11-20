@@ -7,7 +7,7 @@ release**, looked up at implementation time — never assumed from memory. Appli
 TypeScript, Vite, PostgreSQL, Redis, NATS, GitHub Actions, linters, everything. Pinning behind
 latest requires a stated compatibility reason, recorded next to the pin.
 
-Current anchors (update as they move): Go 1.27.3 · Node 26.13.0 · pnpm 12 (pinned via `packageManager`,
+Current anchors (update as they move): Go 1.27.4 · Node 26.13.0 · pnpm 12 (pinned via `packageManager`,
 which also enforces pnpm's supply-chain `minimumReleaseAge` policy) · PostgreSQL 18.6 · Vite 8 ·
 React 19 · TypeScript `~7.0.2`. Read the manifests and lockfile for exact resolutions.
 
@@ -27,9 +27,9 @@ React 19 · TypeScript `~7.0.2`. Read the manifests and lockfile for exact resol
 
 ### Go directive and current holds (TKT-523)
 
-- **The `go` directive in `go.work` and in every `go.mod` names the patch release, 1.27.3.** With
+- **The `go` directive in `go.work` and in every `go.mod` names the patch release, 1.27.4.** With
   `go 1.27.0`, the local `GOTOOLCHAIN=auto` selection can run 1.27.0, which has the standard-library
-  advisories, while CI runs 1.27.3. The directive is a minimum, not a lock: a newer local Go can
+  advisories, while CI runs 1.27.4. The directive is a minimum, not a lock: a newer local Go can
   still run. `go.work` must be at least every module's directive.
 - **A Go patch release can break the linter.** golangci-lint v2.13.2 cannot read the go1.27.2
   export data. `check-go-toolchain` compares minor versions only, so it stays green for that pair.

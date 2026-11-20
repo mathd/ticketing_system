@@ -28,7 +28,15 @@ export async function predecessorExit({ browser, BASE, token, fixture, check }) 
     catch (error) { throw new Error(`TKT-399 predecessor prerequisite pnpm ${args.join(' ')}: ${error.stdout?.toString()} ${error.stderr?.toString()}`); }
   };
   try {
-    assert.equal(execFileSync('pnpm', ['--version'], { cwd: source }).toString().trim(), '11.12.0');
+    // The manifest above records the original baseline bytes. Only the extracted
+    // copy's package.json is changed below, to pick a non-deprecated pnpm for the build.
+    const packagePath = join(source, 'package.json');
+    const packageJson = JSON.parse(readFileSync(packagePath, 'utf8'));
+    packageJson.packageManager = 'pnpm@11.13.1';
+    writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    const pnpmVersion = execFileSync('pnpm', ['--version'], { cwd: source }).toString().trim();
+    console.log('TKT-399 predecessor build pnpm', pnpmVersion);
+    assert.equal(pnpmVersion, '11.13.1');
     run(['install', '--offline', '--frozen-lockfile']); run(['--filter', 'scanner', 'build']);
     const app = join(source, 'web/scanner');
     // The App build above is unchanged. This second entry calls the exact extracted modules.
@@ -53,7 +61,7 @@ window.__predecessorProof = async raw => {
       for (const name of readdirSync(dist)) if (name !== 'assets') assets.set(`/scanner/${name === 'index.html' ? '' : name}`, readFileSync(join(dist, name)));
       for (const name of readdirSync(join(dist, 'assets'))) assets.set(`/scanner/assets/${name}`, readFileSync(join(dist, 'assets', name)));
     }
-    console.log('TKT-399 exact predecessor manifest', JSON.stringify({ baseline: BASELINE, sourceDigest: hash(JSON.stringify(manifest)), sources: manifest, assets: [...assets].map(([path, bytes]) => ({ path, sha256: hash(bytes) })) }));
+    console.log('TKT-399 exact predecessor manifest', JSON.stringify({ baseline: BASELINE, pnpm: pnpmVersion, sourceDigest: hash(JSON.stringify(manifest)), sources: manifest, assets: [...assets].map(([path, bytes]) => ({ path, sha256: hash(bytes) })) }));
     const context = await browser.newContext({ baseURL: BASE }); await installProbe(context);
     const pending = await context.newPage(), queued = await context.newPage(), recovered = await context.newPage();
     const leaseTime = new Date();
