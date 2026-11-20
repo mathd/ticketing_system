@@ -134,9 +134,12 @@ The maintained scanner suite builds two frozen clients from Git. The object data
 `3752a96a16a2ed6e7fe267206c3dbd05bf5271bf` for predecessor Exit compatibility. A shallow clone can
 lack these objects. Check both with `git cat-file -e <commit>^{commit}` before the run.
 
-Both extracted historical workspaces require pnpm `11.12.0`; the current workspace requires
-`12.18.0`. Use a manifest-aware launcher that selects each version from its working directory.
-A global installation of only pnpm `12.18.0` does not satisfy the historical version assertions.
+The historical baselines pin pnpm `11.12.0`, a broken release that pnpm `12.18.0` refuses to
+install. Each harness therefore sets `packageManager` to `pnpm@11.13.1` in its extracted copy, after
+it records the original source manifest, and asserts that version. The current workspace requires
+`12.18.0`. Use a manifest-aware pnpm that selects the version from the working directory, such as
+pnpm `12.18.0` with its own version management. A pnpm that ignores `packageManager` fails the
+historical version assertions.
 Cache both package-manager versions and the packages selected by both historical lockfiles before
 running the suite. Historical installs use `--offline --frozen-lockfile`, so an empty or incomplete
 store fails a prerequisite before the browser assertions. The code establishes these requirements;
