@@ -5,7 +5,7 @@ Local Docker Compose testbed. Run commands from the repo root.
 ## Toolchain
 
 Use the versions selected in [go.work](../go.work), [package.json](../package.json), and
-[CI](../.github/workflows/check.yaml). At this revision, Go requires 1.27.3; CI and the web
+[CI](../.github/workflows/check.yaml). At this revision, Go requires 1.27.4; CI and the web
 images select Node 26.13.0, and the package manager is pnpm 12.18.0. The gate requires the active Go minor version to match the declared
 1.27 line and the pinned linter to read its export data. Patch compatibility still needs the lint
 stage. See [toolchain check](../scripts/check-go-toolchain.sh). See [dependency policy](conventions/dependencies-and-versions.md)
