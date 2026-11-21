@@ -3,6 +3,7 @@ package psp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -397,8 +398,9 @@ func TestMapRefundStatusClassifiesTerminalAndNonTerminalStatuses(t *testing.T) {
 // released hold: no fact is fabricated for an out-of-band provider action).
 func TestStripeRefundResolutionIgnoresForeignRefunds(t *testing.T) {
 	stub := newStripeStub(t, map[string]stubResp{
-		"GET /v1/refunds":  {200, refundListForeignOnly},
-		"POST /v1/refunds": {200, `{"id":"re_ours","object":"refund","amount":1250,"currency":"eur","status":"succeeded","payment_intent":"pi_test_authonly","metadata":{"compensation_key":"psp-comp-v1:deadbeef"}}`},
+		"GET /v1/refunds":         {200, refundListForeignOnly},
+		"POST /v1/refunds":        {200, `{"id":"re_ours","object":"refund","amount":1250,"currency":"eur","status":"succeeded","payment_intent":"pi_test_authonly","metadata":{"compensation_key":"psp-comp-v1:deadbeef"}}`},
+		"GET /v1/refunds/re_ours": {200, `{"id":"re_ours","object":"refund","amount":1250,"currency":"eur","status":"succeeded","payment_intent":"pi_test_authonly","metadata":{"compensation_key":"psp-comp-v1:deadbeef"}}`},
 	})
 	s := newStripeForStub(stub)
 	got, err := s.Refund(context.Background(), "pi_test_authonly", "psp-comp-v1:deadbeef", 1250, "EUR")
@@ -408,8 +410,9 @@ func TestStripeRefundResolutionIgnoresForeignRefunds(t *testing.T) {
 	if got.ProviderRef != "re_ours" {
 		t.Fatalf("a dashboard refund must not be adopted; want our own re_, got %+v", got)
 	}
-	if len(stub.requests) != 2 || stub.requests[0].method != http.MethodGet || stub.requests[1].method != http.MethodPost {
-		t.Fatalf("want list-then-submit, got %+v", stub.requests)
+	if len(stub.requests) != 3 || stub.requests[0].method != http.MethodGet || stub.requests[1].method != http.MethodPost ||
+		stub.requests[2].method != http.MethodGet || stub.requests[2].path != "/v1/refunds/re_ours" {
+		t.Fatalf("want list, submit, then a re-read of the submitted refund; got %+v", stub.requests)
 	}
 }
 
@@ -442,8 +445,9 @@ func TestStripeRefundDoesNotSubmitWhenTheListingFails(t *testing.T) {
 func TestStripeRefundSucceeded(t *testing.T) {
 	const refundOK = `{"id":"re_test_1","object":"refund","amount":1250,"currency":"eur","status":"succeeded","payment_intent":"pi_test_authonly","charge":"ch_test_1"}`
 	stub := newStripeStub(t, map[string]stubResp{
-		"GET /v1/refunds":  {200, refundListEmpty},
-		"POST /v1/refunds": {200, refundOK},
+		"GET /v1/refunds":           {200, refundListEmpty},
+		"POST /v1/refunds":          {200, refundOK},
+		"GET /v1/refunds/re_test_1": {200, refundOK},
 	})
 	s := newStripeForStub(stub)
 	got, err := s.Refund(context.Background(), "pi_test_authonly", "psp-comp-v1:deadbeef", 1250, "EUR")
@@ -742,6 +746,9 @@ func TestStripeRefundTreatsIncompleteListPagesAsInconclusive(t *testing.T) {
 		"missing data":         refundListNoData,
 		"not a list":           `{"object":"refund","has_more":false,"data":[]}`,
 		"more pages but empty": refundListMorePagesButEmpty,
+		// R2-2: an entry that cannot be classified is not somebody else's refund.
+		"a null entry":              `{"object":"list","has_more":false,"data":[null]}`,
+		"an entry with no metadata": `{"object":"list","has_more":false,"data":[{"id":"re_x","object":"refund","amount":1250,"currency":"eur","status":"succeeded","payment_intent":"pi_test_authonly"}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			stub := newStripeStub(t, map[string]stubResp{
@@ -798,5 +805,109 @@ func TestStripeRefundResolvesAMatchOnALaterPage(t *testing.T) {
 	}
 	if got.ProviderRef != "re_ours_p2" {
 		t.Fatalf("want the page-2 match adopted, got %+v", got)
+	}
+}
+
+// RA5-2: a POST answer is not current evidence. Within the key retention Stripe replays the
+// ORIGINAL response body for the same key, and a refund that answered `succeeded` can fail
+// later. So a POSTed `succeeded` is re-read by its id before the adapter accepts it, and the
+// CURRENT object decides the result and carries the confirmed money. Every other POST answer
+// (pending, failed, canceled) is already not a success and is not re-read.
+func TestStripeRefundPostSuccessIsReReadFromTheCurrentRefund(t *testing.T) {
+	const posted = `{"id":"re_cached","object":"refund","amount":1250,"currency":"eur","status":"succeeded","payment_intent":"pi_test_authonly","metadata":{"compensation_key":"psp-comp-v1:deadbeef"}}`
+	current := func(status string, amount int64, currency string) string {
+		return fmt.Sprintf(`{"id":"re_cached","object":"refund","amount":%d,"currency":%q,"status":%q,"payment_intent":"pi_test_authonly","metadata":{"compensation_key":"psp-comp-v1:deadbeef"}}`, amount, currency, status)
+	}
+	for _, c := range []struct {
+		name    string
+		post    string
+		reread  stubResp
+		check   func(t *testing.T, got Result, err error)
+		rereads int
+	}{
+		{"the current refund failed", posted, stubResp{200, current("failed", 1250, "eur")}, func(t *testing.T, got Result, err error) {
+			var failed *RefundFailedError
+			if !errors.As(err, &failed) || failed.ProviderRef != "re_cached" || got.Outcome != Unknown {
+				t.Fatalf("Refund = %+v err=%v, want the terminal failure of re_cached", got, err)
+			}
+		}, 1},
+		{"the current refund was canceled", posted, stubResp{200, current("canceled", 1250, "eur")}, func(t *testing.T, got Result, err error) {
+			if !errors.Is(err, ErrRefundFailed) || got.Outcome != Unknown {
+				t.Fatalf("Refund = %+v err=%v, want ErrRefundFailed", got, err)
+			}
+		}, 1},
+		{"the current refund is pending", posted, stubResp{200, current("pending", 1250, "eur")}, func(t *testing.T, got Result, err error) {
+			if !errors.Is(err, ErrRefundPending) || got.Outcome != Unknown || got.Confirmed != nil {
+				t.Fatalf("Refund = %+v err=%v, want ErrRefundPending with no confirmation", got, err)
+			}
+		}, 1},
+		{"the current refund carries other money", posted, stubResp{200, current("succeeded", 999, "eur")}, func(t *testing.T, got Result, err error) {
+			if err != nil || got.Outcome != Refunded || got.Confirmed == nil || *got.Confirmed != (ConfirmedMoney{999, "EUR"}) {
+				t.Fatalf("Refund = %+v err=%v, want Refunded confirmed by the current object (999 EUR)", got, err)
+			}
+		}, 1},
+		{"the posted body has no currency and the current one has", `{"id":"re_cached","object":"refund","amount":1250,"status":"succeeded","payment_intent":"pi_test_authonly"}`,
+			stubResp{200, current("succeeded", 1250, "eur")}, func(t *testing.T, got Result, err error) {
+				if err != nil || got.Outcome != Refunded || got.ProviderRef != "re_cached" || !got.Confirmed.Agrees(1250, "EUR") {
+					t.Fatalf("Refund = %+v err=%v, want Refunded confirmed by the current object", got, err)
+				}
+			}, 1},
+		{"the re-read fails", posted, stubResp{500, `{"error":{"message":"down","type":"api_error"}}`}, func(t *testing.T, got Result, err error) {
+			if err == nil || got.Outcome != Unknown {
+				t.Fatalf("Refund = %+v err=%v, want Unknown", got, err)
+			}
+		}, 1},
+		{"the re-read answers a card error", posted, stubResp{402, `{"error":{"message":"declined","type":"card_error"}}`}, func(t *testing.T, got Result, err error) {
+			if err == nil || got.Outcome != Unknown || got.TerminalNoSideEffect {
+				t.Fatalf("Refund = %+v err=%v, want Unknown and not terminal-no-side-effect: the refund was created", got, err)
+			}
+		}, 1},
+		{"the re-read names another refund", posted, stubResp{200, `{"id":"re_other","object":"refund","amount":1250,"currency":"eur","status":"succeeded","payment_intent":"pi_test_authonly"}`}, func(t *testing.T, got Result, err error) {
+			if err == nil || got.Outcome != Unknown {
+				t.Fatalf("Refund = %+v err=%v, want Unknown", got, err)
+			}
+		}, 1},
+		{"the re-read is not a refund object", posted, stubResp{200, `{"id":"re_cached","object":"charge","amount":1250,"currency":"eur","status":"succeeded","payment_intent":"pi_test_authonly"}`}, func(t *testing.T, got Result, err error) {
+			if err == nil || got.Outcome != Unknown || got.ProviderRef != "re_cached" {
+				t.Fatalf("Refund = %+v err=%v, want Unknown for re_cached: a charge object does not confirm a refund", got, err)
+			}
+		}, 1},
+		{"the re-read has no object type", posted, stubResp{200, `{"id":"re_cached","amount":1250,"currency":"eur","status":"succeeded","payment_intent":"pi_test_authonly"}`}, func(t *testing.T, got Result, err error) {
+			if err == nil || got.Outcome != Unknown {
+				t.Fatalf("Refund = %+v err=%v, want Unknown: a missing object type does not confirm a refund", got, err)
+			}
+		}, 1},
+		{"the posted success has no id", `{"object":"refund","amount":1250,"currency":"eur","status":"succeeded","payment_intent":"pi_test_authonly"}`,
+			stubResp{200, current("succeeded", 1250, "eur")}, func(t *testing.T, got Result, err error) {
+				if err == nil || got.Outcome != Unknown {
+					t.Fatalf("Refund = %+v err=%v, want Unknown", got, err)
+				}
+			}, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			stub := newStripeStub(t, map[string]stubResp{
+				"GET /v1/refunds":           {200, refundListEmpty},
+				"POST /v1/refunds":          {200, c.post},
+				"GET /v1/refunds/re_cached": c.reread,
+			})
+			got, err := newStripeForStub(stub).Refund(context.Background(), "pi_test_authonly", "psp-comp-v1:deadbeef", 1250, "EUR")
+			c.check(t, got, err)
+			posts, rereads := 0, 0
+			for _, req := range stub.requests {
+				switch {
+				case req.method == http.MethodPost:
+					posts++
+				case req.path != "/v1/refunds":
+					// Any GET other than the listing is a re-read, wherever it points.
+					rereads++
+					if req.idempotencyKey != "" {
+						t.Fatalf("the re-read sent an Idempotency-Key %q", req.idempotencyKey)
+					}
+				}
+			}
+			if posts != 1 || rereads != c.rereads {
+				t.Fatalf("POSTs = %d, re-reads = %d, want 1 and %d; requests=%+v", posts, rereads, c.rereads, stub.requests)
+			}
+		})
 	}
 }

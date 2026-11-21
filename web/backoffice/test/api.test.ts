@@ -44,7 +44,7 @@ const PERFORMANCE_ID = '70000000-0000-4000-8000-000000000001';
 const TICKET_TYPE_ID = '80000000-0000-4000-8000-000000000001';
 const CHANNEL_ID = '90000000-0000-4000-8000-000000000001';
 const REFUND_ID = 'a0000000-0000-4000-8000-000000000001';
-import { getOrderState, refundOrder } from '../src/lib/commerce';
+import { confirmsAbandonedRefund, getOrderState, refundOrder } from '../src/lib/commerce';
 import {
   getStaffAvailability,
   InventoryApiError,
@@ -722,6 +722,28 @@ describe('the order console reads (TKT-193)', () => {
     expect(got).toMatchObject({ ok: false, kind, message: 'commerce says no' });
   });
 
+  // TKT-525 S2 (D12). An operator recorded the refund behind this key as
+  // abandoned. Commerce says so with a specific code on its 409, and only there:
+  // the same code on any other status is not that answer, and a 409 without it
+  // stays a generic refusal.
+  it('recognizes refund_abandoned only on a 409', async () => {
+    spyFetch({ error: 'refund abandoned', code: 'refund_abandoned' }, 409);
+    const got = await refundOrder({ orderId: ORDER, quantity: 1, reason: 'r', actor: 'a', assertion: 'a', idempotencyKey: 'k' });
+    expect(got).toMatchObject({ ok: false, kind: 'abandoned' });
+  });
+
+  it.each([
+    ['a 409 with another code', 409, { error: 'refund unresolved', code: 'sold_out' }, 'refused'],
+    ['a 409 with no code', 409, { error: 'refund unresolved' }, 'refused'],
+    ['a 400 with the code', 400, { error: 'invalid', code: 'refund_abandoned' }, 'refused'],
+    ['a 502 with the code', 502, { error: 'refund unresolved', code: 'refund_abandoned' }, 'ambiguous'],
+    ['a 404 with the code', 404, { error: 'not found', code: 'refund_abandoned' }, 'not-found'],
+  ])('does not read %s as abandoned', async (_name, status, body, kind) => {
+    spyFetch(body, status);
+    const got = await refundOrder({ orderId: ORDER, quantity: 1, reason: 'r', actor: 'a', assertion: 'a', idempotencyKey: 'k' });
+    expect(got).toMatchObject({ ok: false, kind });
+  });
+
   // A 200 whose body is not a Refund is not a refund. Rendering a success
   // section from it would claim money moved on the strength of a shape we did
   // not check — and after an ambiguous response the page must say retry, not
@@ -793,6 +815,80 @@ describe('the order console reads (TKT-193)', () => {
     expect(serialized).not.toContain('SENTINEL-QR-URL-VALUE');
     expect(serialized).not.toContain('qr_payload');
     expect(serialized).not.toContain('qr_url');
+  });
+});
+
+// TKT-525 R2-1. The staff order detail settles a saved retry that another staff
+// member cannot replay: true ONLY for a readable 200 naming this order, this
+// organizer and an abandoned refund under exactly this key. Everything else keeps
+// the saved retry.
+describe('the committed-abandonment read (TKT-525)', () => {
+  const ORDER = 'abcdef01-2345-4678-89ab-cdef01234567';
+  const KEY = 'a0000000-0000-4000-8000-000000000001';
+  const ask = { orderId: ORDER, organizerId: TEST_ORGANIZER_ID, idempotencyKey: KEY, assertion: 'session-assertion' };
+  function detail(overrides: Record<string, unknown> = {}, refund: Record<string, unknown> = {}) {
+    return {
+      order_id: ORDER,
+      organizer_id: TEST_ORGANIZER_ID,
+      status: 'completed',
+      refunds: [
+        { refund_id: 'r-other', idempotency_key: 'another-key', abandoned: false },
+        { refund_id: 'r-1', idempotency_key: KEY, abandoned: true, ...refund },
+      ],
+      ...overrides,
+    };
+  }
+
+  it('confirms an abandoned refund under exactly this key, through the staff read', async () => {
+    const calls = spyFetch(detail(), 200);
+    expect(await confirmsAbandonedRefund(ask)).toBe(true);
+    expect(calls[0].url).toBe(`http://localhost:8082/internal/orders/${ORDER}`);
+    expect(calls[0].method).toBe('GET');
+    expect(calls[0].headers['X-Commerce-Staff-Write-Token']).toBe('commerce-test-credential');
+    expect(calls[0].headers['X-Catalog-Organizer-Assertion']).toBe('session-assertion');
+  });
+
+  // R3-2. The form accepts an uppercase UUID; commerce answers in canonical
+  // lowercase. The order and organizer compare case-insensitively.
+  it('confirms when the order and organizer were asked in uppercase and commerce answers lowercase', async () => {
+    const calls = spyFetch(detail(), 200);
+    expect(await confirmsAbandonedRefund({
+      ...ask,
+      orderId: ORDER.toUpperCase(),
+      organizerId: TEST_ORGANIZER_ID.toUpperCase(),
+    })).toBe(true);
+    expect(calls[0].url).toBe(`http://localhost:8082/internal/orders/${ORDER.toUpperCase()}`);
+  });
+
+  it('confirms when the organizer differs only in case', async () => {
+    const organizer = 'fedcba98-7654-4321-8fed-cba987654321';
+    spyFetch(detail({ organizer_id: organizer }), 200);
+    expect(await confirmsAbandonedRefund({ ...ask, organizerId: organizer.toUpperCase() })).toBe(true);
+  });
+
+  it.each([
+    ['the key is not abandoned', detail({}, { abandoned: false }), 200],
+    ['the key differs only in case', detail({}, { idempotency_key: KEY.toUpperCase() }), 200],
+    ['the order id is not a UUID', detail({ order_id: `${ORDER} ` }), 200],
+    ['the organizer id is not a UUID', detail({ organizer_id: 42 }), 200],
+    ['the abandoned flag is not a boolean', detail({}, { abandoned: 'true' }), 200],
+    ['the abandoned flag is absent', detail({}, { abandoned: undefined }), 200],
+    ['only another key is abandoned', detail({}, { idempotency_key: 'another-key-2' }), 200],
+    ['another order answered', detail({ order_id: 'deadbeef-1234-4567-89ab-cdef01234567' }), 200],
+    ['another organizer answered', detail({ organizer_id: '00000000-0000-0000-0000-000000000002' }), 200],
+    ['the refunds are missing', detail({ refunds: undefined }), 200],
+    ['commerce answers 404', { error: 'not found' }, 404],
+    ['commerce answers 500', detail(), 500],
+  ])('keeps the saved retry when %s', async (_name, body, status) => {
+    spyFetch(body, status);
+    expect(await confirmsAbandonedRefund(ask)).toBe(false);
+  });
+
+  it('keeps the saved retry when commerce cannot be reached', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('fetch failed');
+    }));
+    expect(await confirmsAbandonedRefund(ask)).toBe(false);
   });
 });
 

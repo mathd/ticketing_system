@@ -35,11 +35,12 @@ import (
 // package that needs its own database means adding it here — at which point this test
 // fails until scripts/smoke.sh actually creates and exports it.
 var commerceSmokeDSNVars = []string{
-	"COMMERCE_TEST_DATABASE_URL",            // ./internal/store
-	"COMMERCE_BULKREFUND_TEST_DATABASE_URL", // ./internal/bulkrefund
-	"COMMERCE_MAILER_TEST_DATABASE_URL",     // ./internal/mailer
-	"COMMERCE_MIGRATION_TEST_DATABASE_URL",  // ./internal/store migration-upgrade harness (own schemas)
-	"COMMERCE_API_TEST_DATABASE_URL",        // ./internal/api (TKT-167)
+	"COMMERCE_TEST_DATABASE_URL",               // ./internal/store
+	"COMMERCE_BULKREFUND_TEST_DATABASE_URL",    // ./internal/bulkrefund
+	"COMMERCE_MAILER_TEST_DATABASE_URL",        // ./internal/mailer
+	"COMMERCE_MIGRATION_TEST_DATABASE_URL",     // ./internal/store migration-upgrade harness (own schemas)
+	"COMMERCE_API_TEST_DATABASE_URL",           // ./internal/api (TKT-167)
+	"COMMERCE_REFUNDOUTCOME_TEST_DATABASE_URL", // ./internal/refundoutcome (TKT-525)
 }
 
 // TestCommerceSmokeDatabasesAreIsolated fails when two commerce smoke packages would
@@ -96,3 +97,15 @@ var errNoDatabaseInDSN = &dsnError{"DSN names no database"}
 type dsnError struct{ msg string }
 
 func (e *dsnError) Error() string { return e.msg }
+
+// TestCommerceSmokeReachesRealPayments fails when scripts/smoke.sh does not hand
+// ./internal/refundoutcome the running stack's payments service (TKT-525). Its cross-service
+// tests skip without it, so the gate would go green having proved nothing; this fails instead,
+// for the same reason as the DSN test above.
+func TestCommerceSmokeReachesRealPayments(t *testing.T) {
+	for _, envVar := range []string{"COMMERCE_REFUNDOUTCOME_PAYMENTS_URL", "COMMERCE_REFUNDOUTCOME_PAYMENTS_TOKEN"} {
+		if os.Getenv(envVar) == "" {
+			t.Errorf("%s is not set: the refund outcome cross-service tests need the stack's payments (see scripts/smoke.sh)", envVar)
+		}
+	}
+}

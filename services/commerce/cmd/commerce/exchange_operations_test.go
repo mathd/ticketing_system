@@ -286,12 +286,12 @@ func TestCommandRegistryInvokesEveryCommerceCallback(t *testing.T) {
 		enrolReseller: withArgs("enrol-reseller"), revokeReseller: withArgs("revoke-reseller"),
 		listResellers: withArgs("list-resellers"), listParked: withArgs("list-parked"),
 		unparkOrder: withArgs("unpark-order"), listWedgedExchanges: withArgs("list-wedged-exchanges"),
-		unwindExchange: withArgs("unwind-exchange"),
+		unwindExchange: withArgs("unwind-exchange"), recordRefundOutcome: withArgs("record-refund-outcome"),
 	}
 	registry := commandRegistry(callbacks)
 	names := []string{
 		"migrate", "healthcheck", "enrol-reseller", "revoke-reseller", "list-resellers",
-		"list-parked", "unpark-order", "list-wedged-exchanges", "unwind-exchange",
+		"list-parked", "unpark-order", "list-wedged-exchanges", "unwind-exchange", "record-refund-outcome",
 	}
 	if len(registry) != len(names) {
 		t.Fatalf("registry has %d commands, test names %d", len(registry), len(names))

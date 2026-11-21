@@ -14,7 +14,7 @@
 // are optional; the page renders whichever half it can answer.
 import Layout from '../layouts/Layout.astro';
 import { loadOrderConsole, parseLookup, parseRedelivery, parseRefund, unresolvedRefund, type RedeliveryInput, type ConsoleView, type Lookup, type RefundInput } from '../lib/order-console';
-import { refundOrder, type Refund } from '../lib/commerce';
+import { ABANDONED_REFUND_MESSAGE, confirmsAbandonedRefund, refundOrder, type Refund } from '../lib/commerce';
 import { redeliverOrderTickets, type Redelivery } from '../lib/access';
 import { unresolvedRedeliveries } from '../lib/unresolved-redeliveries';
 import { unresolvedRefunds } from '../lib/unresolved-refunds';
@@ -58,6 +58,9 @@ let unresolved: RefundInput | null = null;
 // tickets to the transport without telling us. While this is set the page offers the
 // ORIGINAL key, which access resumes rather than re-sends (ai-review F1).
 let unresolvedResend: RedeliveryInput | null = null;
+// Set when this request retired a saved retry because commerce confirmed that an
+// operator abandoned its refund.
+let retiredAbandoned = false;
 
 if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData();
@@ -136,6 +139,11 @@ if (Astro.request.method === 'POST') {
             ambiguous: outcome.kind === 'ambiguous',
           };
           Astro.response.status = outcome.kind === 'not-found' ? 404 : 200;
+          if (outcome.kind === 'abandoned') {
+            // The fresh form must be BLANK (TKT-525 S2): a new refund after an
+            // abandonment is a deliberate decision, not the old terms resent.
+            submitted = { ...submitted, quantity: '', reason: '' };
+          }
         }
         unresolved = unresolvedRefund(
           outcome,
@@ -238,6 +246,31 @@ if (Astro.request.method === 'POST') {
     }
   } else if (!refunding && !resending) {
     action = { kind: 'lookup-refused', message: lookup.message };
+  }
+
+  // 3. A saved retry whose refund an operator abandoned (TKT-525, ADR-087). The
+  //    retry is keyed by organizer and order and keeps the original request, so
+  //    another staff member's retry is a generic 409 and never `refund_abandoned`.
+  //    Commerce's staff read, scoped by this session's organizer, settles it:
+  //    retire the saved retry only when that read confirms a committed
+  //    abandonment for this exact organizer, order and key. Any other answer
+  //    keeps it. The next form then has a fresh key and this session's identity.
+  if (unresolved) {
+    const saved = unresolved;
+    const abandoned = await confirmsAbandonedRefund({
+      orderId: saved.orderId,
+      organizerId: staff.organizerId,
+      idempotencyKey: saved.idempotencyKey,
+      assertion: staff.organizerAssertion,
+    });
+    if (abandoned && unresolvedRefunds.clear(staff.organizerId, saved.orderId, saved.idempotencyKey)) {
+      unresolved = unresolvedRefunds.find(staff.organizerId, saved.orderId) ?? null;
+      retiredAbandoned = true;
+      // The refusal of the retry says nothing more than this; a new refund after
+      // an abandonment is a deliberate decision, so its form starts blank.
+      if (action.kind === 'refund-refused') action = { kind: 'none' };
+      submitted = { ...submitted, quantity: '', reason: '' };
+    }
   }
 }
 
@@ -425,6 +458,13 @@ const resendForm =
           )}
         </p>
       )}
+    </section>
+  )}
+
+  {retiredAbandoned && (
+    <section class="refund-result">
+      <h2>Refund</h2>
+      <p role="status">{ABANDONED_REFUND_MESSAGE}</p>
     </section>
   )}
 

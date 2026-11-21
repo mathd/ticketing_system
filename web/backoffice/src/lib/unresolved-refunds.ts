@@ -65,7 +65,10 @@ export function createUnresolvedRefundTracker(
   clock: () => number = Date.now,
 ): UnresolvedRefundTracker {
   const outstanding = new Map<string, Entry>();
-  const key = (organizerId: string, orderId: string) => `${organizerId} ${orderId}`;
+  // Organizer and order ids are UUIDs, which compare without case: staff A can type
+  // an order in upper case and staff B in lower case (TKT-525).
+  const key = (organizerId: string, orderId: string) =>
+    `${organizerId.toLowerCase()} ${orderId.toLowerCase()}`;
 
   return {
     note(organizerId, request) {

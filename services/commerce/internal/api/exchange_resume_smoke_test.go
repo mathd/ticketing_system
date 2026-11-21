@@ -522,6 +522,9 @@ func exchangeStackFor(t *testing.T, db *sql.DB, f exchangeFixture, policy *stubP
 		case strings.HasSuffix(r.URL.Path, "/internal/psp/partial-refund"):
 			c.hit("refund-submissions")
 			if policy.terminalRefund.Load() {
+				// Recorded BEFORE the injected 422, so a repeat under different keys is
+				// observable (TKT-525 same-key pin).
+				c.hit("terminal-refund:" + bodyField(r, "idempotency_key") + "|" + bodyField(r, "refund_key"))
 				w.WriteHeader(http.StatusUnprocessableEntity)
 				_, _ = w.Write([]byte(`{"error":"provider refund failed","code":"provider_refund_failed","provider_ref":"re_terminal"}`))
 				return
@@ -607,6 +610,44 @@ func TestDowngradeProviderTerminalRefundIsReported(t *testing.T) {
 	}
 	if s.payments.count("facts") != 0 {
 		t.Fatalf("gross facts calls = %d, want none after terminal refusal", s.payments.count("facts"))
+	}
+}
+
+// Same-key pin 1, exchange half (TKT-525 COS 5, a regression pin). Repeating the original
+// downgrade request after a terminal 422 reaches payments under the same source charge key and
+// the same `exchange-refund:<id>` key, answers the declared 422 again, keeps one exchange
+// binding, and journals nothing.
+func TestDowngradeRepeatAfterTerminal422ReusesTheOriginalKeys(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	const chargeKey = "terminal-downgrade-repeat-src"
+	f := seedExchangeSource(t, db, ctx, chargeKey, 2, 1000)
+	policy := &stubPolicy{}
+	policy.catalogUnit.Store(600)
+	policy.terminalRefund.Store(true)
+	s := exchangeStackFor(t, db, f, policy)
+
+	const key = "terminal-downgrade-repeat-1"
+	for attempt := 1; attempt <= 2; attempt++ {
+		code, out := s.exchange(t, f, key)
+		if code != http.StatusUnprocessableEntity || out["code"] != "provider_refund_failed" {
+			t.Fatalf("attempt %d: exchange = %d %v, want the declared terminal 422", attempt, code, out)
+		}
+	}
+	exchangeID := commercestore.ExchangeID(f.organizer, key)
+	if n := s.payments.count("refund-submissions"); n != 2 {
+		t.Fatalf("refund submissions = %d, want 2", n)
+	}
+	if n := s.payments.count("terminal-refund:" + chargeKey + "|exchange-refund:" + exchangeID.String()); n != 2 {
+		t.Fatalf("submissions under the original charge key and exchange refund key = %d, want both 2", n)
+	}
+	if n := countCommerceRows(t, ctx, db, `SELECT count(*) FROM order_exchanges WHERE organizer_id=$1`, f.organizer); n != 1 {
+		t.Fatalf("exchange bindings = %d, want 1", n)
+	}
+	if s.payments.count("facts") != 0 {
+		t.Fatalf("facts calls = %d, want none", s.payments.count("facts"))
+	}
+	if n := countCommerceRows(t, ctx, db, `SELECT count(*) FROM order_facts WHERE organizer_id=$1`, f.organizer); n != 0 {
+		t.Fatalf("exchange facts = %d, want none", n)
 	}
 }
 

@@ -209,6 +209,92 @@ paths:
         '500': {$ref: '#/components/responses/Error'}
         '422': {description: Provider definitively failed or canceled the refund, content: {application/json: {schema: {$ref: '#/components/schemas/ProviderRefundFailed'}}}}
         '502': {$ref: '#/components/responses/Error'}
+  /internal/psp/partial-refund/failure-proof:
+    get:
+      operationId: pspPartialRefundFailureProof
+      summary: Prove that one post-purchase refund leg's provider refund failed (internal, read-only)
+      description: >-
+        Read-only terminal-failure proof for ONE post-purchase refund leg (TKT-525, ADR-087). Commerce's
+        `record-refund-outcome ... refunded_outside` operator command calls it before it records that
+        the buyer was refunded outside the platform. It binds nothing, appends no fact, writes no
+        marker, and never submits a provider refund: the provider adapter only lists the charge's
+        refunds and reads the one this platform stamped with the leg's provider key.
+
+
+        200 only for the exact leg addressed by (organizer, charge `idempotency_key`, `refund_key`)
+        when it is still bound, carries no abandonment marker, and the provider's stamped refund for
+        it is `failed` or `canceled` with matching amount and currency. The leg and the marker are
+        read again after the provider lookup, and a change between the two reads refuses.
+        `refund_key` must be a canonical UUID: the protocol covers post-purchase refunds, whose
+        refund key is the Commerce refund id, and excludes exchange downgrade keys.
+
+
+        404 = no such charge or leg in this organizer. 409 = conclusive refusal: the leg completed,
+        it carries an abandonment marker, the provider evidence says the refund did not fail (a
+        corroborated `succeeded` refund, or more than one corroborated stamped refund), or the
+        stored evidence changed during the lookup. 502 = no proof could be established: pending or
+        absent provider refund, incomplete or malformed listing, provider unavailable, or a provider
+        without a proof implementation. A stamped refund that does not corroborate the leg (no id,
+        another PaymentIntent, amount or currency) makes the answer 502, also beside a corroborated
+        match. Error bodies are static. The provider idempotency key never
+        crosses this boundary. Behind `PAYMENTS_INTERNAL_TOKEN` only (ADR-071 §5).
+      parameters:
+        - {name: organizer_id, in: query, required: true, schema: {type: string, format: uuid}}
+        - {name: idempotency_key, in: query, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
+        - {name: refund_key, in: query, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Terminal provider failure proven for this leg, content: {application/json: {schema: {$ref: '#/components/schemas/RefundLegFailureProof'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+  /internal/psp/partial-refund/abandon:
+    post:
+      operationId: pspPartialRefundAbandon
+      summary: Mark one post-purchase refund leg abandoned after a proven provider failure (internal)
+      description: >-
+        The payments half of the operator outcome `abandoned` (TKT-525 S2, ADR-087). Commerce's
+        `record-refund-outcome ... abandoned` operator command calls it after it commits its own
+        exclusive abandonment reservation and BEFORE it records its outcome. It writes one append-only marker for the exact leg addressed by (organizer, charge
+        `idempotency_key`, `refund_key`). The marker releases ONLY that leg's allowance in the
+        captured-money ceiling; the leg stays bound with its provider key, the whole-refund
+        exclusion still counts it, and ordinary partial-refund dispatch refuses it with 409 before
+        any provider call.
+
+
+        A new marker requires the same proof as the failure-proof read: the leg is bound, its
+        stored `amount` and `currency` equal the request's, and the provider's stamped refund for
+        it is `failed` or `canceled`. The provider lookup runs with no database lock or open
+        transaction. One short transaction then locks the operation and the leg, rechecks the
+        bound status and that the charge's provider reference and the leg's provider key are the
+        ones the proof used, and inserts the marker. 200 carries the provider's reference.
+
+
+        Replay: when the marker already exists, 200 answers from the committed marker WITHOUT a
+        provider call, so a caller that lost the first response can always finish. A marker that
+        commits concurrently with the same reference is a replay; with another reference it is a
+        409.
+
+
+        404 = no such charge or leg in this organizer. 409 = conclusive refusal: the leg completed,
+        the request's money differs from the leg's, the provider evidence says the refund did not
+        fail, the evidence changed during the lookup, or a contradictory marker exists. 502 = no
+        proof could be established (pending or absent provider refund, incomplete or malformed
+        listing, provider unavailable, or a provider without a proof implementation); nothing was
+        written. Error bodies are static. The provider idempotency key never crosses this boundary.
+        Behind `PAYMENTS_INTERNAL_TOKEN` only (ADR-071 §5): payments relies on the authorized
+        Commerce caller for the operator workflow.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/RefundLegAbandon'}}}}
+      responses:
+        '200': {description: Leg marked abandoned (or replay of the committed marker), content: {application/json: {schema: {$ref: '#/components/schemas/RefundLegFailureProof'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
 components:
   parameters:
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
@@ -509,6 +595,29 @@ components:
         # NOT promoted to confirmed evidence.
         confirmed_captured_amount: {type: integer, format: int64}
         confirmed_currency: {type: string, pattern: '^[A-Z]{3}$'}
+    RefundLegAbandon:
+      # One abandonment request (TKT-525 S2). amount and currency are what the caller expects
+      # the leg to hold; payments refuses with 409 when the stored leg differs.
+      type: object
+      additionalProperties: false
+      required: [organizer_id, idempotency_key, refund_key, amount, currency]
+      properties:
+        organizer_id: {type: string, format: uuid}
+        idempotency_key: {type: string, minLength: 1, maxLength: 200}
+        refund_key: {type: string, format: uuid}
+        amount: {type: integer, format: int64, minimum: 1}
+        currency: {type: string, pattern: '^[A-Z]{3}$'}
+    RefundLegFailureProof:
+      # The provider's terminal-failure evidence for one stamped refund leg (TKT-525). The
+      # reference is the provider's own id for the failed or canceled refund; amount and currency
+      # are the leg's stored figures, which the provider object corroborated.
+      type: object
+      additionalProperties: false
+      required: [provider_ref, amount, currency]
+      properties:
+        provider_ref: {type: string, pattern: '^re_.+', maxLength: 255}
+        amount: {type: integer, format: int64, minimum: 1}
+        currency: {type: string, pattern: '^[A-Z]{3}$'}
     RefundLegState:
       # One post-purchase refund leg's evidence (TKT-168). Never contains the provider
       # idempotency key, the provider reference, or any other provider identity — the leg

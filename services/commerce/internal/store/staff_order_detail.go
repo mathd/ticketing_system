@@ -48,6 +48,11 @@ type StaffOrderRefund struct {
 	Actor          string
 	CreatedAt      time.Time
 	CompletedAt    *time.Time
+	// Abandoned reports a committed `abandoned` operator outcome for this refund (TKT-525,
+	// ADR-087): the platform will not submit or record a refund under its key again. A
+	// provider request admitted before the abandonment is outside that promise (ADR-087 §13).
+	// A pending abandonment reservation does not set it.
+	Abandoned bool
 }
 
 // StaffOrderDetail is what a credentialed staff caller may see about one order.
@@ -168,10 +173,13 @@ func readStaffOrderDetail(ctx context.Context, db *sql.DB, org, order uuid.UUID,
 	// available and costs nothing — and a read whose two halves are scoped by different
 	// arguments is one refactor away from disagreeing.
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, status, quantity, amount, currency, idempotency_key, actor, created_at, completed_at
-		FROM order_refunds
-		WHERE organizer_id=$1 AND order_id=$2
-		ORDER BY created_at, id`, org, order)
+		SELECT rf.id, rf.status, rf.quantity, rf.amount, rf.currency, rf.idempotency_key, rf.actor, rf.created_at, rf.completed_at,
+		       EXISTS (SELECT 1 FROM refund_outcomes o
+		               WHERE o.organizer_id = rf.organizer_id AND o.subject_kind = 'order_refund'
+		                 AND o.subject_id = rf.id AND o.kind = 'abandoned')
+		FROM order_refunds rf
+		WHERE rf.organizer_id=$1 AND rf.order_id=$2
+		ORDER BY rf.created_at, rf.id`, org, order)
 	if err != nil {
 		return StaffOrderDetail{}, err
 	}
@@ -183,7 +191,7 @@ func readStaffOrderDetail(ctx context.Context, db *sql.DB, org, order uuid.UUID,
 		var f StaffOrderRefund
 		var completed sql.NullTime
 		if err := rows.Scan(&f.RefundID, &f.Status, &f.Quantity, &f.Amount, &f.Currency,
-			&f.IdempotencyKey, &f.Actor, &f.CreatedAt, &completed); err != nil {
+			&f.IdempotencyKey, &f.Actor, &f.CreatedAt, &completed, &f.Abandoned); err != nil {
 			return StaffOrderDetail{}, err
 		}
 		if completed.Valid {

@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -81,6 +82,23 @@ func (s *Server) pspPartialRefund(w http.ResponseWriter, r *http.Request) {
 		write(w, 200, map[string]any{"status": leg.Status, "fact_id": leg.FactID, "amount": leg.Amount, "currency": leg.Currency, "replay": true})
 		return
 	}
+	// An abandoned leg is never submitted again (TKT-525 S2, ADR-087): an operator recorded,
+	// on the provider's own terminal-failure evidence, that nobody will refund this attempt, and
+	// its allowance is already released. Read in its own short statement right before the
+	// provider call; no lock spans the HTTP call. A read error fails closed.
+	//
+	// A dispatch that passes this read before a marker commits can still make one POST under
+	// the stored provider key, which the provider deduplicates within its key retention. Its
+	// answer is never recorded: after the provider answers, CompleteRefundLeg reads the marker
+	// again under the leg lock abandonment takes, in the transaction that would append the fact
+	// and complete the leg (D34, ADR-087 §13).
+	if _, abandoned, err := s.journal.LookupRefundLegAbandonment(r.Context(), in.OrganizerID, key, refundKey); err != nil {
+		write(w, 500, map[string]string{"error": "lookup refund leg abandonment"})
+		return
+	} else if abandoned {
+		write(w, 409, map[string]string{"error": "refund leg abandoned"})
+		return
+	}
 	// A replayed leg re-submits under the SAME derived provider key. The Stripe adapter
 	// resolves before it submits (ADR-032 §Refund, TKT-116) — it lists the PaymentIntent's
 	// refunds and adopts the one carrying this key's compensation stamp — so a settled leg
@@ -96,7 +114,11 @@ func (s *Server) pspPartialRefund(w http.ResponseWriter, r *http.Request) {
 		write(w, 502, map[string]string{"error": "provider refund unresolved"})
 		return
 	}
-	if err := result.Validate(); err != nil {
+	// An invalid result that does not claim Refunded is refused at once. An invalid Refunded
+	// result (for example a confirmed amount with no currency) still claims money came back, so it
+	// reaches the locked marker read below before its refusal (R5-1).
+	invalid := result.Validate()
+	if invalid != nil && result.Outcome != psp.Refunded {
 		write(w, 500, map[string]string{"error": "invalid provider result"})
 		return
 	}
@@ -114,7 +136,25 @@ func (s *Server) pspPartialRefund(w http.ResponseWriter, r *http.Request) {
 	// and the whole thing is recoverable — the same shape as the 502 above it. Appending
 	// first and refusing after would put an unretractable claim into an append-only journal
 	// that money came back when it did not.
-	if !result.Confirmed.Agrees(leg.Amount, leg.Currency) {
+	//
+	// A marker that committed during the provider call answers first (RA4-2, R5-1, ADR-087 §13):
+	// read under the locks abandonment takes, it turns an invalid or mismatched confirmation into
+	// the same 409 and reconciliation log as a matching answer. Without a marker the existing
+	// refusal stands: 500 for an invalid result, 502 for a mismatch.
+	if invalid != nil || !result.Confirmed.Agrees(leg.Amount, leg.Currency) {
+		m, abandoned, err := s.journal.LookupRefundLegAbandonmentLocked(r.Context(), in.OrganizerID, key, refundKey)
+		if err != nil {
+			write(w, 500, map[string]string{"error": "lookup refund leg abandonment"})
+			return
+		}
+		if abandoned {
+			abandonedLegRefunded(w, in.OrganizerID, refundKey, m, result.ProviderRef)
+			return
+		}
+		if invalid != nil {
+			write(w, 500, map[string]string{"error": "invalid provider result"})
+			return
+		}
 		write(w, 502, map[string]string{"error": "provider confirmed a different refund amount than requested"})
 		return
 	}
@@ -122,20 +162,39 @@ func (s *Server) pspPartialRefund(w http.ResponseWriter, r *http.Request) {
 	// OccurredAt is the leg's stable bound_at, never the clock: the fact id is
 	// deterministic and the journal compares the full canonical fact on replay, so a fresh
 	// timestamp would fail "fact id reused with different content" and wedge the leg.
-	if _, _, err := s.journal.Append(r.Context(), store.Fact{
+	fact := store.Fact{
 		ID: factID, OrganizerID: in.OrganizerID, Type: "payment.refunded", OccurredAt: leg.BoundAt,
 		BuyerID: op.BuyerID, Amount: leg.Amount, Currency: leg.Currency,
 		// order_id only: the journal's payload allowlist is a deliberate PII guard, and
 		// the deterministic fact id already ties this entry to its leg.
 		Payload: map[string]string{"order_id": op.OrderID.String()},
-	}); err != nil {
-		write(w, 500, map[string]string{"error": "journal append failed"})
-		return
 	}
 	confirmed := store.ConfirmedRefund{Amount: result.Confirmed.Amount, Currency: result.Confirmed.Currency}
-	if err := s.journal.CompleteRefundLeg(r.Context(), in.OrganizerID, key, refundKey, result.ProviderRef, factID, confirmed); err != nil {
+	// ONE transaction appends the fact and completes the leg, under the operation and leg locks
+	// abandonment takes, after a marker read under those locks. The marker may have committed
+	// while the provider call ran. A Refunded answer for an abandoned leg is never recorded:
+	// no fact, no completion, the same 409 as above. The marker was proven against a failed
+	// refund, so a succeeded one is a reconciliation alarm whatever its id; a different id is
+	// the stronger alarm (ADR-087 §13).
+	m, abandoned, err := s.journal.CompleteRefundLeg(r.Context(), in.OrganizerID, key, refundKey, result.ProviderRef, fact, confirmed)
+	if err != nil {
 		write(w, 500, map[string]string{"error": "persist refund leg result"})
 		return
 	}
+	if abandoned {
+		abandonedLegRefunded(w, in.OrganizerID, refundKey, m, result.ProviderRef)
+		return
+	}
 	write(w, 200, map[string]any{"status": "refunded", "fact_id": factID, "amount": leg.Amount, "currency": leg.Currency, "replay": false})
+}
+
+// abandonedLegRefunded answers a Refunded provider result for a leg whose abandonment marker
+// committed during the provider call: nothing is recorded, the log carries both references for
+// reconciliation, and the response is the dispatch 409 (D34, ADR-087 §13).
+func abandonedLegRefunded(w http.ResponseWriter, org uuid.UUID, refundKey string, m store.RefundLegAbandonment, resultRef string) {
+	slog.Error("payments: provider refunded an abandoned refund leg; nothing recorded",
+		"organizer_id", org, "refund_key", refundKey,
+		"marker_provider_ref", m.ProviderRef, "result_provider_ref", resultRef,
+		"reconciliation_alarm", m.ProviderRef != resultRef)
+	write(w, 409, map[string]string{"error": "refund leg abandoned"})
 }

@@ -485,10 +485,10 @@ export interface components {
         Error: {
             error: string;
             /**
-             * @description Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). `source_tickets_already_admitted`: an exchange source ticket has a recorded admission (TKT-169). `sold_out` (TKT-341, ADR-082): a public GA reservation found zero public headroom at inventory's locked decision. It is point-in-time and retryable, not permanent: holds expire and channel reservations release. Only `POST /reservations` sends it, for a GA request. Partner routes never send it, and an exchange target refusal does not carry it.
+             * @description Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). `source_tickets_already_admitted`: an exchange source ticket has a recorded admission (TKT-169). `sold_out` (TKT-341, ADR-082): a public GA reservation found zero public headroom at inventory's locked decision. It is point-in-time and retryable, not permanent: holds expire and channel reservations release. Only `POST /reservations` sends it, for a GA request. Partner routes never send it, and an exchange target refusal does not carry it. `refund_abandoned` (TKT-525, ADR-087): a staff refund replay whose refund an operator recorded as abandoned. Only `POST /internal/orders/{id}/refunds` sends it, with 409. Nothing was sent to payments; a new refund needs a new key. Every other 409 of that route has no code.
              * @enum {string}
              */
-            code?: "seat_taken" | "orphaned_seats" | "seated_pool_unsupported" | "source_tickets_already_admitted" | "sold_out";
+            code?: "seat_taken" | "orphaned_seats" | "seated_pool_unsupported" | "source_tickets_already_admitted" | "sold_out" | "refund_abandoned";
             /** @description With `seat_taken`: the requested seats another buyer already holds, sorted — a SUBSET of the request, forwarded verbatim from the inventory transaction that arbitrated. With `orphaned_seats`: the FREE seats the selection would strand — seats the buyer did NOT request, so the subset rule deliberately does not apply to them and a picker must keep them selectable, since adding one is the repair. Never synthesised by commerce: a refusal without a usable identity list is a 502, not a guess. */
             seat_identities?: string[];
         };
@@ -773,6 +773,8 @@ export interface components {
             refund_id: string;
             /** @enum {string} */
             status: "pending" | "completed";
+            /** @description True when an operator recorded this refund as abandoned (TKT-525, ADR-087) and the abandonment committed. The platform will not submit or record a refund under its idempotency key again, so a saved retry of that key can be retired; the refund itself stays pending. A provider request already admitted before the abandonment is deduplicated by the provider only within its key retention, so this is not a promise that no money moves (ADR-087 §13). A pending abandonment reservation reads false. */
+            abandoned: boolean;
             quantity: number;
             /** @description Minor units. */
             amount: number;

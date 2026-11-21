@@ -444,6 +444,9 @@ paths:
         '200': {description: Refunded (or replay of a completed refund), content: {application/json: {schema: {$ref: '#/components/schemas/Refund'}}}}
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+        # 409 with `code: refund_abandoned` (TKT-525 S2) when this key's refund has a finalized
+        # `abandoned` outcome; nothing reaches payments. A refund whose abandonment is only
+        # reserved still reaches payments. Other 409s carry no code.
         '409': {$ref: '#/components/responses/Error'}
         '422': {description: Payments definitively refused the provider refund, content: {application/json: {schema: {$ref: '#/components/schemas/ProviderRefundFailed'}}}}
         '500': {$ref: '#/components/responses/Error'}
@@ -756,7 +759,7 @@ components:
       required: [error]
       properties:
         error: {type: string}
-        code: {type: string, enum: [seat_taken, orphaned_seats, seated_pool_unsupported, source_tickets_already_admitted, sold_out], description: 'Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). `source_tickets_already_admitted`: an exchange source ticket has a recorded admission (TKT-169). `sold_out` (TKT-341, ADR-082): a public GA reservation found zero public headroom at inventory''s locked decision. It is point-in-time and retryable, not permanent: holds expire and channel reservations release. Only `POST /reservations` sends it, for a GA request. Partner routes never send it, and an exchange target refusal does not carry it.'}
+        code: {type: string, enum: [seat_taken, orphaned_seats, seated_pool_unsupported, source_tickets_already_admitted, sold_out, refund_abandoned], description: 'Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). `source_tickets_already_admitted`: an exchange source ticket has a recorded admission (TKT-169). `sold_out` (TKT-341, ADR-082): a public GA reservation found zero public headroom at inventory''s locked decision. It is point-in-time and retryable, not permanent: holds expire and channel reservations release. Only `POST /reservations` sends it, for a GA request. Partner routes never send it, and an exchange target refusal does not carry it. `refund_abandoned` (TKT-525, ADR-087): a staff refund replay whose refund an operator recorded as abandoned. Only `POST /internal/orders/{id}/refunds` sends it, with 409. Nothing was sent to payments; a new refund needs a new key. Every other 409 of that route has no code.'}
         seat_identities:
           type: array
           description: >
@@ -1311,10 +1314,20 @@ components:
     StaffOrderRefund:
       type: object
       additionalProperties: false
-      required: [refund_id, status, quantity, amount, currency, idempotency_key, actor, created_at]
+      required: [refund_id, status, quantity, amount, currency, idempotency_key, actor, created_at, abandoned]
       properties:
         refund_id: {type: string, format: uuid}
         status: {type: string, enum: [pending, completed]}
+        abandoned:
+          type: boolean
+          description: >
+            True when an operator recorded this refund as abandoned (TKT-525, ADR-087)
+            and the abandonment committed. The platform will not submit or record a
+            refund under its idempotency key again, so a saved retry of that key can be
+            retired; the refund itself stays pending. A provider request already admitted
+            before the abandonment is deduplicated by the provider only within its key
+            retention, so this is not a promise that no money moves (ADR-087 §13).
+            A pending abandonment reservation reads false.
         quantity: {type: integer}
         amount: {type: integer, description: Minor units.}
         currency: {type: string}
