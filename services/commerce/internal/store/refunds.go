@@ -127,16 +127,33 @@ func BindOrderRefund(ctx context.Context, db *sql.DB, in RefundRequest) (Refund,
 	defer func() { _ = tx.Rollback() }()
 
 	var status, chargeKey, currency string
-	var buyer, hold uuid.UUID
+	var buyer, hold, reservation uuid.UUID
 	var soldQty int32
 	var unit int64
 	err = tx.QueryRowContext(ctx, `
-		SELECT o.status, o.idempotency_key, r.buyer_id, r.hold_id, r.quantity, r.unit_amount, r.currency
+		SELECT o.status, o.idempotency_key, r.id, r.buyer_id, r.hold_id, r.quantity, r.unit_amount, r.currency
 		FROM orders o JOIN reservations r ON r.id = o.reservation_id
 		WHERE o.id=$1 AND r.organizer_id=$2 FOR UPDATE OF o`, in.OrderID, in.OrganizerID).
-		Scan(&status, &chargeKey, &buyer, &hold, &soldQty, &unit, &currency)
+		Scan(&status, &chargeKey, &reservation, &buyer, &hold, &soldQty, &unit, &currency)
 	if err != nil {
 		return Refund{}, err
+	}
+
+	// An exchange replacement whose abandonment started cannot bind or replay a refund
+	// (TKT-498, ADR-039 §2). Under the order lock and BEFORE the replay, so a refund bound before
+	// the reservation is not handed back to a caller that would dispatch it. The exchange is
+	// found by the replacement RESERVATION, which the basis persists before settlement publishes
+	// replacement_order_id, in this organizer only. The reservation transaction locks this order
+	// before it writes the marker, so this read sees a reservation entirely or not at all.
+	var abandoning bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM order_exchanges
+		               WHERE organizer_id=$1 AND replacement_reservation_id=$2
+		                 AND abandonment_started_at IS NOT NULL)`, in.OrganizerID, reservation).Scan(&abandoning); err != nil {
+		return Refund{}, err
+	}
+	if abandoning {
+		return Refund{}, ErrExchangeReplacementAbandoned
 	}
 
 	id := RefundID(in.OrganizerID, in.IdempotencyKey)

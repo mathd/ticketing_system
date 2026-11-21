@@ -279,6 +279,41 @@ migration 0024's Down refuses to roll back over it. Like everything else here it
 **honest-operator evidence, not tamper-evidence** (ADR-021): anyone with commerce's database
 credentials can forge it, or delete an exchange row directly without leaving any.
 
+## Settled exchange without a ticket switch (TKT-498)
+
+> **Draft.** This section describes the listing only. The `abandon-exchange` command and the full
+> procedure are not available yet.
+
+Access refuses the ticket switch of a settled exchange when a source ticket was already admitted.
+The exchange then stays settled and unswitched: the delta moved, the replacement order exists, and
+the target capacity stays held. `unwind-exchange` refuses a settled exchange, so it does not apply.
+
+List the candidates of one organizer:
+
+```bash
+docker compose exec commerce /app list-settled-unswitched-exchanges <organizer-id>
+# organizer=4b1e… exchange=9c0d… source_order=21fa… replacement_order=7e3b… target_hold=c55a… \
+#   settled_at=2026-11-20T09:30:00Z quantity=2 delta=+1000 EUR abandonment=none
+```
+
+The command needs only `DATABASE_URL` and reads Commerce only, so it works while Access, Payments
+and Inventory are down. It exits **zero** when there is nothing to list. Rows are sorted by
+settlement time, then by exchange id.
+
+**The rows are candidates.** Commerce cannot see Access's tickets. A row can be a switch whose
+Commerce callback is late, or an exchange that Access refused. The listing cannot tell them apart,
+so do not act on a row from the listing alone.
+
+| Column | Meaning |
+|---|---|
+| `delta` | The signed face-value difference. `+` is an upgrade the buyer paid, `-` a downgrade refunded to the buyer, `0` an even exchange. |
+| `abandonment=none` | No abandonment has started. |
+| `abandonment=started` | An abandonment is reserved, with its start time and the operator who typed the reservation. |
+| `abandonment=refund-failed` | The provider refused the upgrade's delta refund. `refund_failed_ref` is the provider reference. The buyer is still charged and the target is still held. TKT-588 owns this state. |
+| `abandonment=target-returned` | The target capacity came back; only the terminal step is left. |
+
+A completed abandonment does not appear in the listing.
+
 ## Failed post-purchase refund: operator outcome (TKT-525)
 
 A staff refund or an event-cancellation (bulk) refund whose provider refund failed stays `pending`.

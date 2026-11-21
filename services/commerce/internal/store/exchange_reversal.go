@@ -391,6 +391,10 @@ type ExchangeReversalBacklog struct {
 // owing nothing — and the gauge's whole justification (ADR-062 §4: a small old backlog and a
 // large fresh one are different incidents) only holds if the age means what the operator
 // thinks it means. `settled_at` is the earliest moment an obligation can exist.
+//
+// A terminal abandonment (TKT-498) owes nothing: its target came back and the switch will never
+// happen. It leaves every count and the age. A started or provider-failed abandonment still
+// counts as outstanding and awaiting its switch, because it is unresolved.
 func ReadExchangeReversalBacklog(ctx context.Context, db *sql.DB) (ExchangeReversalBacklog, error) {
 	var b ExchangeReversalBacklog
 	err := db.QueryRowContext(ctx, `
@@ -400,7 +404,8 @@ func ReadExchangeReversalBacklog(ctx context.Context, db *sql.DB) (ExchangeRever
 		       coalesce(max(extract(epoch FROM now()-settled_at))::bigint, 0)
 		FROM order_exchanges
 		WHERE settled_at IS NOT NULL
-		  AND (tickets_exchanged_at IS NULL OR capacity_returned_at IS NULL)`).
+		  AND (tickets_exchanged_at IS NULL OR capacity_returned_at IS NULL)
+		  AND abandoned_at IS NULL`).
 		Scan(&b.Outstanding, &b.Parked, &b.AwaitingSwitch, &b.OldestAgeSeconds)
 	return b, err
 }

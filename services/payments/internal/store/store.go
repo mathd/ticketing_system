@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io/fs"
 	"maps"
+	"strconv"
 	"strings"
 	"time"
 
@@ -227,7 +228,12 @@ func validate(f Fact) error {
 	// written whichever way the money went: the provider moves only the difference, but
 	// the trail records that a line worth X was reversed and one worth Y was sold. What
 	// the provider does and what the trail records are not the same fact (ADR-039 §1).
-	allowedTypes := map[string]bool{"order.created": true, "order.completed": true, "order.failed": true, "order.refunded": true, "order.exchange.reversed": true, "order.exchange.sold": true, "payment.authorized": true, "payment.captured": true, "payment.declined": true, "payment.timeout": true, "payment.voided": true, "payment.refunded": true}
+	//
+	// order.exchange.abandoned joins it for TKT-498: the compensating entry for a settled
+	// exchange that was abandoned after its source was admitted (ADR-003, corrections are new
+	// entries). It is the only type with more payload keys than `order_id`; see
+	// validateExchangeAbandoned.
+	allowedTypes := map[string]bool{"order.created": true, "order.completed": true, "order.failed": true, "order.refunded": true, "order.exchange.reversed": true, "order.exchange.sold": true, exchangeAbandonedType: true, "payment.authorized": true, "payment.captured": true, "payment.declined": true, "payment.timeout": true, "payment.voided": true, "payment.refunded": true}
 	if !allowedTypes[f.Type] {
 		return refuse("unsupported journal fact type")
 	}
@@ -236,9 +242,12 @@ func validate(f Fact) error {
 		if strings.Contains(l, "email") || strings.Contains(l, "name") || strings.Contains(l, "pan") || strings.Contains(l, "cvv") {
 			return refuse(fmt.Sprintf("PII/payment field %q forbidden in journal", k))
 		}
-		if k != "order_id" {
+		if k != "order_id" && f.Type != exchangeAbandonedType {
 			return refuse(fmt.Sprintf("payload field %q is not allowed", k))
 		}
+	}
+	if f.Type == exchangeAbandonedType {
+		return validateExchangeAbandoned(f)
 	}
 	if _, err := uuid.Parse(f.Payload["order_id"]); err != nil {
 		return refuse("valid order_id payload required")
@@ -247,6 +256,89 @@ func validate(f Fact) error {
 		return refuse(fmt.Sprintf("%s must carry a positive amount", f.Type))
 	}
 	return nil
+}
+
+// exchangeAbandonedType is the compensating fact Commerce appends when it abandons a
+// settled exchange whose source tickets were already admitted (TKT-498).
+const exchangeAbandonedType = "order.exchange.abandoned"
+
+// validateExchangeAbandoned checks the payload of an `order.exchange.abandoned` fact.
+//
+// The fact's amount is the target gross the abandonment removes. The payload names the source
+// order, the exchange, the source gross it restores and the signed delta, and then the evidence
+// for how the delta was settled, which depends on its sign:
+//
+//	delta > 0 (upgrade)    refund_fact_id: the payments fact of the refund of the delta
+//	delta < 0 (downgrade)  written_off_amount: exactly -delta_amount
+//	delta = 0 (even)       neither
+//
+// The key set is exact, so a fact cannot carry evidence for the wrong sign. UUIDs and integers
+// must be in canonical form: the journal signs the payload bytes, and two spellings of one value
+// would let a retry with different bytes collide with the first fact under one id.
+//
+// Validation only. The type adds no settlement ledger entries.
+func validateExchangeAbandoned(f Fact) error {
+	// The delta decides which evidence key is allowed, so it is read first.
+	delta, err := canonicalInt(f.Payload["delta_amount"])
+	if err != nil {
+		return refuse(fmt.Sprintf("%s payload field %q must be a base-10 integer in minor units", exchangeAbandonedType, "delta_amount"))
+	}
+	allowed := map[string]bool{"order_id": true, "exchange_id": true, "source_gross": true, "delta_amount": true}
+	kind := "an even"
+	switch {
+	case delta > 0:
+		allowed["refund_fact_id"], kind = true, "an upgrade"
+	case delta < 0:
+		allowed["written_off_amount"], kind = true, "a downgrade"
+	}
+	for k := range f.Payload {
+		if !allowed[k] {
+			return refuse(fmt.Sprintf("payload field %q is not allowed on %s for %s exchange", k, exchangeAbandonedType, kind))
+		}
+	}
+	for k := range allowed {
+		if _, ok := f.Payload[k]; !ok {
+			return refuse(fmt.Sprintf("%s requires payload field %q", exchangeAbandonedType, k))
+		}
+	}
+	for _, k := range []string{"order_id", "exchange_id", "refund_fact_id"} {
+		v, ok := f.Payload[k]
+		if !ok {
+			continue
+		}
+		if id, err := uuid.Parse(v); err != nil || id == uuid.Nil || id.String() != v {
+			return refuse(fmt.Sprintf("%s payload field %q must be a canonical non-nil UUID", exchangeAbandonedType, k))
+		}
+	}
+	sourceGross, err := canonicalInt(f.Payload["source_gross"])
+	if err != nil || sourceGross < 0 {
+		return refuse(fmt.Sprintf("%s payload field %q must be a non-negative base-10 integer in minor units", exchangeAbandonedType, "source_gross"))
+	}
+	// validate already refused a negative amount, and source_gross is non-negative, so the
+	// subtraction cannot overflow.
+	if f.Amount-sourceGross != delta {
+		return refuse(fmt.Sprintf("%s payload field %q must equal amount - source_gross", exchangeAbandonedType, "delta_amount"))
+	}
+	if delta < 0 {
+		written, err := canonicalInt(f.Payload["written_off_amount"])
+		if err != nil || written != -delta {
+			return refuse(fmt.Sprintf("%s payload field %q must equal -delta_amount", exchangeAbandonedType, "written_off_amount"))
+		}
+	}
+	return nil
+}
+
+// canonicalInt parses a base-10 int64 and refuses every other spelling of it: a sign on a
+// positive value, leading zeros, "-0", spaces, or a value out of range.
+func canonicalInt(s string) (int64, error) {
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if strconv.FormatInt(v, 10) != s {
+		return 0, fmt.Errorf("%q is not a canonical base-10 integer", s)
+	}
+	return v, nil
 }
 
 // Append writes a fact with no settlement. Every caller but the capture path
