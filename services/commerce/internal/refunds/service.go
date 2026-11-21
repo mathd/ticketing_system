@@ -350,11 +350,12 @@ func (s *Service) DriveVoid(ctx context.Context, v commercestore.OrderVoid) comm
 // HTTP call; this read does not.
 //
 // Missing, malformed or zero issuance leaves the refund unresolved through the existing retry
-// path. An order that is not a replacement is not affected.
+// path. So does a failed read of the replacement identity: an order that may be a replacement
+// is treated as one until the read succeeds. An order that is not a replacement is not affected.
 func (s *Service) requireIssuedReplacement(ctx context.Context, refund commercestore.Refund) error {
 	replacement, err := commercestore.IsExchangeReplacementOrder(ctx, s.db, refund.OrganizerID, refund.OrderID)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w (%v)", ErrReplacementNotIssued, err)
 	}
 	if !replacement {
 		return nil

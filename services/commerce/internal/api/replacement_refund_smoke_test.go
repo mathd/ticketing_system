@@ -10,13 +10,17 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 
 	commercestore "ticketing/services/commerce/internal/store"
 )
@@ -381,5 +385,110 @@ func TestAReplacementRefundPausedAfterBindingStopsBeforePaymentsOnceAbandonmentR
 	}
 	if got := refundStatus(t, db, ctx, f.organizer, commercestore.RefundID(f.organizer, key)); got != "pending" {
 		t.Fatalf("refund status = %q, want pending", got)
+	}
+}
+
+// replacementIdentitySQL is the join only store.IsExchangeReplacementOrder runs. The binder's
+// started-marker read does not contain it.
+const replacementIdentitySQL = "JOIN order_exchanges x ON x.organizer_id = $1 AND x.replacement_reservation_id = r.id"
+
+// failReplacementIdentity is a pgx tracer that cancels the context of the replacement identity
+// read and of nothing else, so that one read fails while the binder before it succeeds.
+type failReplacementIdentity struct{ hits atomic.Int32 }
+
+func (f *failReplacementIdentity) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
+	if !strings.Contains(d.SQL, replacementIdentitySQL) {
+		return ctx
+	}
+	f.hits.Add(1)
+	failed, cancel := context.WithCancel(ctx)
+	cancel()
+	return failed
+}
+
+func (*failReplacementIdentity) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// A failed read of the replacement identity fails closed, the same way as a failed Access read:
+// the refund stays pending behind the staff 502, and neither Access nor payments is called.
+// Returning the raw error would answer a 500 and leave the operator no retry signal.
+func TestStaffRefundWhoseReplacementIdentityReadFailsStaysUnresolved(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	f := seedSettledReplacement(t, db, ctx)
+	cfg, err := pgx.ParseConfig(os.Getenv("COMMERCE_API_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracer := &failReplacementIdentity{}
+	cfg.Tracer = tracer
+	failing := stdlib.OpenDB(*cfg)
+	t.Cleanup(func() { _ = failing.Close() })
+	stub := newDependencyStub(t)
+	stub.set(f.quantity, http.StatusOK)
+	s := replacementRefundServer(t, failing, stub)
+	const key = "staff-replacement-identity-read-fails"
+
+	code, body := staffRefund(t, s, f.organizer, f.replacementOrder, key)
+	// database/sql retries a read that failed on a bad connection, so the count is at least one.
+	if tracer.hits.Load() < 1 {
+		t.Fatal("the replacement identity read never ran: the injected failure did not apply")
+	}
+	if code != http.StatusBadGateway || body["error"] != "refund unresolved" {
+		t.Fatalf("staff refund with a failed identity read = %d %v, want 502 refund unresolved", code, body)
+	}
+	if n := len(stub.recorded()); n != 0 {
+		t.Fatalf("a refund whose replacement identity is unknown made %d dependency call(s), want 0", n)
+	}
+	if got := refundStatus(t, db, ctx, f.organizer, commercestore.RefundID(f.organizer, key)); got != "pending" {
+		t.Fatalf("refund status = %q, want pending", got)
+	}
+}
+
+// IsExchangeReplacementOrder is organizer-scoped. Organizer B's ordinary order sits on a
+// reservation that organizer A's exchange names as its replacement reservation (the schema has
+// no foreign key there, so the row is representable though no writer produces it). B's refund
+// is not a replacement refund: it reaches payments with no Access read. Without the exchange's
+// organizer predicate, A's exchange would make it one, and the refund would stop at Access.
+func TestAnOrdinaryRefundIsNotAReplacementOfAnotherOrganizersExchange(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	a := seedSettledReplacement(t, db, ctx)
+	orgB, reservationB, orderB := uuid.New(), uuid.New(), uuid.New()
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status)
+			VALUES($1,$2,$3,$4,$5,$6,2,1500,3000,3000,'EUR','completed')`,
+			[]any{reservationB, orgB, uuid.New(), uuid.New(), uuid.New(), uuid.New()}},
+		{`INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint,guest_order_ref)
+			VALUES($1,$2,'completed',$3,'fingerprint',$4)`, []any{orderB, reservationB, "checkout-" + orderB.String(), uuid.New()}},
+		{`UPDATE order_exchanges SET replacement_reservation_id=$2 WHERE organizer_id=$1 AND id=$3`,
+			[]any{a.organizer, reservationB, a.exchange}},
+	} {
+		if _, err := db.ExecContext(ctx, q.sql, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM order_facts WHERE organizer_id=$1`, orgB)
+		_, _ = db.Exec(`DELETE FROM order_refunds WHERE organizer_id=$1`, orgB)
+		_, _ = db.Exec(`DELETE FROM orders WHERE id=$1`, orderB)
+		_, _ = db.Exec(`DELETE FROM reservations WHERE id=$1`, reservationB)
+	})
+	if n := countCommerceRows(t, ctx, db, `SELECT count(*) FROM order_exchanges
+		WHERE organizer_id=$1 AND replacement_reservation_id=$2`, a.organizer, reservationB); n != 1 {
+		t.Fatalf("organizer A's exchanges naming B's reservation = %d, want 1: the fixture is not in place", n)
+	}
+	stub := newDependencyStub(t)
+	stub.set(0, http.StatusOK)
+	s := replacementRefundServer(t, db, stub)
+
+	if code, body := staffRefund(t, s, orgB, orderB, "ordinary-refund-"+orderB.String()); code != http.StatusOK {
+		t.Fatalf("organizer B's ordinary refund = %d %v, want 200", code, body)
+	}
+	if n := stub.count(http.MethodGet, "/access/internal/orders/"+orderB.String()+"/admission"); n != 0 {
+		t.Fatalf("organizer B's ordinary refund asked Access about issuance %d time(s), want 0", n)
+	}
+	if n := stub.count(http.MethodPost, "/payments/internal/psp/partial-refund"); n != 1 {
+		t.Fatalf("organizer B's ordinary refund reached payments %d time(s), want 1", n)
 	}
 }

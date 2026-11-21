@@ -255,7 +255,7 @@ payments, and an even exchange calls nobody. `possible` means only that a call c
 | `money moved` | payments records a provider movement for this exchange | **Stop.** The buyer paid. Compensating them is a product decision, not an unwind — see below. |
 | `settlement in flight` | the exchange passed inventory's finalize within the last five minutes and may be at the provider right now | **Wait and re-run.** Past the window the marker stops vetoing and payments decides; a marker much older than that means a settlement crashed after finalize, so check payments before acting. |
 | `indeterminate` | payments could not be asked, or gave no clean answer | Fix why payments could not answer, then re-run. **Do not** treat an unanswered question as a no. |
-| `settled` | the exchange settled; it is not wedged | You are reading the listing wrong — a settled exchange's remaining obligations belong to the sweep above. |
+| `settled` | the exchange settled; it is not wedged | A settled exchange's remaining obligations belong to the sweep above. If Access refused its switch because a source ticket was already admitted, use [Settled exchange without a ticket switch](#settled-exchange-without-a-ticket-switch-tkt-498). |
 | `not found` | no such organizer/exchange pair | Check the ids against the listing. |
 
 **Only a 404 from payments permits an unwind.** Everything else refuses: a bound-but-unresolved
@@ -263,9 +263,9 @@ operation, a resolved-but-declined one, an uncompleted refund leg, a 5xx, a time
 deliberate under-approximation — a wedge that stays wedged is visible and reversible, and deleting a
 charged buyer's binding is neither.
 
-**A charged buyer is NOT compensated by this command, by design.** It refuses and leaves everything
-intact. Choosing between refunding them and re-selling them a target has not been decided
-(ADR-039 §2: an exchange has no safe partial state). If you hit this, the exchange row still carries
+**A charged buyer of an UNSETTLED exchange is NOT compensated by this command, by design.** It
+refuses and leaves everything intact. Choosing between refunding them and re-selling them a target
+has not been decided (ADR-039 §2: an exchange has no safe partial state). If you hit this, the exchange row still carries
 what the buyer was charged, which is what makes a manual resolution possible at all.
 
 **After a successful unwind** the binding is gone: the source order can be exchanged again **with a
@@ -281,14 +281,46 @@ credentials can forge it, or delete an exchange row directly without leaving any
 
 ## Settled exchange without a ticket switch (TKT-498)
 
-> **Draft.** This section describes the listing only. The `abandon-exchange` command and the full
-> procedure are not available yet.
-
 Access refuses the ticket switch of a settled exchange when a source ticket was already admitted.
 The exchange then stays settled and unswitched: the delta moved, the replacement order exists, and
-the target capacity stays held. `unwind-exchange` refuses a settled exchange, so it does not apply.
+the target capacity stays held. The buyer used the source ticket, so the replacement must never
+issue. `unwind-exchange` refuses a settled exchange, so it does not apply. The remedy is to
+**abandon** the exchange. Decision record: [ADR-039 §2](../adr/ADR-039-exchange-settles-the-difference.md),
+amended by TKT-498.
 
-List the candidates of one organizer:
+Access records the refusal as a failed-event record with reason `exchange_refused`
+([ticket lifecycle](./ticket-lifecycle.md)). Commerce keeps the exchange in the reversal backlog
+(`commerce.exchange.reversal.outstanding` and `awaiting_switch`) until the abandonment completes.
+
+### Before the first use: rollout order
+
+Do these steps once, in this order, when the release that adds `abandon-exchange` is deployed:
+
+1. Deploy Payments first. Only the new Payments accepts the `order.exchange.abandoned` journal fact.
+
+   ```bash
+   docker compose up -d --build payments
+   ```
+
+2. Run Commerce migration 0028 and replace the Commerce container. The `commerce` service waits for
+   the `commerce-migrate` job, so one command does both:
+
+   ```bash
+   docker compose up -d --build commerce
+   ```
+
+3. After the old Commerce container exits, wait **at least 60 seconds** before the first
+   `abandon-exchange`. The longest Commerce outbound HTTP timeout is 30 seconds. The wait lets every
+   staff or bulk refund request that the old container sent to Payments finish. Only the new
+   Commerce checks replacement-ticket issuance before it sends a replacement refund (see
+   [Replacement refunds](#replacement-refunds-of-an-abandoned-exchange)).
+
+If you deploy Commerce before Payments, the command fails closed: Payments refuses the unknown fact,
+and the abandonment stays started with its target returned. Deploy Payments, then run the same
+command again. After the first reservation exists, roll forward only: migration 0028's Down refuses
+to run over started, failed or completed abandonments.
+
+### 1. List the candidates
 
 ```bash
 docker compose exec commerce /app list-settled-unswitched-exchanges <organizer-id>
@@ -301,18 +333,169 @@ and Inventory are down. It exits **zero** when there is nothing to list. Rows ar
 settlement time, then by exchange id.
 
 **The rows are candidates.** Commerce cannot see Access's tickets. A row can be a switch whose
-Commerce callback is late, or an exchange that Access refused. The listing cannot tell them apart,
-so do not act on a row from the listing alone.
+Commerce callback is late, or an exchange that Access refused. The listing cannot tell them apart.
+`abandon-exchange` asks Access before it changes anything (step 2).
 
 | Column | Meaning |
 |---|---|
 | `delta` | The signed face-value difference. `+` is an upgrade the buyer paid, `-` a downgrade refunded to the buyer, `0` an even exchange. |
 | `abandonment=none` | No abandonment has started. |
 | `abandonment=started` | An abandonment is reserved, with its start time and the operator who typed the reservation. |
-| `abandonment=refund-failed` | The provider refused the upgrade's delta refund. `refund_failed_ref` is the provider reference. The buyer is still charged and the target is still held. TKT-588 owns this state. |
-| `abandonment=target-returned` | The target capacity came back; only the terminal step is left. |
+| `abandonment=refund-failed` | The provider refused the upgrade's delta refund. `refund_failed_ref` is the provider reference. The buyer is still charged and the target is still held. TKT-588 owns this state (see below). |
+| `abandonment=target-returned` | The target capacity came back. Only the journal entry and the terminal step are left. |
 
 A completed abandonment does not appear in the listing.
+
+**The listing omits inconsistent rows.** A settled, unswitched exchange whose reservations belong to
+another organizer, whose replacement uses another reservation or hold, whose quantities differ, or
+whose replacement is not completed is not a candidate. The backlog gauges still count it. If the
+`outstanding` gauge counts an exchange that the listing does not show, query the table directly:
+
+```sql
+SELECT id, source_order_id, replacement_order_id, target_hold_id, settled_at, abandonment_started_at
+FROM order_exchanges
+WHERE organizer_id = '<organizer-id>' AND settled_at IS NOT NULL
+  AND tickets_exchanged_at IS NULL AND abandoned_at IS NULL
+ORDER BY settled_at, id;
+```
+
+`abandon-exchange` refuses an inconsistent row. Treat it as an incident and do not edit the row.
+
+### 2. Abandon the exchange
+
+**Agree on the disposition first.** Agree with the other operators that this exchange is to be
+abandoned, and who runs the command.
+
+```bash
+docker compose exec commerce /app abandon-exchange <organizer-id> <exchange-id> "<operator name>" "<reason>"
+```
+
+The command checks its arguments and its configuration before it opens the database or calls a
+service. It needs `DATABASE_URL`, `ACCESS_URL`, `PAYMENTS_URL`, `INVENTORY_URL` and
+`INTERNAL_SERVICE_TOKEN`, and uses `PAYMENTS_INTERNAL_TOKEN` for Payments (falling back to
+`INTERNAL_SERVICE_TOKEN`). The `commerce` container has all of them. The operator name is 1–200 and
+the reason 1–500 characters after trimming.
+
+What the command does, in this order:
+
+1. It asks Access about the **source** order: it must be admitted, with as many issued tickets as the
+   exchange quantity. **Then** it asks about the **replacement** order: it must have zero issued
+   tickets. The order is the proof. After Access records an admission, its locked switch check
+   refuses every later switch, and an earlier switch left replacement tickets that the second read
+   sees.
+2. It checks the original money and journal evidence: the exchange's two gross journal facts, and by
+   the delta's sign, the captured upgrade charge or the completed downgrade refund. It asks Payments
+   about each pending refund of the replacement order.
+3. It reserves the abandonment in Commerce, with your operator name, your reason, and the database
+   login.
+4. Upgrade only: it refunds exactly the delta against the exchange's own charge
+   (`exchange-charge:<exchange-id>`).
+5. It returns the whole target claim to Inventory.
+6. It appends one `order.exchange.abandoned` fact to the Payments journal, then records the same fact
+   and the terminal marker in Commerce in one transaction.
+
+What each branch leaves:
+
+| Delta | Money | Recorded on the exchange |
+|---|---|---|
+| Upgrade (`+`) | The buyer receives the delta back: one refund leg against the delta charge, and one `payment.refunded` fact. | `abandonment_refund_fact_id`, the Payments fact of that refund. |
+| Downgrade (`-`) | No money moves. The buyer keeps the settlement's refund. | `abandonment_written_off_amount`, the delta the platform writes off. |
+| Even (`0`) | No money moves. | Neither. |
+
+In every branch the target claim stays `confirmed` with all of its quantity returned, and the pool's
+confirmed count drops by the exchange quantity. The source order keeps its admitted tickets and its
+capacity. The replacement issues no ticket. The journal fact's `amount` is the target gross that the
+abandonment removes from the recorded exchange sale. Its payload carries the source order, the
+exchange, the source gross it restores, the signed delta, and the refund fact (upgrade) or the
+write-off (downgrade).
+
+The output is the terminal record:
+
+```
+organizer=… exchange=… source_order=… replacement_order=… target_hold=… quantity=2 delta=+1000 EUR \
+  operator="Ada Operator" session_user="commerce" reason="…" started_at=… target_returned_at=… \
+  abandoned_at=… refund_fact=… replay=false
+```
+
+### Ownership, retries and replay
+
+- **The first trimmed operator name and reason pair owns the abandonment.** Only that exact pair can
+  resume it or replay it. Any other pair is refused, before and after completion. The listing shows
+  the operator; the reason is in `order_exchanges.abandonment_reason`.
+- **Run the same command again** after any `INCOMPLETE` answer. Each step keeps its recorded
+  progress, and the refund and the capacity return use one stable key, so a retry does not refund or
+  return twice.
+- **An identical command after success** prints the original record with `replay=true` and its
+  original times. It reads Commerce only and calls no other service.
+
+### Refusals and what to do
+
+| Output starts with | Meaning | What to do |
+|---|---|---|
+| `REFUSED: no exchange … for this organizer` | No such organizer and exchange pair. | Check both ids against the listing. |
+| `REFUSED: the abandonment of exchange … belongs to another operator name and reason` | Another pair started this abandonment. Nothing changed. | Repeat the first pair exactly. |
+| `STOPPED: the provider refused the upgrade's delta refund` | The provider failed the delta refund for good. | Stop. See [The provider refused the delta refund](#the-provider-refused-the-delta-refund-tkt-588). |
+| `REFUSED: exchange … is not a candidate` | The exchange is not settled, Access switched its tickets, its rows are inconsistent, or its gross journal facts disagree with it. Nothing changed. | Not settled: use the [wedged exchange unwind](#wedged-exchange-operator-unwind). Switched: the [exchange obligation sweep](#exchange-obligation-sweep) owns it. Inconsistent rows or facts: treat as an incident. |
+| `REFUSED: Access does not prove an admitted source with an unissued replacement` | Access reports the source not admitted or not fully issued, or reports replacement tickets. Nothing changed. | Replacement tickets mean that the switch happened and its Commerce callback is late. Follow the failed-event procedure in [ticket lifecycle](./ticket-lifecycle.md). A source that is not admitted is not this procedure's case. |
+| `REFUSED: payments evidence for exchange … needs reconciliation first` | The delta charge or the downgrade refund does not match the exchange, a refund of the replacement completed, or Payments holds a leg for a pending refund of the replacement. | Reconcile by hand. Money can have moved on the replacement through the TKT-586 checkout-key alias. Do not abandon until it is understood. |
+| `INCOMPLETE: exchange … was not abandoned` | A dependency was unavailable, or refused one request. Every recorded step stays. | Clear the cause and run the **same** command again. |
+
+### The provider refused the delta refund (TKT-588)
+
+For an upgrade, a provider's terminal failure of the delta refund stops the command. The platform
+never submits that refund again (ADR-032, ADR-087). The exchange is then in this state:
+
+- settled, with the abandonment started and the provider's `re_` reference recorded;
+- the Payments refund leg bound, with its amount still counted against the delta charge;
+- the buyer still charged for the delta;
+- the target claim still held;
+- the replacement inert: no money, no tickets, no capacity;
+- no terminal marker, so the exchange stays in the listing (`abandonment=refund-failed`) and in the
+  reversal backlog.
+
+The same command reports the stored failure and calls nothing. `record-refund-outcome` does not apply:
+it records outcomes of order refunds, not of an exchange. TKT-588 owns the next step. Until it ships,
+leave the exchange as it is.
+
+### Replacement refunds of an abandoned exchange
+
+- **After the abandonment starts**, the replacement order cannot bind or replay a refund. A staff
+  refund answers `409 only a completed order can be refunded`, and a cancellation run reports
+  `not_refundable`.
+- **A refund of an exchange replacement reaches Payments only after Access reports issued
+  replacement tickets.** This applies to staff refunds and cancellation runs. Without issued tickets,
+  or when Access or the Commerce identity read cannot answer, a staff refund answers
+  `502 refund unresolved`, a cancellation run reports `unavailable`, and the refund stays `pending`.
+  The check exists because of the TKT-586 checkout-key alias, through which a replacement refund can
+  reach the exchange's own charge.
+- **A pending replacement refund for which Payments answered 404 does not stop the abandonment, and it
+  stays `pending` after it.** `record-refund-outcome` cannot close it: both of its outcomes need
+  Payments' proof of a provider failure, and there is no Payments leg to prove.
+
+### After success
+
+- The exchange leaves the listing and the reversal backlog gauges (`outstanding`, `awaiting_switch`
+  and the oldest age).
+- The exchange, both orders and the original journal facts stay as history. The source order still
+  cannot be refunded, voided or exchanged again, because its exchange row still exists.
+- A buyer-facing replay of the exchange request still answers `switch_pending`. The exchange stays
+  settled and unswitched for good. Tell the buyer the outcome through support.
+- A redelivery of the original `order.exchanged` event is refused again by Access. It issues no
+  ticket.
+
+### What the record proves
+
+The abandonment record is **honest-operator evidence, not tamper-evidence** (ADR-021):
+
+- The typed operator name is the operator's own attestation. `session_user` is the database login
+  of the process that ran the command, which is the shared `commerce` login in the container. It
+  does not identify a person.
+- A write-once trigger refuses any change to an abandonment field that has a value. It protects
+  against application defects only. A writer with privileges on the Commerce database can disable it
+  and change or delete the fields.
+- A restore of the Commerce database can roll the record back. The Payments journal entry is
+  hash-chained, so `payments verify-journal` detects an edit of the journal itself, but a coordinated
+  restore of both databases removes both records.
 
 ## Failed post-purchase refund: operator outcome (TKT-525)
 
