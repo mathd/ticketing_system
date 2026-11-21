@@ -105,11 +105,15 @@ GET /internal/psp/partial-refund/failure-proof?organizer_id=&idempotency_key=&re
   3. One corroborated stamped refund in `failed` or `canceled` is a proof and returns its `re_`
      reference.
   A pending refund, no stamped refund, an incomplete or malformed listing, an unavailable provider,
-  and a provider with no prover are inconclusive (502). Every listed entry must be classifiable: a
-  null entry, or an entry with no id or no `metadata` object, makes the whole listing inconclusive
-  (Stripe sends `metadata: {}` on an unstamped refund). While `has_more` is true, a page whose last
-  id is missing or repeats an earlier cursor is inconclusive too. The rule is in the shared listing
-  loop, so `resolveRefund` does not submit on such a listing either.
+  and a provider with no prover are inconclusive (502). The adapter reads and validates the whole
+  listing before it uses any entry. Every listed entry must be classifiable: a null entry, an entry
+  whose `object` is not `refund`, an entry with no id or no `metadata` object, or a
+  `compensation_key` that is present but null makes the whole listing inconclusive (Stripe sends
+  `metadata: {}` on an unstamped refund, which stays a valid foreign refund). A refund id that
+  occurs twice anywhere in the listing, the final page included, makes it inconclusive too: the
+  provider did not advance past that id. While `has_more` is true, a page with no entries is
+  inconclusive. The rule is in the shared listing loop, so `resolveRefund` does not submit on such
+  a listing either.
 - The fake PSP (offline and smoke stacks) proves only a refund failure that it recorded itself:
   a charge captured with the `fake-refund-fail-once` token fails its first refund terminally and
   keeps that refund in memory. The proof looks that refund up by charge reference and key; the fake
@@ -142,7 +146,9 @@ order's charge key, and the refund's order, amount and currency against what it 
 decides replay or conflict against any outcome committed in the meantime, refuses a refund with an
 abandonment reservation in either state (§10), refuses a refund that Payments completed, appends the
 outcome, sets the outside completion evidence, and advances the order projection with the same
-arithmetic as `CompleteOrderRefund` (one shared helper). `CompleteOrderRefund`, the ordinary
+arithmetic as `CompleteOrderRefund` (one shared helper). That helper scopes its `orders` UPDATE to
+the organizer through the order's source reservation and requires exactly one updated row, so a
+scope miss rolls back the whole completion, for both callers. `CompleteOrderRefund`, the ordinary
 `order.refunded` append and fact forwarding are unchanged.
 
 Lock invariant (stated in 0027). Every transaction that touches `refund_outcomes` or the reservation
@@ -287,7 +293,9 @@ The guarantee has two halves:
 transaction takes (§11), in the same order: the `payment_operations` row, then the leg row, both
 scoped by organizer. Under those locks it reads the marker in a separate statement. On a marker it
 appends no fact, completes nothing, and dispatch answers the same 409 and logs both refund
-references, the marker's and the answer's. Without a marker, the `payment.refunded` journal fact and
+references, the marker's and the answer's. A Refunded answer whose confirmed money differs from the
+leg, or carries none, reads the marker under the same locks before it is refused: on a marker the
+answer is the same 409 with both references in the log; without one it is the money-mismatch 502. Without a marker, the `payment.refunded` journal fact and
 the leg completion commit in that same transaction. The marker's foreign key to the leg row cannot be
 satisfied while that row is locked, so no marker commits between the read and the commit. No lock is
 held across the provider call. A completed replay keeps its existing answer. A succeeded refund on a
@@ -304,6 +312,20 @@ resumes and POSTs under whatever lease it holds. **Accepted residual risk:** a p
 between the listing and the POST for longer than the provider's 24 h key retention could create a new
 refund under the stored key. Nothing records it. Reconciliation finds it from the stamp.
 
+**The same window applies to `refunded_outside`.** The outside path writes no Payments marker: its
+proof (§3) only reads. A dispatch admitted before the proof can still send one POST under the stored
+key after Commerce records the outside outcome. Within the provider's key retention the provider
+replays the original refund, which the proof found failed, so Payments records nothing. A stall past
+the 24 h retention can create a new refund. Because the leg has no marker, Payments can then journal
+`payment.refunded` and complete the leg, and an in-flight Commerce request can append and forward
+`order.refunded` before `CompleteOrderRefund` finds the refund already completed. This is the
+same accepted residual risk as for `abandoned`, for the same reason: no database mechanism stops a
+frozen process from sending its POST, a lease only moves the window, and the stored key is the real
+fence. A Payments marker and lease for the outside path were rejected. **Detection:** the
+order-recovery runbook lists the leg's provider refunds by its compensation stamp. A `succeeded`
+refund with that stamp on a refund closed with either outcome, or a `payment.refunded` fact on its
+leg, is an invariant violation that an operator reconciles by hand.
+
 `TestPartialRefundDispatchRefusesAnAbandonedLeg` pins the 409 with no provider call.
 `TestPartialRefundReplaySendsTheStoredKeyAsHeaderAndStamp` pins the identical replay request.
 `TestPartialRefundDispatchRecordsNothingWhenTheMarkerCommitsDuringTheProviderCall` commits the marker
@@ -313,6 +335,9 @@ transaction during the provider call and commits it after the Refunded answer, w
 for the operation lock: 409, the leg still bound, zero refund facts.
 `TestAbandonIsRefusedWhenDispatchCommitsFirst` pins the reverse order: dispatch commits one fact and
 the completion, and the abandonment then refuses a completed leg with no marker.
+`TestPartialRefundLateMarkerWinsOverAConfirmedMoneyMismatch` pins the 409, both references in the
+log, the bound leg and zero refund facts for a different or absent confirmed amount, with the marker
+committed during the provider call and with the marker transaction still holding the locks.
 
 ### 14. Recovery, and the cost of starting an abandonment
 

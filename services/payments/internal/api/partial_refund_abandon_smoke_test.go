@@ -6,9 +6,11 @@ import (
 	"bytes"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -528,6 +530,118 @@ func TestPartialRefundDispatchRecordsNothingWhenTheMarkerCommitsAfterTheProvider
 	}
 	if m := f.marker(t); m != (markerRow{1, "re_failed_ours"}) {
 		t.Fatalf("marker = %+v", m)
+	}
+}
+
+// lockedBuffer is a log sink that the handler goroutine and the test can share.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// captureLog sends the default logger to a buffer for one test.
+func captureLog(t *testing.T) *lockedBuffer {
+	t.Helper()
+	buf := &lockedBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
+}
+
+// RA4-2 (D34, ADR-087 §13). The marker commits during the provider call, and the provider then
+// answers Refunded with money the leg did not bind: a different amount, or no confirmed money at
+// all. The marker answers first: 409, both references in the log, the leg still bound and zero
+// refund facts. The money-mismatch 502 is only for a leg with no marker; the provider
+// confirmation tests keep that case.
+//
+// In the "in flight" cases the marker transaction holds the operation and leg locks when the
+// provider answers, and commits only after dispatch waits for them: a marker read that does not
+// take those locks misses it.
+func TestPartialRefundLateMarkerWinsOverAConfirmedMoneyMismatch(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		amount   int64
+		cur      string
+		inFlight bool
+	}{
+		{"a different confirmed amount", 999, "eur", false},
+		{"no confirmed money", 0, "", false},
+		{"a different confirmed amount, marker in flight", 999, "eur", true},
+		{"no confirmed money, marker in flight", 0, "", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			logs := captureLog(t)
+			f := newProofFixture(t, nil)
+			f.peer.list = emptyRefundList
+			opened := make(chan *sql.Tx, 1)
+			f.peer.submit = func() (int, string) {
+				tx, err := f.db.BeginTx(f.ctx, nil)
+				if err != nil {
+					t.Errorf("begin marker transaction: %v", err)
+					close(opened)
+					return 500, `{"error":{"message":"fixture","type":"api_error"}}`
+				}
+				for _, q := range []string{
+					`SELECT 1 FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2 FOR UPDATE`,
+					`SELECT 1 FROM payment_refund_legs WHERE organizer_id=$1 AND source_idempotency_key=$2 AND refund_idempotency_key=$3 FOR UPDATE`,
+					`INSERT INTO payment_refund_leg_abandonments(organizer_id,source_idempotency_key,refund_idempotency_key,provider_ref)
+					 VALUES($1,$2,$3,'re_failed_ours')`,
+				} {
+					args := []any{f.org, f.sourceKey, f.refundKey}
+					if strings.Contains(q, "payment_operations") {
+						args = args[:2]
+					}
+					if _, err := tx.ExecContext(f.ctx, q, args...); err != nil {
+						t.Errorf("marker transaction: %v", err)
+					}
+				}
+				if !c.inFlight {
+					if err := tx.Commit(); err != nil {
+						t.Errorf("commit the marker during the provider call: %v", err)
+					}
+				}
+				opened <- tx
+				return 200, f.refund("re_late", "succeeded", f.pi, f.legKey, c.amount, c.cur)
+			}
+			done := make(chan *httptest.ResponseRecorder, 1)
+			go func() { done <- f.dispatch(t) }()
+			tx, ok := <-opened
+			if !ok {
+				t.Fatal("the marker transaction did not open")
+			}
+			if c.inFlight {
+				f.waitForLockWaiters(t, 1, done)
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			res := <-done
+
+			if res.Code != 409 || res.Body.String() != `{"error":"refund leg abandoned"}`+"\n" {
+				t.Fatalf("status=%d body=%s, want 409 refund leg abandoned", res.Code, res.Body.String())
+			}
+			out := logs.String()
+			if !strings.Contains(out, "marker_provider_ref=re_failed_ours") || !strings.Contains(out, "result_provider_ref=re_late") {
+				t.Fatalf("log does not carry both references:\n%s", out)
+			}
+			assertLegStillBound(t, f.db, f.ctx, f.org)
+			if n := f.refundFacts(t); n != 0 {
+				t.Fatalf("payment.refunded facts = %d, want 0", n)
+			}
+		})
 	}
 }
 

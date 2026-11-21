@@ -212,3 +212,114 @@ func TestBothPSPsAreRefundFailureProvers(t *testing.T) {
 		t.Fatal("the Stripe adapter does not implement RefundFailureProver")
 	}
 }
+
+// pagedStripe serves the given listing pages in order (the last one repeats) and answers every
+// POST with a succeeded refund. It records the listing queries and counts the POSTs.
+func pagedStripe(t *testing.T, pages []string) (*Stripe, *[]url.Values, *int) {
+	t.Helper()
+	var queries []url.Values
+	posts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			posts++
+			_, _ = w.Write([]byte(proofRefund("re_posted", "succeeded", proofPI, proofKey, 1000, "eur")))
+			return
+		}
+		queries = append(queries, r.URL.Query())
+		_, _ = w.Write([]byte(pages[min(len(queries), len(pages))-1]))
+	}))
+	t.Cleanup(srv.Close)
+	return NewStripe("sk_test_dummy", srv.URL, srv.Client()), &queries, &posts
+}
+
+// R4-1, R4-2: the whole listing must be valid before any entry counts as evidence. Each case is
+// one malformed input. The proof variant holds a valid failed match that the old parser
+// accepted; the dispatch variant holds no match, so a parser that accepts the listing POSTs.
+// Both must refuse: the proof with no reference, the dispatch with zero POSTs.
+func TestStripeListingRefusesAMalformedListingForProofAndDispatch(t *testing.T) {
+	foreign := func(id string) string {
+		return fmt.Sprintf(`{"id":%q,"object":"refund","amount":5,"currency":"eur","status":"succeeded","payment_intent":"pi_proof","metadata":{}}`, id)
+	}
+	ours := proofRefund("re_ours", "failed", proofPI, proofKey, 1000, "eur")
+	nullStamp := `{"id":"re_null","object":"refund","amount":1000,"currency":"eur","status":"failed","payment_intent":"pi_proof","metadata":{"compensation_key":null}}`
+	for _, c := range []struct {
+		name          string
+		proofPages    []string
+		dispatchPages []string
+	}{
+		{
+			"an older cursor repeated on the final page",
+			[]string{proofList(true, foreign("re_a")), proofList(true, foreign("re_b")), proofList(false, foreign("re_a"), ours)},
+			[]string{proofList(true, foreign("re_a")), proofList(true, foreign("re_b")), proofList(false, foreign("re_a"))},
+		},
+		{
+			"a repeated non-cursor id on the final page",
+			[]string{proofList(true, foreign("re_x"), foreign("re_a")), proofList(false, foreign("re_x"), ours)},
+			[]string{proofList(true, foreign("re_x"), foreign("re_a")), proofList(false, foreign("re_x"))},
+		},
+		{
+			"a null stamp (beside a valid failed match for the proof, alone for dispatch)",
+			[]string{proofList(false, ours, nullStamp)},
+			[]string{proofList(false, nullStamp)},
+		},
+		{
+			"an entry whose object is a charge",
+			[]string{proofList(false, `{"id":"re_ours","object":"charge","amount":1000,"currency":"eur","status":"failed","payment_intent":"pi_proof","metadata":{"compensation_key":"psp-refund-leg-v1:proof"}}`)},
+			[]string{proofList(false, `{"id":"re_c","object":"charge","amount":1000,"currency":"eur","status":"succeeded","payment_intent":"pi_proof","metadata":{}}`)},
+		},
+	} {
+		t.Run("proof: "+c.name, func(t *testing.T) {
+			s, _, posts := pagedStripe(t, c.proofPages)
+			got, err := s.ProveRefundFailure(context.Background(), proofPI, proofKey, 1000, "EUR")
+			if !errors.Is(err, ErrRefundProofInconclusive) || got.ProviderRef != "" {
+				t.Fatalf("proof = %+v err=%v, want inconclusive with no reference", got, err)
+			}
+			if *posts != 0 {
+				t.Fatalf("the proof sent %d POSTs", *posts)
+			}
+		})
+		t.Run("dispatch: "+c.name, func(t *testing.T) {
+			s, _, posts := pagedStripe(t, c.dispatchPages)
+			got, err := s.Refund(context.Background(), proofPI, proofKey, 1000, "EUR")
+			if err == nil || got.Outcome == Refunded {
+				t.Fatalf("dispatch = %+v err=%v, want an inconclusive refusal", got, err)
+			}
+			if *posts != 0 {
+				t.Fatalf("dispatch sent %d POSTs on a malformed listing", *posts)
+			}
+		})
+	}
+}
+
+// The whole listing is validated before any entry is used: a stamped failed match on page one
+// is not adopted when page two repeats it. Dispatch must answer inconclusive, not the terminal
+// failure that the first page alone shows.
+func TestStripeDispatchDoesNotAdoptAMatchBeforeTheListingIsValid(t *testing.T) {
+	ours := proofRefund("re_ours", "failed", proofPI, proofKey, 1000, "eur")
+	s, queries, posts := pagedStripe(t, []string{proofList(true, ours), proofList(false, ours)})
+	got, err := s.Refund(context.Background(), proofPI, proofKey, 1000, "EUR")
+	if err == nil || errors.Is(err, ErrRefundFailed) || got.Outcome != Unknown {
+		t.Fatalf("dispatch = %+v err=%v, want an inconclusive refusal, not a terminal failure", got, err)
+	}
+	if *posts != 0 || len(*queries) != 2 {
+		t.Fatalf("posts=%d listing pages=%d, want 0 POSTs after reading both pages", *posts, len(*queries))
+	}
+}
+
+// The control: an unstamped refund with an explicit empty metadata map is a valid foreign
+// refund. The proof still accepts the failed match beside it, and dispatch still submits once
+// when it is the only refund.
+func TestStripeListingAcceptsAnUnstampedRefundWithEmptyMetadata(t *testing.T) {
+	foreign := `{"id":"re_dash","object":"refund","amount":5,"currency":"eur","status":"succeeded","payment_intent":"pi_proof","metadata":{}}`
+	s, _, posts := pagedStripe(t, []string{proofList(true, foreign), proofList(false, proofRefund("re_ours", "failed", proofPI, proofKey, 1000, "eur"))})
+	got, err := s.ProveRefundFailure(context.Background(), proofPI, proofKey, 1000, "EUR")
+	if err != nil || got.ProviderRef != "re_ours" || *posts != 0 {
+		t.Fatalf("proof = %+v err=%v posts=%d, want re_ours and no POST", got, err, *posts)
+	}
+	d, _, dposts := pagedStripe(t, []string{proofList(false, foreign)})
+	res, err := d.Refund(context.Background(), proofPI, proofKey, 1000, "EUR")
+	if err != nil || res.Outcome != Refunded || *dposts != 1 {
+		t.Fatalf("dispatch = %+v err=%v posts=%d, want one POST", res, err, *dposts)
+	}
+}

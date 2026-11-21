@@ -127,10 +127,13 @@ type stripeRefund struct {
 	// The fields below identify a refund found by listing (TKT-116). Metadata carries the
 	// compensation key we stamp at creation — it is what distinguishes a refund THIS system
 	// issued from one someone made in the Stripe dashboard.
-	Amount        int64             `json:"amount"`
-	Currency      string            `json:"currency"`
-	PaymentIntent string            `json:"payment_intent"`
-	Metadata      map[string]string `json:"metadata"`
+	Amount        int64  `json:"amount"`
+	Currency      string `json:"currency"`
+	Object        string `json:"object"`
+	PaymentIntent string `json:"payment_intent"`
+	// Metadata values are POINTERS (R4-2): a map[string]string decodes a null value to "",
+	// which reads as "not our stamp". A present null stamp is unreadable evidence, not absence.
+	Metadata map[string]*string `json:"metadata"`
 }
 
 // stripeRefundList is a Stripe list response. has_more drives cursor pagination.
@@ -469,17 +472,26 @@ type refundListFailure struct {
 // (which may lead to a POST) and ProveRefundFailure (which never does), so the two cannot
 // disagree about what a complete listing is.
 //
+// The WHOLE listing is read and validated before visit sees any entry (R4-1, R4-2): a page that
+// decodes is not evidence on its own, and a later page can show that an earlier one was not what
+// it claimed.
+//
 // nil means the listing completed or visit stopped it. Anything else is a failure that proves
-// nothing: a transport failure, a provider error, a malformed or incomplete page, an entry with
-// no id or no metadata, a page that holds its own cursor, a page that cannot advance the cursor
-// or repeats one, or a listing that does not terminate.
+// nothing: a transport failure, a provider error, a malformed or incomplete page, an entry that
+// is not a refund, an entry with no id or no metadata, a null compensation stamp, a refund id
+// listed twice anywhere in the listing (which also covers a page that holds its own cursor or an
+// older one, and a cursor that does not advance), or a listing that does not terminate.
 func (s *Stripe) listRefunds(ctx context.Context, providerRef string, visit func(stripeRefund) bool) *refundListFailure {
 	fail := func(res Result, err error) *refundListFailure { return &refundListFailure{res: res, err: err} }
 	q := url.Values{}
 	q.Set("payment_intent", providerRef)
 	q.Set("limit", "100")
-	cursors := map[string]bool{}
-	for page := 0; page < refundListPages; page++ {
+	seen := map[string]bool{}
+	var all []stripeRefund
+	for page := 0; ; page++ {
+		if page == refundListPages {
+			return fail(unknown(errors.New("stripe refund list did not terminate")))
+		}
 		status, raw, se, err := s.do(ctx, http.MethodGet, "/v1/refunds?"+q.Encode(), "", nil)
 		if err != nil {
 			return fail(unknown(err))
@@ -495,45 +507,43 @@ func (s *Stripe) listRefunds(ctx context.Context, providerRef string, visit func
 			return fail(unknown(errors.New("stripe refund list page is missing object/data/has_more")))
 		}
 		data := *list.Data
-		// Every entry must be classifiable before any is visited: an id to name it and a
-		// metadata object to read the stamp from. Stripe sends `metadata: {}` on an unstamped
-		// refund; a null or missing one is not evidence that the refund is unstamped.
+		// Every entry must be classifiable: a refund object, an id to name it and a metadata
+		// object to read the stamp from. Stripe sends `metadata: {}` on an unstamped refund; a
+		// null or missing one is not evidence that the refund is unstamped, and neither is a
+		// stamp that is present but null.
 		//
-		// A page that holds its own starting_after cursor did not advance past it. It is
-		// refused here, before any entry is accepted and before has_more=false can end the
-		// listing (RA3-2): what such a page claims to complete proves nothing.
-		after := q.Get("starting_after")
+		// Every id must be new to the WHOLE listing, the final page included (R4-1). A repeated
+		// id means the provider did not advance past it: what the listing claims to complete
+		// proves nothing.
 		for _, rf := range data {
-			if rf == nil || rf.ID == "" || rf.Metadata == nil {
-				return fail(unknown(errors.New("stripe refund list entry has no id or no metadata")))
+			if rf == nil || rf.Object != "refund" || rf.ID == "" || rf.Metadata == nil {
+				return fail(unknown(errors.New("stripe refund list entry is not a refund with an id and metadata")))
 			}
-			if after != "" && rf.ID == after {
-				return fail(unknown(fmt.Errorf("stripe refund list page after %q holds that refund again", after)))
+			if stamp, ok := rf.Metadata[compensationKeyMetadata]; ok && stamp == nil {
+				return fail(unknown(fmt.Errorf("stripe refund %q has a null compensation stamp", rf.ID)))
 			}
-		}
-		for _, rf := range data {
-			if visit(*rf) {
-				return nil
+			if seen[rf.ID] {
+				return fail(unknown(fmt.Errorf("stripe refund list holds refund %q twice", rf.ID)))
 			}
+			seen[rf.ID] = true
+			all = append(all, *rf)
 		}
 		if !*list.HasMore {
-			return nil
+			break
 		}
 		if len(data) == 0 {
 			// More pages exist but this one carries no id to advance the cursor past, so
 			// no further page can be reached: absence is unprovable.
 			return fail(unknown(errors.New("stripe refund list reports more pages but returned none")))
 		}
-		// A cursor already used cannot reach a new page: the listing would repeat or skip,
-		// and what it did not reach proves nothing.
-		cursor := data[len(data)-1].ID
-		if cursors[cursor] {
-			return fail(unknown(fmt.Errorf("stripe refund list cursor %q did not advance", cursor)))
-		}
-		cursors[cursor] = true
-		q.Set("starting_after", cursor)
+		q.Set("starting_after", data[len(data)-1].ID)
 	}
-	return fail(unknown(errors.New("stripe refund list did not terminate")))
+	for _, rf := range all {
+		if visit(rf) {
+			return nil
+		}
+	}
+	return nil
 }
 
 // ProveRefundFailure implements RefundFailureProver (TKT-525, ADR-087). It lists and reads; it
@@ -603,7 +613,8 @@ func (s *Stripe) ProveRefundFailure(ctx context.Context, providerRef, idempotenc
 // looks. An earlier revision folded this case into NO — the reviewer was right that the
 // leniency quietly broke the fail-closed rule the rest of this function exists to keep.
 func (rf stripeRefund) classify(providerRef, idempotencyKey string, amount int64, currency string) refundMatch {
-	if idempotencyKey == "" || rf.Metadata == nil || rf.Metadata[compensationKeyMetadata] != idempotencyKey {
+	stamp := rf.Metadata[compensationKeyMetadata]
+	if idempotencyKey == "" || stamp == nil || *stamp != idempotencyKey {
 		return refundMatchNo
 	}
 	if rf.ID == "" || rf.PaymentIntent != providerRef || rf.Currency != lc(currency) {

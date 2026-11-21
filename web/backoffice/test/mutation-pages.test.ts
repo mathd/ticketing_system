@@ -335,7 +335,8 @@ describe('another staff member retires a saved retry that an operator abandoned'
     expect(reads).toEqual([staffB.organizerAssertion]);
     expect(unresolvedRefunds.find(ORGANIZER, ORDER)).toBeUndefined();
     expect(html).not.toContain('Retry the same refund');
-    expect(html).toContain('recorded this refund as abandoned');
+    expect(html).toContain('An operator recorded this refund as abandoned. If the buyer is still owed, submit a new refund below.');
+    expect(html).not.toContain('Nothing was sent');
     const keys = freshKeys(html);
     expect(keys.length).toBeGreaterThan(0);
     expect(keys).not.toContain(REFUND_KEY);
@@ -369,7 +370,8 @@ describe('another staff member retires a saved retry that an operator abandoned'
     expect(reads).toEqual([staffB.organizerAssertion]);
     expect(unresolvedRefunds.find(ORGANIZER, upper)).toBeUndefined();
     expect(html).not.toContain('Retry the same refund');
-    expect(html).toContain('recorded this refund as abandoned');
+    expect(html).toContain('An operator recorded this refund as abandoned. If the buyer is still owed, submit a new refund below.');
+    expect(html).not.toContain('Nothing was sent');
     const keys = freshKeys(html);
     expect(keys.length).toBeGreaterThan(0);
     expect(keys).not.toContain(REFUND_KEY);

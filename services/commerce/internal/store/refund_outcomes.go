@@ -319,7 +319,7 @@ func RecordRefundedOutside(ctx context.Context, db *sql.DB, in RefundOutcomeRequ
 	if n, err := res.RowsAffected(); err != nil || n != 1 {
 		return RefundOutcome{}, false, fmt.Errorf("complete refund outside: %d rows, err %v", n, err)
 	}
-	if err := advanceOrderRefundProjection(ctx, tx, locked.order, locked.quantity, locked.amount, locked.sold); err != nil {
+	if err := advanceOrderRefundProjection(ctx, tx, in.OrganizerID, locked.order, locked.quantity, locked.amount, locked.sold); err != nil {
 		return RefundOutcome{}, false, err
 	}
 	return out, false, tx.Commit()

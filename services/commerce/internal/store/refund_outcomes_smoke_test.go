@@ -459,3 +459,43 @@ func TestReversalClaimTakesAnOutsideCompletionAndNotAPendingRefund(t *testing.T)
 		t.Fatal("the reversal claim took a pending refund, which would void tickets for money that never moved")
 	}
 }
+
+// R4-3: the shared projection UPDATE is scoped to the organizer through the order's source
+// reservation, and it must change exactly one row. CompleteOrderRefund still locks the order
+// without that scope (TKT-587), so a refund whose source reservation moved to another organizer
+// reaches the projection: the scoped UPDATE misses and the whole completion rolls back. Once
+// the reservation is back in scope, the same completion commits.
+func TestOrderRefundProjectionScopeMissRollsBackTheCompletion(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, order := seedCompleted(t, db, ctx, "charge-"+uuid.NewString(), 2, 1000)
+	r := bindPending(t, ctx, db, c, "scope-miss-1", 1)
+	if _, err := db.ExecContext(ctx, `UPDATE reservations SET organizer_id=$2 WHERE id=$1`, c.ReservationID, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := CompleteOrderRefund(ctx, db, c.OrganizerID, r.ID, uuid.New()); err == nil {
+		t.Fatal("a completion whose projection is out of organizer scope committed")
+	}
+	var status string
+	var fact uuid.NullUUID
+	if err := db.QueryRowContext(ctx, `SELECT status,payment_fact_id FROM order_refunds WHERE organizer_id=$1 AND id=$2`,
+		c.OrganizerID, r.ID).Scan(&status, &fact); err != nil {
+		t.Fatal(err)
+	}
+	if status != "pending" || fact.Valid {
+		t.Fatalf("refund status=%s fact=%v after a scope miss, want pending with no fact (rolled back)", status, fact)
+	}
+	if got := readProjection(t, ctx, db, order); got != (projection{0, 0, "none"}) {
+		t.Fatalf("projection = %+v after a scope miss, want none/0/0", got)
+	}
+
+	if _, err := db.ExecContext(ctx, `UPDATE reservations SET organizer_id=$2 WHERE id=$1`, c.ReservationID, c.OrganizerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := CompleteOrderRefund(ctx, db, c.OrganizerID, r.ID, uuid.New()); err != nil {
+		t.Fatalf("the in-scope completion failed: %v", err)
+	}
+	if got := readProjection(t, ctx, db, order); got != (projection{1, 1000, "partial"}) {
+		t.Fatalf("projection = %+v, want partial/1/1000", got)
+	}
+}

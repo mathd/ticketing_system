@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -413,7 +414,7 @@ func CompleteOrderRefund(ctx context.Context, db *sql.DB, org, refundID, payment
 		WHERE organizer_id=$1 AND id=$2 AND status='pending'`, org, refundID, paymentFactID); err != nil {
 		return err
 	}
-	if err := advanceOrderRefundProjection(ctx, tx, order, quantity, amount, sold); err != nil {
+	if err := advanceOrderRefundProjection(ctx, tx, org, order, quantity, amount, sold); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -423,15 +424,30 @@ func CompleteOrderRefund(ctx context.Context, db *sql.DB, org, refundID, payment
 // ONE projection arithmetic, shared by CompleteOrderRefund and the operator's outside
 // completion (TKT-525), so the two completion sources cannot drift. The caller holds the order
 // row lock.
-func advanceOrderRefundProjection(ctx context.Context, tx *sql.Tx, order uuid.UUID, quantity int32, amount int64, sold int32) error {
-	_, err := tx.ExecContext(ctx, `
-		UPDATE orders
-		SET refunded_quantity = refunded_quantity + $2,
-		    refunded_amount   = refunded_amount + $3,
-		    refund_status     = CASE WHEN refunded_quantity + $2 >= $4 THEN 'full' ELSE 'partial' END,
+//
+// The UPDATE is scoped to the organizer through the order's source reservation IN SQL (R4-3),
+// and it must change exactly one row: a scope miss is an error, so the caller's transaction
+// rolls back and the completion does not commit.
+func advanceOrderRefundProjection(ctx context.Context, tx *sql.Tx, org, order uuid.UUID, quantity int32, amount int64, sold int32) error {
+	res, err := tx.ExecContext(ctx, `
+		UPDATE orders o
+		SET refunded_quantity = o.refunded_quantity + $2,
+		    refunded_amount   = o.refunded_amount + $3,
+		    refund_status     = CASE WHEN o.refunded_quantity + $2 >= $4 THEN 'full' ELSE 'partial' END,
 		    updated_at        = now()
-		WHERE id=$1`, order, quantity, amount, sold)
-	return err
+		FROM reservations r
+		WHERE o.id=$1 AND r.id=o.reservation_id AND r.organizer_id=$5`, order, quantity, amount, sold, org)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("advance order refund projection: order %s is not in organizer scope (%d rows)", order, n)
+	}
+	return nil
 }
 
 // MarkRefundTicketsVoided records that a refund's tickets have been voided. Guarded on

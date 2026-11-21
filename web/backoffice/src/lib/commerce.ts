@@ -205,9 +205,13 @@ export async function refundOrder(req: RefundRequest): Promise<RefundOutcome> {
   }
 }
 
-/** What the page says when commerce settles a refund key as abandoned. */
+/**
+ * What the page says when commerce settles a refund key as abandoned. It does
+ * not say that nothing reached the payment provider: a request admitted before
+ * the abandonment can have reached it (ADR-087 §13).
+ */
 export const ABANDONED_REFUND_MESSAGE =
-  'An operator recorded this refund as abandoned. Nothing was sent to the payment provider. ' +
+  'An operator recorded this refund as abandoned. ' +
   'If the buyer is still owed, submit a new refund below.';
 
 /**

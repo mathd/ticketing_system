@@ -452,6 +452,35 @@ WHERE l.organizer_id = '<organizer-id>'
   AND l.refund_idempotency_key = '<refund-id>';
 ```
 
+**Detect a late provider refund** for a refund closed with either outcome (ADR-087 §13). A
+dispatch admitted before the outside proof or the abandonment marker can still send one POST under
+the leg's stored provider key. The provider deduplicates it within its 24 h key retention; a process
+that stalls longer can create a new refund, and nothing in the platform stops or records it as an
+error. Run this check as part of provider reconciliation for every refund closed with
+`refunded_outside` or `abandoned`:
+
+1. Read the leg's compensation stamp and its charge reference:
+
+   ```sql
+   -- payments database
+   SELECT l.provider_idempotency_key AS compensation_stamp, o.provider_payment_ref AS payment_intent,
+          l.status, l.fact_id
+   FROM payment_refund_legs l
+   JOIN payment_operations o
+     ON (o.organizer_id, o.idempotency_key) = (l.organizer_id, l.source_idempotency_key)
+   WHERE l.organizer_id = '<organizer-id>'
+     AND l.source_idempotency_key = '<order checkout key>'
+     AND l.refund_idempotency_key = '<refund-id>';
+   ```
+
+2. List the PaymentIntent's refunds at the provider (`GET /v1/refunds?payment_intent=<payment_intent>`
+   in Stripe, all pages) and keep each refund whose `metadata.compensation_key` equals
+   `compensation_stamp`.
+3. A `succeeded` refund in that list, or a leg with `status = 'refunded'` and a `fact_id` (a
+   `payment.refunded` journal fact), is an invariant violation: the provider returned money for an
+   attempt that an operator closed as refunded outside or abandoned. Stop all further money actions
+   on the order and its charge, and reconcile by hand with the buyer and the provider.
+
 **Roll forward, not back.** Commerce migration 0027 refuses to roll back while `refund_outcomes` or
 `order_refund_abandonment_dispositions` holds a row, and Payments migration 0007 refuses while
 `payment_refund_leg_abandonments` holds a row. The records are honest-operator evidence, not

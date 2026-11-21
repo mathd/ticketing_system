@@ -241,23 +241,7 @@ func (j *Journal) CompleteRefundLeg(ctx context.Context, org uuid.UUID, sourceKe
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var one int
-	err = tx.QueryRowContext(ctx, `SELECT 1 FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2 FOR UPDATE`, org, sourceKey).Scan(&one)
-	if errors.Is(err, sql.ErrNoRows) {
-		return RefundLegAbandonment{}, false, ErrRefundLegNotCompleted
-	}
-	if err != nil {
-		return RefundLegAbandonment{}, false, err
-	}
-	var status string
-	var existingFact uuid.NullUUID
-	err = tx.QueryRowContext(ctx, `
-		SELECT status, fact_id FROM payment_refund_legs
-		WHERE organizer_id=$1 AND source_idempotency_key=$2 AND refund_idempotency_key=$3 FOR UPDATE`,
-		org, sourceKey, refundKey).Scan(&status, &existingFact)
-	if errors.Is(err, sql.ErrNoRows) {
-		return RefundLegAbandonment{}, false, ErrRefundLegNotCompleted
-	}
+	status, existingFact, err := lockRefundLegForResult(ctx, tx, org, sourceKey, refundKey)
 	if err != nil {
 		return RefundLegAbandonment{}, false, err
 	}
@@ -295,6 +279,53 @@ func (j *Journal) CompleteRefundLeg(ctx context.Context, org uuid.UUID, sourceKe
 		return RefundLegAbandonment{}, false, ErrRefundLegNotCompleted
 	}
 	return RefundLegAbandonment{}, false, tx.Commit()
+}
+
+// lockRefundLegForResult takes the locks AbandonRefundLeg takes, in the same order: the
+// payment_operations row, then the leg row, both scoped by organizer. It returns the leg's
+// status and fact id. ErrRefundLegNotCompleted when either row is missing in this organizer.
+func lockRefundLegForResult(ctx context.Context, tx *sql.Tx, org uuid.UUID, sourceKey, refundKey string) (string, uuid.NullUUID, error) {
+	var one int
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2 FOR UPDATE`, org, sourceKey).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", uuid.NullUUID{}, ErrRefundLegNotCompleted
+	}
+	if err != nil {
+		return "", uuid.NullUUID{}, err
+	}
+	var status string
+	var existingFact uuid.NullUUID
+	err = tx.QueryRowContext(ctx, `
+		SELECT status, fact_id FROM payment_refund_legs
+		WHERE organizer_id=$1 AND source_idempotency_key=$2 AND refund_idempotency_key=$3 FOR UPDATE`,
+		org, sourceKey, refundKey).Scan(&status, &existingFact)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", uuid.NullUUID{}, ErrRefundLegNotCompleted
+	}
+	if err != nil {
+		return "", uuid.NullUUID{}, err
+	}
+	return status, existingFact, nil
+}
+
+// LookupRefundLegAbandonmentLocked reads the marker for one leg under the locks
+// CompleteRefundLeg and AbandonRefundLeg take (RA4-2). It writes nothing. Dispatch calls it when
+// the provider answered Refunded with money the leg did not bind: a marker that committed during
+// the provider call is then the answer (409 and the reconciliation log), not the money mismatch.
+func (j *Journal) LookupRefundLegAbandonmentLocked(ctx context.Context, org uuid.UUID, sourceKey, refundKey string) (RefundLegAbandonment, bool, error) {
+	tx, err := j.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RefundLegAbandonment{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, _, err := lockRefundLegForResult(ctx, tx, org, sourceKey, refundKey); err != nil {
+		return RefundLegAbandonment{}, false, err
+	}
+	m, abandoned, err := lookupRefundLegAbandonment(ctx, tx, org, sourceKey, refundKey)
+	if err != nil {
+		return RefundLegAbandonment{}, false, err
+	}
+	return m, abandoned, tx.Commit()
 }
 
 // ConfirmedRefund is the provider's own figure for a settled refund leg.

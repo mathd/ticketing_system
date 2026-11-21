@@ -179,7 +179,8 @@ try {
   const response = await submitted.response();
   check('the abandoned retry answers 200', response?.status() === 200, String(response?.status()));
   const alert = (await page.getByRole('alert').innerText()).trim();
-  check('the page says the refund was abandoned', alert.includes('abandoned'), alert);
+  check('the page says the refund was recorded as abandoned', alert.includes('An operator recorded this refund as abandoned.'), alert);
+  check('the page does not claim nothing reached the provider', !alert.includes('Nothing was sent'), alert);
   check('the page does not call it ambiguous', !alert.includes('may or may not have been applied'), alert);
   check('the saved retry is retired', (await retryForm().count()) === 0);
   check('a fresh refund form is offered', (await freshForm().count()) === 1);
