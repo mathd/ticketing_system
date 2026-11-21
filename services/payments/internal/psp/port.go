@@ -280,7 +280,9 @@ type PSP interface {
 // It is a SEPARATE interface, not a PSP method, on purpose. The proof must not be able to move
 // money, and an adapter method beside Refund would share Refund's submit path by one missed
 // branch. An implementation lists and reads only. A provider without one cannot prove anything,
-// and the caller answers that as inconclusive: the fake PSP does not implement it.
+// and the caller answers that as inconclusive. The fake PSP implements it only for the refunds it
+// itself failed on a fake-refund-fail-once charge (TKT-525); every other fake charge has no
+// recorded refund and stays inconclusive.
 type RefundFailureProver interface {
 	// ProveRefundFailure finds the refund this platform created for one leg, identified by
 	// the provider charge reference and the leg's provider idempotency key, and corroborated

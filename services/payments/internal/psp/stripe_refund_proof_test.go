@@ -149,12 +149,13 @@ func TestStripeProveRefundFailureNeedsAChargeAndAKey(t *testing.T) {
 	}
 }
 
-// The fake PSP must not be a prover: an offline deployment cannot prove a provider failure,
-// and pretending to would let an operator record an outside refund on no evidence.
-func TestFakePSPIsNotARefundFailureProver(t *testing.T) {
+// Both adapters are provers. The fake proves only refunds it itself failed (TKT-525); its own
+// tests are in fake_refund_proof_test.go, including that an ordinary fake charge can never be
+// proven.
+func TestBothPSPsAreRefundFailureProvers(t *testing.T) {
 	var p PSP = NewFake()
-	if _, ok := p.(RefundFailureProver); ok {
-		t.Fatal("the fake PSP implements RefundFailureProver")
+	if _, ok := p.(RefundFailureProver); !ok {
+		t.Fatal("the fake PSP does not implement RefundFailureProver")
 	}
 	var s PSP = &Stripe{}
 	if _, ok := s.(RefundFailureProver); !ok {

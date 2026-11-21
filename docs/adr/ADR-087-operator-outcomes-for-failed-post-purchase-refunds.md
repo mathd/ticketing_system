@@ -94,7 +94,13 @@ GET /internal/psp/partial-refund/failure-proof?organizer_id=&idempotency_key=&re
   `re_` reference. A matching `succeeded` refund, or more than one stamped refund, contradicts the
   failure (409). A pending refund, no stamped refund, a stamped refund that does not corroborate
   (other PaymentIntent, amount or currency), an incomplete or malformed listing, an unavailable
-  provider, and a provider with no prover (the fake PSP) are inconclusive (502).
+  provider, and a provider with no prover are inconclusive (502).
+- The fake PSP (offline and smoke stacks) proves only a refund failure that it recorded itself:
+  a charge captured with the `fake-refund-fail-once` token fails its first refund terminally and
+  keeps that refund in memory, and its proof follows the same rule as the Stripe adapter. Every
+  other fake charge keeps its stateless refund and stays inconclusive (502). A Payments restart
+  loses the fake's memory, so the proof then answers inconclusive. The fake invents no evidence:
+  it is the provider, and it proves only its own recorded failure.
 - After the provider answers, Payments reads the leg, its charge and its marker again. Any change
   refuses (409).
 - Error bodies are static. The provider idempotency key never crosses the boundary.

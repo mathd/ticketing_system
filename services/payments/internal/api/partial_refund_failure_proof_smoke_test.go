@@ -321,7 +321,8 @@ func TestFailureProofRefusesProviderEvidenceThatIsNotAProof(t *testing.T) {
 		assertProofResponse(t, f.getValid(t), 502, `{"error":"refund failure proof unavailable"}`)
 		f.assertNothingWritten(t)
 	})
-	t.Run("the provider has no proof implementation", func(t *testing.T) {
+	// The fake PSP proves only refunds it itself failed (TKT-525); it never recorded this one.
+	t.Run("the fake PSP never recorded the refund", func(t *testing.T) {
 		f := newProofFixture(t, func(*stripePeer) psp.PSP { return psp.NewFake() })
 		assertProofResponse(t, f.getValid(t), 502, `{"error":"refund failure proof unavailable"}`)
 		f.assertNothingWritten(t)

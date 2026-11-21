@@ -12,6 +12,11 @@ const (
 	// payment_unknown case. A later PSP status resolves it as authorized-uncaptured, which
 	// is what makes void (and S3's recovery) drivable offline.
 	TokenAuthHold = "fake-auth-hold"
+	// TokenRefundFailsOnce captures like TokenSuccess, but the FIRST refund submitted against
+	// the charge fails terminally at the provider, and every later refund under another key
+	// succeeds (TKT-525). It is the offline way to reach a failed post-purchase refund and the
+	// operator outcomes that resolve one (ADR-087).
+	TokenRefundFailsOnce = "fake-refund-fail-once"
 )
 
 // ErrUnknownToken reports a payment token outside the fake vocabulary. It lives here,
@@ -21,7 +26,7 @@ var ErrUnknownToken = errors.New("unknown fake payment token")
 
 func ValidToken(token string) bool {
 	switch token {
-	case TokenSuccess, TokenDecline, TokenTimeout, TokenAuthHold:
+	case TokenSuccess, TokenDecline, TokenTimeout, TokenAuthHold, TokenRefundFailsOnce:
 		return true
 	default:
 		return false
