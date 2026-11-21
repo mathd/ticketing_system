@@ -49,6 +49,10 @@ var (
 	ErrJournalUnavailable = errors.New("journal unavailable")
 	// ErrPersist reports that the completion could not be recorded locally.
 	ErrPersist = errors.New("persist refund")
+	// ErrRefundAbandoned reports a replay of a refund that an operator recorded as abandoned
+	// (TKT-525 S2, ADR-087). Nothing is sent to payments: the platform never re-submits that
+	// attempt. Staff can refund again under a NEW key; the abandoned unit is already released.
+	ErrRefundAbandoned = errors.New("refund abandoned by an operator (refund_abandoned)")
 )
 
 // Service refunds one order at a time.
@@ -89,6 +93,13 @@ func (s *Service) Refund(ctx context.Context, in commercestore.RefundRequest) (R
 		// The money is done, but the reversal may not be: a replay is how outstanding
 		// ticket voiding gets retried (TKT-157). Drive it, then answer.
 		return Result{Refund: s.DriveReversal(ctx, refund), Replay: true}, nil
+	}
+	// Checked before payments, for both callers: a staff replay of the old key, and a bulk
+	// run whose lookup read the refund before the abandonment committed. Payments refuses an
+	// abandoned leg too, and its marker commits first, so a refund abandoned after this read
+	// is refused there.
+	if refund.Abandoned {
+		return Result{}, ErrRefundAbandoned
 	}
 
 	factID, err := s.refundPayment(ctx, refund)

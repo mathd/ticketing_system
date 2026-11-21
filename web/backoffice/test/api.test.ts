@@ -722,6 +722,28 @@ describe('the order console reads (TKT-193)', () => {
     expect(got).toMatchObject({ ok: false, kind, message: 'commerce says no' });
   });
 
+  // TKT-525 S2 (D12). An operator recorded the refund behind this key as
+  // abandoned. Commerce says so with a specific code on its 409, and only there:
+  // the same code on any other status is not that answer, and a 409 without it
+  // stays a generic refusal.
+  it('recognizes refund_abandoned only on a 409', async () => {
+    spyFetch({ error: 'refund abandoned', code: 'refund_abandoned' }, 409);
+    const got = await refundOrder({ orderId: ORDER, quantity: 1, reason: 'r', actor: 'a', assertion: 'a', idempotencyKey: 'k' });
+    expect(got).toMatchObject({ ok: false, kind: 'abandoned' });
+  });
+
+  it.each([
+    ['a 409 with another code', 409, { error: 'refund unresolved', code: 'sold_out' }, 'refused'],
+    ['a 409 with no code', 409, { error: 'refund unresolved' }, 'refused'],
+    ['a 400 with the code', 400, { error: 'invalid', code: 'refund_abandoned' }, 'refused'],
+    ['a 502 with the code', 502, { error: 'refund unresolved', code: 'refund_abandoned' }, 'ambiguous'],
+    ['a 404 with the code', 404, { error: 'not found', code: 'refund_abandoned' }, 'not-found'],
+  ])('does not read %s as abandoned', async (_name, status, body, kind) => {
+    spyFetch(body, status);
+    const got = await refundOrder({ orderId: ORDER, quantity: 1, reason: 'r', actor: 'a', assertion: 'a', idempotencyKey: 'k' });
+    expect(got).toMatchObject({ ok: false, kind });
+  });
+
   // A 200 whose body is not a Refund is not a refund. Rendering a success
   // section from it would claim money moved on the strength of a shape we did
   // not check — and after an ambiguous response the page must say retry, not

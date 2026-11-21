@@ -348,6 +348,91 @@ A command that differs in kind, operator name, reference or reason is refused as
 added the `compensation_key` stamp, or one the provider never answered, has no refund the proof can
 find. The command refuses it, and both allowances stay reserved.
 
+After an outside completion the refund is in the reversal backlog until its tickets are voided and
+its capacity is returned. Watch `commerce.refund.reversal.outstanding` and
+`commerce.refund.reversal.parked` ([Refund reversal reconciliation](#refund-reversal-reconciliation)).
+A nonzero `parked` for this refund needs a human, as for any completed refund.
+
+### Nobody will refund this attempt: `abandoned`
+
+Use it when the buyer still has the money owed, no outside transfer occurred, and none is in flight.
+Then staff can refund the buyer again under a **new** key through the Back Office.
+
+```
+commerce record-refund-outcome <organizer-id> <refund-id> abandoned "<operator name>" "<reason>"
+```
+
+Run it the same way, with the same configuration. It takes no reference: Payments supplies the
+provider's `re_` for the failed refund, and the command records it as `external_ref`.
+
+Before you run it, confirm that **no outside transfer occurred and none is in flight** for this
+refund. If one did, use `refunded_outside` instead. `abandoned` releases the allowance, so running it
+after an outside transfer opens the way to a second refund of the same money.
+
+What the command does:
+
+1. It reads the refund in the organizer, as for `refunded_outside`.
+2. It asks Payments to abandon the leg. Payments proves, with the same read-only provider lookup,
+   that the stamped provider refund is `failed` or `canceled` for the stored money, then writes an
+   append-only marker on the exact leg. The leg stays `bound`. The marker releases that leg's amount
+   in the Payments captured-money ceiling, and ordinary dispatch then refuses the leg (409) before
+   any provider call.
+3. Only after Payments answered 200, Commerce appends the `abandoned` outcome. The refund stays
+   `pending`, and the order totals, the tickets and the capacity do not change. The Commerce quantity
+   ceiling stops counting this refund when the outcome commits.
+
+After success:
+
+- An abandoned refund never enters the reversal backlog, and the reversal gauges do not change: it
+  has no completion, so there is nothing to void or return.
+- Staff refund the buyer again through the Back Office order console, under a new key. If the Back
+  Office still holds a saved retry for the old key, submitting it answers "An operator recorded this
+  refund as abandoned", retires that saved retry, and shows a blank refund form with a fresh key.
+  The platform never re-submits automatically, and no operator command re-submits.
+- A bulk cancellation run that reaches this order skips the abandoned refund with no Payments call.
+  It reports `refund_refused` while quantity remains, and at zero quantity `already_refunded`, or
+  `reversal_outstanding` while another refund's reversal is still owed.
+
+**Run the same command again** after a timeout, a 5xx, a malformed answer, or a Commerce error.
+Payments may already have written its marker; then its allowance is released while Commerce keeps
+the quantity reserved. That is the stricter state, and it is safe. The same command converges:
+Payments answers from its marker without asking the provider (also when the provider is down), and
+Commerce records once. An identical command after success returns the original record
+(`replay=true`). A different operator name or reason is a conflict.
+
+| Refusal | Meaning | What to do |
+|---|---|---|
+| `no refund … for this organizer` | Wrong ids, or another organizer's refund | Check both ids. |
+| `already carries a different outcome` | An outcome is recorded and it is not this one | Stop. Investigate before any money action. |
+| `is completed` | The refund completed, through Payments or outside | Nothing to abandon. |
+| `payments refused to abandon` (404 or 409) | No such leg (wrong target), the leg completed, its money differs, or the provider says the refund did not fail | Nothing was recorded in either service. Correct the target, or reconcile the original refund through ordinary refund reconciliation. |
+| `UNCERTAIN: payments' answer … is unknown` | Timeout, 5xx, provider inconclusive, or an answer for other money | Commerce recorded nothing. Run the same command again. If Payments keeps answering 502, the provider proof is not available: see the unstamped case below. |
+| `changed while the command ran` | The refund or its order changed between the read and the write | Run the same command again. |
+| `FAILED: … was not recorded in Commerce` | A Commerce error after Payments may have accepted | Run the same command again. |
+
+**After an abandonment, an outside completion is refused.** Once the Payments marker exists, the
+`refunded_outside` proof answers 409 (`refund leg abandoned`), even while Commerce has no outcome
+yet. Finish the abandonment with the same command instead.
+
+**A Payments marker with no Commerce outcome** means an abandonment that Payments accepted and
+Commerce has not recorded. Find it with the leg query below (`abandonment_ref` set), then check
+Commerce:
+
+```sql
+-- commerce database
+SELECT kind, external_ref, operator_name, recorded_at
+FROM refund_outcomes
+WHERE organizer_id = '<organizer-id>' AND subject_kind = 'order_refund' AND subject_id = '<refund-id>';
+```
+
+No row: run the same `abandoned` command again. Do not transfer money, and do not run
+`refunded_outside`, until it has finished.
+
+**The unstamped-leg case.** Proof is impossible for a leg whose provider refund has no compensation
+stamp (bound before the adapter added it, or never answered by the provider). Both commands refuse
+it (`refunded_outside` with "could not prove", `abandoned` with "UNCERTAIN" and Payments 502), and
+both allowances stay reserved. No command in this release can close such a refund.
+
 **Find the Payments leg** for a refund with the scoped leg key: the organizer, the order's checkout
 idempotency key (`orders.idempotency_key`) and the refund id as the refund key.
 
@@ -367,5 +452,3 @@ WHERE l.organizer_id = '<organizer-id>'
 holds a row, and Payments migration 0007 refuses while `payment_refund_leg_abandonments` holds a row.
 Both records are honest-operator evidence, not tamper-evidence (ADR-021): a writer with database
 credentials can forge or delete them.
-
-The `abandoned` form (TKT-525 S2) is not available in this release; the command refuses it.

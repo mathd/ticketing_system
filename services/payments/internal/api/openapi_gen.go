@@ -317,6 +317,15 @@ type ProviderRefundFailedCode string
 // ProviderRefundFailedError defines model for ProviderRefundFailed.Error.
 type ProviderRefundFailedError string
 
+// RefundLegAbandon defines model for RefundLegAbandon.
+type RefundLegAbandon struct {
+	Amount         int64              `json:"amount"`
+	Currency       string             `json:"currency"`
+	IdempotencyKey string             `json:"idempotency_key"`
+	OrganizerId    openapi_types.UUID `json:"organizer_id"`
+	RefundKey      openapi_types.UUID `json:"refund_key"`
+}
+
 // RefundLegFailureProof defines model for RefundLegFailureProof.
 type RefundLegFailureProof struct {
 	Amount      int64  `json:"amount"`
@@ -434,6 +443,9 @@ type AppendFactJSONRequestBody = Fact
 
 // PspPartialRefundJSONRequestBody defines body for PspPartialRefund for application/json ContentType.
 type PspPartialRefundJSONRequestBody = PSPPartialRefund
+
+// PspPartialRefundAbandonJSONRequestBody defines body for PspPartialRefundAbandon for application/json ContentType.
+type PspPartialRefundAbandonJSONRequestBody = RefundLegAbandon
 
 // PspRefundJSONRequestBody defines body for PspRefund for application/json ContentType.
 type PspRefundJSONRequestBody = PSPCompensation

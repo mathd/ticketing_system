@@ -116,10 +116,13 @@ type RefundOutcome struct {
 }
 
 // matches reports whether a repeated command is the same command. Amount and currency are
-// not compared: the operator never supplies them.
+// not compared: the operator never supplies them. Neither is an abandoned outcome's external
+// reference: payments supplies it, so it is not part of the command.
 func (o RefundOutcome) matches(in RefundOutcomeRequest) bool {
-	return o.Kind == in.Kind && o.OperatorName == in.OperatorName &&
-		o.ExternalRef == in.ExternalRef && o.Reason == in.Reason
+	if o.Kind != in.Kind || o.OperatorName != in.OperatorName || o.Reason != in.Reason {
+		return false
+	}
+	return in.Kind == OutcomeAbandoned || o.ExternalRef == in.ExternalRef
 }
 
 // RefundOutcomeTarget is what the scoped inspection read, before any payments call. The
@@ -228,72 +231,17 @@ func RecordRefundedOutside(ctx context.Context, db *sql.DB, in RefundOutcomeRequ
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var order uuid.UUID
-	var quantity int32
-	var amount int64
-	var currency, status string
-	err = tx.QueryRowContext(ctx, `
-		SELECT order_id, quantity, amount, currency, status FROM order_refunds
-		WHERE organizer_id=$1 AND id=$2 FOR UPDATE`, in.OrganizerID, in.RefundID).
-		Scan(&order, &quantity, &amount, &currency, &status)
-	if errors.Is(err, sql.ErrNoRows) {
-		return RefundOutcome{}, false, ErrRefundOutcomeNotFound
-	}
+	locked, existing, err := lockOutcomeTarget(ctx, tx, in, inspected)
 	if err != nil {
 		return RefundOutcome{}, false, err
 	}
-
-	var chargeKey string
-	var sourceOrg uuid.UUID
-	var sold int32
-	err = tx.QueryRowContext(ctx, outsideOrderLockSQL, order).Scan(&chargeKey, &sourceOrg, &sold)
-	if errors.Is(err, sql.ErrNoRows) {
-		return RefundOutcome{}, false, ErrRefundOutcomeNotFound
+	if existing != nil {
+		return *existing, true, tx.Commit()
 	}
+	out, err := appendRefundOutcome(ctx, tx, in, locked, in.ExternalRef)
 	if err != nil {
 		return RefundOutcome{}, false, err
 	}
-	// The source reservation is the organizer's, checked again under the lock: the
-	// inspection's answer is not evidence about the row this transaction is about to write.
-	if sourceOrg != in.OrganizerID {
-		return RefundOutcome{}, false, ErrRefundOutcomeNotFound
-	}
-	if order != inspected.OrderID || chargeKey != inspected.ChargeKey ||
-		amount != inspected.Amount || currency != inspected.Currency {
-		return RefundOutcome{}, false, ErrRefundOutcomeStale
-	}
-
-	existing, found, err := lookupRefundOutcome(ctx, tx, in.OrganizerID, in.RefundID)
-	if err != nil {
-		return RefundOutcome{}, false, err
-	}
-	if found {
-		if !existing.matches(in) {
-			return RefundOutcome{}, false, ErrRefundOutcomeConflict
-		}
-		return existing, true, tx.Commit()
-	}
-	if status != "pending" {
-		return RefundOutcome{}, false, ErrRefundOutcomeIneligible
-	}
-
-	out := RefundOutcome{
-		OrganizerID: in.OrganizerID, RefundID: in.RefundID, Kind: in.Kind,
-		Amount: amount, Currency: currency, ExternalRef: in.ExternalRef,
-		OperatorName: in.OperatorName, Reason: in.Reason,
-	}
-	// session_user is read by the database on THIS connection, never passed in: a caller
-	// cannot supply it, and it records which login wrote the row separately from the typed name.
-	if err := tx.QueryRowContext(ctx, `
-		INSERT INTO refund_outcomes(organizer_id,subject_kind,subject_id,kind,amount,currency,
-		                            external_ref,operator_name,session_user_name,reason)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,session_user,$9)
-		RETURNING session_user_name, recorded_at`,
-		in.OrganizerID, refundOutcomeSubject, in.RefundID, in.Kind, amount, currency,
-		in.ExternalRef, in.OperatorName, in.Reason).Scan(&out.SessionUser, &out.RecordedAt); err != nil {
-		return RefundOutcome{}, false, err
-	}
-	out.RecordedAt = out.RecordedAt.UTC()
 
 	res, err := tx.ExecContext(ctx, `
 		UPDATE order_refunds SET status='completed', completed_at=now(), outside_completion_kind=$3
@@ -304,8 +252,137 @@ func RecordRefundedOutside(ctx context.Context, db *sql.DB, in RefundOutcomeRequ
 	if n, err := res.RowsAffected(); err != nil || n != 1 {
 		return RefundOutcome{}, false, fmt.Errorf("complete refund outside: %d rows, err %v", n, err)
 	}
-	if err := advanceOrderRefundProjection(ctx, tx, order, quantity, amount, sold); err != nil {
+	if err := advanceOrderRefundProjection(ctx, tx, locked.order, locked.quantity, locked.amount, locked.sold); err != nil {
 		return RefundOutcome{}, false, err
 	}
 	return out, false, tx.Commit()
+}
+
+// RecordAbandoned appends an `abandoned` outcome (TKT-525 S2, ADR-087), in ONE short
+// transaction, after payments has committed its abandonment marker for the refund's leg and
+// returned the provider's reference for the failed refund. That reference becomes the
+// outcome's external reference; the operator never types it.
+//
+// It takes the same locks and rechecks as RecordRefundedOutside and writes ONLY the outcome.
+// The refund stays pending; the order projection, the tickets and the capacity keep their
+// state. The quantity allowance is released because BindOrderRefund's sum excludes a refund
+// with a matching abandoned outcome, so the release happens exactly when this commits.
+//
+// replay=true returns the ORIGINAL record, with its time, attribution and reference, and
+// writes nothing.
+func RecordAbandoned(ctx context.Context, db *sql.DB, in RefundOutcomeRequest, inspected RefundOutcomeTarget, providerRef string) (RefundOutcome, bool, error) {
+	if in.Kind != OutcomeAbandoned {
+		return RefundOutcome{}, false, fmt.Errorf("RecordAbandoned takes kind %s, got %q", OutcomeAbandoned, in.Kind)
+	}
+	if err := in.Validate(); err != nil {
+		return RefundOutcome{}, false, err
+	}
+	if !strings.HasPrefix(providerRef, "re_") || len(providerRef) <= len("re_") || len(providerRef) > 200 {
+		return RefundOutcome{}, false, fmt.Errorf("abandoned outcome needs the provider's refund reference, got %q", providerRef)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return RefundOutcome{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	locked, existing, err := lockOutcomeTarget(ctx, tx, in, inspected)
+	if err != nil {
+		return RefundOutcome{}, false, err
+	}
+	if existing != nil {
+		return *existing, true, tx.Commit()
+	}
+	out, err := appendRefundOutcome(ctx, tx, in, locked, providerRef)
+	if err != nil {
+		return RefundOutcome{}, false, err
+	}
+	return out, false, tx.Commit()
+}
+
+// lockedOutcomeTarget is the refund and order as read under their row locks.
+type lockedOutcomeTarget struct {
+	order    uuid.UUID
+	quantity int32
+	amount   int64
+	currency string
+	sold     int32
+}
+
+// lockOutcomeTarget locks the refund row and then its order (CompleteOrderRefund's order, D16),
+// rechecks everything the scoped inspection read before the payments call, and decides a
+// repeated command. existing is non-nil for an exact replay of an outcome already recorded.
+//
+// Under those locks: the source reservation still belongs to the organizer; the order's charge
+// key and the refund's order, amount and currency are what was inspected; any outcome that
+// committed in the meantime is a replay or a conflict; and only a pending refund is eligible.
+func lockOutcomeTarget(ctx context.Context, tx *sql.Tx, in RefundOutcomeRequest, inspected RefundOutcomeTarget) (lockedOutcomeTarget, *RefundOutcome, error) {
+	var l lockedOutcomeTarget
+	var status string
+	err := tx.QueryRowContext(ctx, `
+		SELECT order_id, quantity, amount, currency, status FROM order_refunds
+		WHERE organizer_id=$1 AND id=$2 FOR UPDATE`, in.OrganizerID, in.RefundID).
+		Scan(&l.order, &l.quantity, &l.amount, &l.currency, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return l, nil, ErrRefundOutcomeNotFound
+	}
+	if err != nil {
+		return l, nil, err
+	}
+
+	var chargeKey string
+	var sourceOrg uuid.UUID
+	err = tx.QueryRowContext(ctx, outsideOrderLockSQL, l.order).Scan(&chargeKey, &sourceOrg, &l.sold)
+	if errors.Is(err, sql.ErrNoRows) {
+		return l, nil, ErrRefundOutcomeNotFound
+	}
+	if err != nil {
+		return l, nil, err
+	}
+	// The source reservation is the organizer's, checked again under the lock: the
+	// inspection's answer is not evidence about the row this transaction is about to write.
+	if sourceOrg != in.OrganizerID {
+		return l, nil, ErrRefundOutcomeNotFound
+	}
+	if l.order != inspected.OrderID || chargeKey != inspected.ChargeKey ||
+		l.amount != inspected.Amount || l.currency != inspected.Currency {
+		return l, nil, ErrRefundOutcomeStale
+	}
+
+	existing, found, err := lookupRefundOutcome(ctx, tx, in.OrganizerID, in.RefundID)
+	if err != nil {
+		return l, nil, err
+	}
+	if found {
+		if !existing.matches(in) {
+			return l, nil, ErrRefundOutcomeConflict
+		}
+		return l, &existing, nil
+	}
+	if status != "pending" {
+		return l, nil, ErrRefundOutcomeIneligible
+	}
+	return l, nil, nil
+}
+
+// appendRefundOutcome inserts the outcome row. Amount and currency come from the locked refund.
+func appendRefundOutcome(ctx context.Context, tx *sql.Tx, in RefundOutcomeRequest, l lockedOutcomeTarget, externalRef string) (RefundOutcome, error) {
+	out := RefundOutcome{
+		OrganizerID: in.OrganizerID, RefundID: in.RefundID, Kind: in.Kind,
+		Amount: l.amount, Currency: l.currency, ExternalRef: externalRef,
+		OperatorName: in.OperatorName, Reason: in.Reason,
+	}
+	// session_user is read by the database on THIS connection, never passed in: a caller
+	// cannot supply it, and it records which login wrote the row separately from the typed name.
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO refund_outcomes(organizer_id,subject_kind,subject_id,kind,amount,currency,
+		                            external_ref,operator_name,session_user_name,reason)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,session_user,$9)
+		RETURNING session_user_name, recorded_at`,
+		in.OrganizerID, refundOutcomeSubject, in.RefundID, in.Kind, l.amount, l.currency,
+		externalRef, in.OperatorName, in.Reason).Scan(&out.SessionUser, &out.RecordedAt); err != nil {
+		return RefundOutcome{}, err
+	}
+	out.RecordedAt = out.RecordedAt.UTC()
+	return out, nil
 }

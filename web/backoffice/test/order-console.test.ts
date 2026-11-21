@@ -176,4 +176,13 @@ describe('an unresolved refund stays unresolved until commerce settles it (TKT-1
   it('is settled when a retry finally succeeds', () => {
     expect(unresolvedRefund({ ok: true }, request, KEY)).toBeNull();
   });
+
+  // TKT-525 S2. Commerce answered the saved retry with `refund_abandoned`: an
+  // operator recorded that nobody will refund that attempt, and nothing will
+  // ever move under its key. Keeping it would block every new refund of the
+  // order forever. A generic refusal of a retry still keeps it (above).
+  it('is settled when commerce says the retried refund was abandoned', () => {
+    expect(unresolvedRefund({ ok: false, kind: 'abandoned' }, request, KEY)).toBeNull();
+    expect(unresolvedRefund({ ok: false, kind: 'abandoned' }, request, null)).toBeNull();
+  });
 });

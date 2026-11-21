@@ -374,6 +374,15 @@ func (r *Runner) process(ctx context.Context, w store.CancellationWork) bool {
 			// refundable tickets it was meant to rescue.
 			return r.record(ctx, w, failure("ceiling_moved", err.Error()), true)
 		}
+		// The abandonment committed after resolveQuantity read the refund. The shared
+		// refund unit refused before any payments call; classify exactly as the skip does.
+		if errors.Is(err, refunds.ErrRefundAbandoned) {
+			decided := r.abandonedPlan(ctx, w, store.RefundID(w.OrganizerID, key))
+			if decided.terminal {
+				return r.finalize(ctx, w, decided.outcome)
+			}
+			return r.record(ctx, w, decided.outcome, true)
+		}
 		return r.record(ctx, w, failure(refundFailureCode(err), err.Error()), true)
 	}
 	out, terminal := r.classify(ctx, w, p, result)
@@ -546,7 +555,10 @@ func (r *Runner) resolveQuantity(ctx context.Context, w store.CancellationWork, 
 		// a lookup here cannot tell "a previous run refunded this" from "this run did,
 		// before it was interrupted".
 		p := plan{quantity: w.RequestedQuantity.Int32, priorRun: w.PriorRun}
-		if _, bound, err := r.store.LookupRefund(ctx, w.OrganizerID, refundID); err == nil && bound {
+		if existing, bound, err := r.store.LookupRefund(ctx, w.OrganizerID, refundID); err == nil && bound {
+			if existing.Abandoned {
+				return r.abandonedPlan(ctx, w, refundID)
+			}
 			// A bound refund vouches for the number: it is already in that refund's
 			// request fingerprint, so it must not be second-guessed.
 			return p
@@ -578,6 +590,9 @@ func (r *Runner) resolveQuantity(ctx context.Context, w store.CancellationWork, 
 	// `already_refunded` means — the replay flag cannot tell a second run apart from this
 	// run resuming after a crash, and would mis-attribute both.
 	priorRun := found
+	if found && existing.Abandoned {
+		return r.abandonedPlan(ctx, w, refundID)
+	}
 	if found {
 		// Persist it here too, not just on the branch that computes it. A later run finds
 		// this refund and takes THIS branch, and a row that reaches a `refunded` outcome
@@ -599,25 +614,7 @@ func (r *Runner) resolveQuantity(ctx context.Context, w store.CancellationWork, 
 	}
 	remaining := state.SoldQuantity - state.RefundedQuantity
 	if remaining <= 0 {
-		// Already fully refunded by someone else. It is only DONE if that refund's
-		// obligations were discharged too — money back with the tickets still valid is
-		// not a success (ADR-039).
-		if state.Outstanding() {
-			out := failure("reversal_outstanding", "the order is fully refunded but a reversal obligation is outstanding")
-			out.MoneyRefunded = true
-			out.TicketsVoided = state.VoidingOutstanding == 0
-			out.CapacityReturned = state.CapacityOutstanding == 0
-			out.RefundedQuantity, out.RefundedAmount = state.RefundedQuantity, state.RefundedAmount
-			// Terminal: the outstanding obligation belongs to a refund this run did not
-			// create, and repairing it would need that refund's own idempotency key, which
-			// the row does not carry. Retrying would re-read the same state five times and
-			// then fail anyway.
-			return terminalPlan(out)
-		}
-		return decidedPlan(store.CancellationOutcome{
-			Outcome: "already_refunded", MoneyRefunded: true, TicketsVoided: true, CapacityReturned: true,
-			RefundedQuantity: state.RefundedQuantity, RefundedAmount: state.RefundedAmount,
-		})
+		return fullyRefundedPlan(state)
 	}
 	if state.UnitAmount == 0 && state.TotalAmount == 0 {
 		// A comped order. It has no money leg, so it cannot be refunded — but it
@@ -654,6 +651,48 @@ func (r *Runner) resolveQuantity(ctx context.Context, w store.CancellationWork, 
 		return decidedPlan(failure("internal", "persist refund quantity"))
 	}
 	return plan{quantity: remaining}
+}
+
+// fullyRefundedPlan decides an order with nothing left to refund. It is only DONE if every
+// refund's obligations were discharged too: money back with the tickets still valid is not a
+// success (ADR-039).
+func fullyRefundedPlan(state store.OrderCancellationState) plan {
+	if state.Outstanding() {
+		out := failure("reversal_outstanding", "the order is fully refunded but a reversal obligation is outstanding")
+		out.MoneyRefunded = true
+		out.TicketsVoided = state.VoidingOutstanding == 0
+		out.CapacityReturned = state.CapacityOutstanding == 0
+		out.RefundedQuantity, out.RefundedAmount = state.RefundedQuantity, state.RefundedAmount
+		// Terminal: the outstanding obligation belongs to a refund this run did not
+		// create, and repairing it would need that refund's own idempotency key, which
+		// the row does not carry. Retrying would re-read the same state five times and
+		// then fail anyway.
+		return terminalPlan(out)
+	}
+	return decidedPlan(store.CancellationOutcome{
+		Outcome: "already_refunded", MoneyRefunded: true, TicketsVoided: true, CapacityReturned: true,
+		RefundedQuantity: state.RefundedQuantity, RefundedAmount: state.RefundedAmount,
+	})
+}
+
+// abandonedPlan decides a row whose cancellation refund an operator recorded as `abandoned`
+// (TKT-525 S2, ADR-087, owner decision 2026-10-12). The run never drives that refund again
+// and makes no payments call: the platform never re-submits a failed refund, and a new refund
+// for the released units is a staff decision under a new key.
+//
+// The verdict comes from the order projection and the reversal state, which the abandonment
+// did not change. Remaining quantity is `refund_refused`: this run will not return it. At
+// zero, the fully-refunded precedence applies, so an outstanding reversal stays
+// `reversal_outstanding` (0012's success CHECK) and a discharged one is `already_refunded`.
+func (r *Runner) abandonedPlan(ctx context.Context, w store.CancellationWork, refundID uuid.UUID) plan {
+	state, err := r.store.OrderState(ctx, w.OrganizerID, w.OrderID, refundID)
+	if err != nil {
+		return decidedPlan(failure("internal", "read order state"))
+	}
+	if state.SoldQuantity-state.RefundedQuantity <= 0 {
+		return fullyRefundedPlan(state)
+	}
+	return terminalPlan(failure("refund_refused", "an operator recorded this order's cancellation refund as abandoned; a new refund needs a staff decision"))
 }
 
 func decidedPlan(out store.CancellationOutcome) plan {

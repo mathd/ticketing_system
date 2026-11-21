@@ -81,6 +81,22 @@ func (s *Server) pspPartialRefund(w http.ResponseWriter, r *http.Request) {
 		write(w, 200, map[string]any{"status": leg.Status, "fact_id": leg.FactID, "amount": leg.Amount, "currency": leg.Currency, "replay": true})
 		return
 	}
+	// An abandoned leg is never submitted again (TKT-525 S2, ADR-087): an operator recorded,
+	// on the provider's own terminal-failure evidence, that nobody will refund this attempt, and
+	// its allowance is already released. Read in its own short statement right before the
+	// provider call; no lock spans the HTTP call. A read error fails closed.
+	//
+	// A replay that passes this read just before a marker commits reaches the adapter, which
+	// resolves before it submits: it lists the PaymentIntent's refunds, finds the stamped
+	// FAILED refund the marker was proven against, and answers the terminal 422 without a
+	// POST (TestPartialRefundDispatchRefusesAnAbandonedLeg pins both halves).
+	if _, abandoned, err := s.journal.LookupRefundLegAbandonment(r.Context(), in.OrganizerID, key, refundKey); err != nil {
+		write(w, 500, map[string]string{"error": "lookup refund leg abandonment"})
+		return
+	} else if abandoned {
+		write(w, 409, map[string]string{"error": "refund leg abandoned"})
+		return
+	}
 	// A replayed leg re-submits under the SAME derived provider key. The Stripe adapter
 	// resolves before it submits (ADR-032 §Refund, TKT-116) — it lists the PaymentIntent's
 	// refunds and adopts the one carrying this key's compensation stamp — so a settled leg

@@ -90,6 +90,7 @@ func (e CancellationRefundRunStatus) Valid() bool {
 // Defines values for ErrorCode.
 const (
 	OrphanedSeats                ErrorCode = "orphaned_seats"
+	RefundAbandoned              ErrorCode = "refund_abandoned"
 	SeatTaken                    ErrorCode = "seat_taken"
 	SeatedPoolUnsupported        ErrorCode = "seated_pool_unsupported"
 	SoldOut                      ErrorCode = "sold_out"
@@ -100,6 +101,8 @@ const (
 func (e ErrorCode) Valid() bool {
 	switch e {
 	case OrphanedSeats:
+		return true
+	case RefundAbandoned:
 		return true
 	case SeatTaken:
 		return true
@@ -446,7 +449,7 @@ type DeliveryEmail struct {
 
 // Error defines model for Error.
 type Error struct {
-	// Code Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). `source_tickets_already_admitted`: an exchange source ticket has a recorded admission (TKT-169). `sold_out` (TKT-341, ADR-082): a public GA reservation found zero public headroom at inventory's locked decision. It is point-in-time and retryable, not permanent: holds expire and channel reservations release. Only `POST /reservations` sends it, for a GA request. Partner routes never send it, and an exchange target refusal does not carry it.
+	// Code Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). `source_tickets_already_admitted`: an exchange source ticket has a recorded admission (TKT-169). `sold_out` (TKT-341, ADR-082): a public GA reservation found zero public headroom at inventory's locked decision. It is point-in-time and retryable, not permanent: holds expire and channel reservations release. Only `POST /reservations` sends it, for a GA request. Partner routes never send it, and an exchange target refusal does not carry it. `refund_abandoned` (TKT-525, ADR-087): a staff refund replay whose refund an operator recorded as abandoned. Only `POST /internal/orders/{id}/refunds` sends it, with 409. Nothing was sent to payments; a new refund needs a new key. Every other 409 of that route has no code.
 	Code  *ErrorCode `json:"code,omitempty"`
 	Error string     `json:"error"`
 
@@ -454,7 +457,7 @@ type Error struct {
 	SeatIdentities *[]string `json:"seat_identities,omitempty"`
 }
 
-// ErrorCode Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). `source_tickets_already_admitted`: an exchange source ticket has a recorded admission (TKT-169). `sold_out` (TKT-341, ADR-082): a public GA reservation found zero public headroom at inventory's locked decision. It is point-in-time and retryable, not permanent: holds expire and channel reservations release. Only `POST /reservations` sends it, for a GA request. Partner routes never send it, and an exchange target refusal does not carry it.
+// ErrorCode Machine-readable refusal reason. `seat_taken`: a seated reservation lost seats to a competing claimant (TKT-173). `orphaned_seats`: the selection would strand free seats with no free neighbour (ADR-041, TKT-182). `seated_pool_unsupported`: a quantity claim was made against a SEATED pool, which sells seat by seat and can never satisfy it (TKT-240). `source_tickets_already_admitted`: an exchange source ticket has a recorded admission (TKT-169). `sold_out` (TKT-341, ADR-082): a public GA reservation found zero public headroom at inventory's locked decision. It is point-in-time and retryable, not permanent: holds expire and channel reservations release. Only `POST /reservations` sends it, for a GA request. Partner routes never send it, and an exchange target refusal does not carry it. `refund_abandoned` (TKT-525, ADR-087): a staff refund replay whose refund an operator recorded as abandoned. Only `POST /internal/orders/{id}/refunds` sends it, with 409. Nothing was sent to payments; a new refund needs a new key. Every other 409 of that route has no code.
 type ErrorCode string
 
 // Exchange defines model for Exchange.

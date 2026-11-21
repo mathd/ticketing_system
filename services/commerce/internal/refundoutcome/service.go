@@ -13,6 +13,11 @@
 // THE PAYMENTS PORT IS ONE READ METHOD, and the narrowness is the guarantee, as in
 // exchangeunwind: a unit that cannot express a write cannot perform one. The command makes no
 // writing HTTP call — no refund, no fact forward, no marker.
+//
+// S2 implements `abandoned` in its own type, AbandonService, with its own one-method port: the
+// payments abandon call. Payments commits its marker first and returns the provider's
+// reference; Commerce then appends the outcome. The refund stays pending, and each service
+// releases only that refund's allowance in its own ceiling.
 package refundoutcome
 
 import (
@@ -120,4 +125,86 @@ func (s *Service) RecordRefundedOutside(ctx context.Context, in store.RefundOutc
 		return Result{}, err
 	}
 	return Result{Outcome: out, Proof: proof, Replay: replay}, nil
+}
+
+// Abandoner is the one payments write the `abandoned` path makes (TKT-525 S2).
+type Abandoner interface {
+	// AbandonRefundLeg asks payments to prove the leg's stamped provider refund terminally
+	// failed and to commit its abandonment marker, or to answer from a marker it already
+	// committed. It returns the provider's reference for the failed refund.
+	AbandonRefundLeg(ctx context.Context, org uuid.UUID, chargeKey, refundKey string, amount int64, currency string) (FailureProof, error)
+}
+
+var (
+	// ErrAbandonRefused is a conclusive refusal from payments: no such leg, the leg completed,
+	// its money differs, or the provider evidence says the refund did not fail. Neither service
+	// wrote anything.
+	ErrAbandonRefused = errors.New("payments refused the abandonment")
+	// ErrAbandonUncertain means payments' answer is unknown or unusable: it may have committed
+	// its marker. Commerce wrote nothing and the quantity stays reserved. Run the SAME command
+	// again; payments answers a committed marker without asking the provider.
+	ErrAbandonUncertain = errors.New("payments abandonment answer unknown")
+)
+
+// AbandonService is the `abandoned` operator path. Its own type, so the outside-completion
+// path (Service) keeps a port that can only read.
+type AbandonService struct {
+	db       *sql.DB
+	payments Abandoner
+}
+
+func NewAbandon(db *sql.DB, a Abandoner) *AbandonService {
+	return &AbandonService{db: db, payments: a}
+}
+
+// RecordAbandoned is the whole S2 operator act. Payments first, then Commerce:
+//
+//  1. Inspect the refund in the organizer, with no lock. A missing or foreign refund, an exact
+//     replay, a conflicting earlier outcome, and a completed refund are answered here, with no
+//     payments call.
+//  2. Ask payments to abandon the exact leg — the order's STORED charge key, the refund id as
+//     the leg's refund key, and the refund's stored money — with no Commerce lock held.
+//     Payments proves the terminal failure, commits its marker (which releases the leg's money
+//     allowance) and returns the provider's reference.
+//  3. Only after a valid answer for exactly the refund's money, append the Commerce outcome in
+//     one short transaction (store.RecordAbandoned). That commit is what releases the quantity.
+//
+// A failure after step 2 committed leaves the stricter ceiling: payments released its
+// allowance, Commerce still counts the quantity. The same command run again converges: payments
+// answers from its marker, and Commerce records once.
+func (s *AbandonService) RecordAbandoned(ctx context.Context, in store.RefundOutcomeRequest) (Result, error) {
+	if in.Kind != store.OutcomeAbandoned {
+		return Result{}, fmt.Errorf("outcome kind %q is not %s", in.Kind, store.OutcomeAbandoned)
+	}
+	if err := in.Validate(); err != nil {
+		return Result{}, err
+	}
+	target, err := store.InspectRefundOutcomeTarget(ctx, s.db, in.OrganizerID, in.RefundID)
+	if err != nil {
+		return Result{}, err
+	}
+	if existing, found, err := target.Replay(in); found {
+		if err != nil {
+			return Result{}, err
+		}
+		return Result{Outcome: existing, Replay: true}, nil
+	}
+	if target.Completed() {
+		return Result{}, store.ErrRefundOutcomeIneligible
+	}
+
+	evidence, err := s.payments.AbandonRefundLeg(ctx, in.OrganizerID, target.ChargeKey, in.RefundID.String(), target.Amount, target.Currency)
+	if err != nil {
+		return Result{}, err
+	}
+	if evidence.Amount != target.Amount || evidence.Currency != target.Currency {
+		return Result{}, fmt.Errorf("%w: payments answered for %d %s, the refund is %d %s",
+			ErrAbandonUncertain, evidence.Amount, evidence.Currency, target.Amount, target.Currency)
+	}
+
+	out, replay, err := store.RecordAbandoned(ctx, s.db, in, target, evidence.ProviderRef)
+	if err != nil {
+		return Result{}, err
+	}
+	return Result{Outcome: out, Proof: evidence, Replay: replay}, nil
 }

@@ -22,13 +22,15 @@ import (
 	store "ticketing/services/commerce/internal/store"
 )
 
-const recordRefundOutcomeUsage = "usage: commerce record-refund-outcome <organizer-id> <refund-id> refunded_outside <operator> <external-ref> <reason>"
+const recordRefundOutcomeUsage = "usage: commerce record-refund-outcome <organizer-id> <refund-id> refunded_outside <operator> <external-ref> <reason> | " +
+	"commerce record-refund-outcome <organizer-id> <refund-id> abandoned <operator> <reason>"
 
 // recordRefundOutcome records one operator outcome.
 //
 // Usage:
 //
 //	commerce record-refund-outcome <organizer-id> <refund-id> refunded_outside <operator> <external-ref> <reason>
+//	commerce record-refund-outcome <organizer-id> <refund-id> abandoned <operator> <reason>
 //
 // refunded_outside means: the operator has confirmed that the buyer received the FULL stored
 // amount of this refund, in its stored currency, by a settled transfer outside the platform.
@@ -39,7 +41,12 @@ const recordRefundOutcomeUsage = "usage: commerce record-refund-outcome <organiz
 // and unmarked and that the provider's own refund for it terminally failed. Without that proof
 // nothing is recorded. It makes no writing HTTP call.
 //
-// The `abandoned` form is TKT-525 S2 and is refused in this release.
+// abandoned means: the operator has confirmed that no outside transfer occurred and none is in
+// flight, and that nobody will refund this attempt (TKT-525 S2). Payments proves the leg's
+// provider refund terminally failed, commits its marker and returns the provider's reference,
+// which is recorded as the outcome's external reference; the operator never types it. The
+// refund stays pending. Each service releases ONLY this refund's allowance, so staff can then
+// refund the buyer again under a NEW key through the Back Office. No command re-submits.
 func recordRefundOutcome(args []string) error {
 	// Every argument is checked BEFORE the database is opened or payments is called, the
 	// contract recovery_operations_test.go states for an operator subcommand.
@@ -66,9 +73,15 @@ func recordRefundOutcome(args []string) error {
 			OperatorName: args[3], ExternalRef: args[4], Reason: args[5],
 		}
 	case store.OutcomeAbandoned:
-		return errors.New("the abandoned outcome is not available in this release (TKT-525 S2); nothing was recorded")
+		if len(args) != 5 {
+			return errors.New(recordRefundOutcomeUsage)
+		}
+		in = store.RefundOutcomeRequest{
+			OrganizerID: org, RefundID: refundID, Kind: store.OutcomeAbandoned,
+			OperatorName: args[3], Reason: args[4],
+		}
 	default:
-		return fmt.Errorf("outcome kind must be %s (%s)", store.OutcomeRefundedOutside, recordRefundOutcomeUsage)
+		return fmt.Errorf("outcome kind must be %s or %s (%s)", store.OutcomeRefundedOutside, store.OutcomeAbandoned, recordRefundOutcomeUsage)
 	}
 	if err := in.Validate(); err != nil {
 		return err
@@ -82,7 +95,7 @@ func recordRefundOutcome(args []string) error {
 		token = os.Getenv("INTERNAL_SERVICE_TOKEN")
 	}
 	if token == "" {
-		return errors.New("PAYMENTS_INTERNAL_TOKEN (or INTERNAL_SERVICE_TOKEN) is required to read the payments proof")
+		return errors.New("PAYMENTS_INTERNAL_TOKEN (or INTERNAL_SERVICE_TOKEN) is required to reach payments")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), operatorDBTimeout)
@@ -93,6 +106,9 @@ func recordRefundOutcome(args []string) error {
 	}
 	defer func() { _ = db.Close() }()
 
+	if in.Kind == store.OutcomeAbandoned {
+		return recordAbandoned(ctx, db, in, paymentsURL, token)
+	}
 	svc := refundoutcome.New(db, refundoutcome.NewHTTPPayments(paymentsURL, token, paymentsEvidenceTimeout))
 	res, err := svc.RecordRefundedOutside(ctx, in)
 	if err != nil {
@@ -137,5 +153,55 @@ func reportRefundOutcomeRefusal(refundID uuid.UUID, err error) {
 			"refund with no provider stamp can never be proven.\n", refundID, err)
 	case errors.Is(err, store.ErrRefundOutcomeStale):
 		fmt.Fprintf(os.Stderr, "REFUSED: refund %s changed while the command ran. Nothing was recorded. Run it again.\n", refundID)
+	}
+}
+
+// recordAbandoned is the `abandoned` form. Payments first, then Commerce (ADR-087).
+func recordAbandoned(ctx context.Context, db *sql.DB, in store.RefundOutcomeRequest, paymentsURL, token string) error {
+	svc := refundoutcome.NewAbandon(db, refundoutcome.NewHTTPAbandoner(paymentsURL, token, paymentsEvidenceTimeout))
+	res, err := svc.RecordAbandoned(ctx, in)
+	if err != nil {
+		reportAbandonedRefusal(in.RefundID, err)
+		return err
+	}
+	o := res.Outcome
+	fmt.Printf("organizer=%s refund=%s outcome=%s amount=%d currency=%s external_ref=%q operator=%q session_user=%q recorded_at=%s replay=%t\n",
+		in.OrganizerID, in.RefundID, o.Kind, o.Amount, o.Currency, o.ExternalRef, o.OperatorName, o.SessionUser,
+		o.RecordedAt.UTC().Format(time.RFC3339Nano), res.Replay)
+	if res.Replay {
+		fmt.Fprintf(os.Stderr, "refund %s already carried this exact outcome; nothing changed. The record above "+
+			"is the original, with its original time and attribution.\n", in.RefundID)
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "refund %s is recorded as abandoned (provider refund %s failed). It stays pending and is "+
+		"never re-submitted. Its %d %s allowance is released in both services: staff can refund the buyer again "+
+		"under a NEW key through the Back Office.\n", in.RefundID, o.ExternalRef, o.Amount, o.Currency)
+	return nil
+}
+
+// reportAbandonedRefusal tells the operator where each refusal sends them.
+func reportAbandonedRefusal(refundID uuid.UUID, err error) {
+	switch {
+	case errors.Is(err, store.ErrRefundOutcomeNotFound):
+		fmt.Fprintf(os.Stderr, "REFUSED: no refund %s for this organizer. Nothing was recorded. Check both ids.\n", refundID)
+	case errors.Is(err, store.ErrRefundOutcomeConflict):
+		fmt.Fprintf(os.Stderr, "REFUSED: refund %s already carries a different outcome. Nothing was recorded. "+
+			"An outcome is append-only; investigate before any further money action.\n", refundID)
+	case errors.Is(err, store.ErrRefundOutcomeIneligible):
+		fmt.Fprintf(os.Stderr, "REFUSED: refund %s is completed. There is nothing to abandon.\n", refundID)
+	case errors.Is(err, refundoutcome.ErrAbandonRefused):
+		fmt.Fprintf(os.Stderr, "REFUSED: payments refused to abandon refund %s (%v). Nothing was recorded in either "+
+			"service. A missing leg means the target is wrong; a completed leg or a provider success goes through "+
+			"ordinary refund reconciliation.\n", refundID, err)
+	case errors.Is(err, refundoutcome.ErrAbandonUncertain):
+		fmt.Fprintf(os.Stderr, "UNCERTAIN: payments' answer for refund %s is unknown (%v). Payments may have released "+
+			"its allowance; Commerce recorded nothing and keeps the quantity reserved. Run the SAME command again. "+
+			"A refund with no provider stamp can never be proven; its allowances stay reserved.\n", refundID, err)
+	case errors.Is(err, store.ErrRefundOutcomeStale):
+		fmt.Fprintf(os.Stderr, "REFUSED: refund %s changed while the command ran. Commerce recorded nothing. Run the "+
+			"SAME command again.\n", refundID)
+	default:
+		fmt.Fprintf(os.Stderr, "FAILED: refund %s was not recorded in Commerce (%v). If payments already accepted, its "+
+			"allowance is released and Commerce keeps the quantity reserved. Run the SAME command again.\n", refundID, err)
 	}
 }

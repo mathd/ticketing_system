@@ -26,7 +26,11 @@ re-submitted): the platform never re-submits a refund that the provider marks `f
 Amended by **TKT-525** ([ADR-087](ADR-087-operator-outcomes-for-failed-post-purchase-refunds.md)):
 post-purchase refunds get an operator route. `commerce record-refund-outcome … refunded_outside`
 records an outside refund after a read-only Payments proof that the stamped provider refund failed.
-It re-submits nothing.
+`commerce record-refund-outcome … abandoned` records that nobody will refund the attempt; Payments
+marks the leg after the same proof, and each service releases only that refund's allowance. Neither
+form re-submits anything. Owner decision of 2026-10-12: after a recorded `abandoned` outcome, staff
+can submit a new refund under a new key through the Back Office. The platform never re-submits
+automatically, and no operator command re-submits.
 
 ## Context
 
@@ -285,6 +289,10 @@ Operator runbook: `docs/development.md` §Journal signing key rotation.
      does today, the operator route and the limits. *Amended (TKT-525, ADR-087):* the same listing,
      match rule and status mapping also serve a read-only proof (`psp.RefundFailureProver`) that
      never submits; an operator command uses it to record an outside refund, not to re-submit.
+     *Amended (TKT-525 S2, owner decision of 2026-10-12):* after a recorded `abandoned` outcome,
+     staff can submit a new refund under a new key through the Back Office. The platform never
+     re-submits automatically, and no operator command re-submits. The failed leg stays bound and
+     carries an abandonment marker; dispatch refuses it with 409 before any provider call.
   Bound: refunds created before this amendment carry no stamp and therefore do not resolve. That is
   the pre-existing behaviour, not a regression — and not a fix.
 - `Status`: retrieve the known provider object. If the process timed out **before** persisting the
@@ -396,7 +404,11 @@ Live `sk_test_` verification remains manual and out-of-gate, per §Constraints.
 
 **The decision (owner, D1, 2026-09-25).** When the provider marks a refund `failed` or `canceled`,
 the platform does not re-submit it. No code path re-submits it automatically, and no operator
-command re-submits it. The rule is the same for the three callers below. TKT-144 made this state
+command re-submits it. The rule is the same for the three callers below. *Amended (TKT-525,
+[ADR-087](ADR-087-operator-outcomes-for-failed-post-purchase-refunds.md), owner decision of
+2026-10-12):* after a recorded `abandoned` outcome, staff can submit a new refund under a new key
+through the Back Office. The platform never re-submits automatically, and no operator command
+re-submits. TKT-144 made this state
 legible: the adapter returns `psp.ErrRefundFailed` (a `*psp.RefundFailedError` that carries the
 `re_` reference), and payments answers a declared 422 with code `provider_refund_failed` and the
 `re_` reference (`services/payments/api/openapi.yaml`, schema `ProviderRefundFailed`). Only the
@@ -412,7 +424,10 @@ Stripe adapter produces this error; the fake PSP's `Refund` always answers `refu
 - On the leg path (`payment_refund_legs`, ADR-037 §2), the provider key comes from
   `(organizer_id, source key, refund key)` (`store.RefundLegKey`), and the caller makes the refund
   key. A re-submission needs a new refund key, and a new refund key is a new leg and a new provider
-  refund.
+  refund. *Amended (TKT-525 S2):* that is why a replacement after `abandoned` is a staff decision
+  under a new key, never an automatic step: the new key is a new leg, and the platform does not
+  choose it. The abandoned leg keeps its key and stays bound; only its marker releases its
+  allowance.
 
 On both paths the platform would choose, by a heuristic, to move money a second time for one
 obligation. The platform does not have the evidence to make that choice. The cause of the failure
@@ -536,9 +551,13 @@ platform. Then the operator uses the existing surfaces. This is what each one do
   proof that the stamped provider refund failed, appends an append-only `refund_outcomes` row, and
   completes the refund with that outcome as its evidence. Both allowances stay consumed, no money
   fact is written, and the reversal reconciler voids the tickets and then returns the capacity.
+  When nobody will refund the attempt, `commerce record-refund-outcome <organizer-id> <refund-id>
+  abandoned <operator> <reason>` has Payments prove the failure and mark the leg, then appends an
+  `abandoned` outcome. The refund stays pending, and each service releases only its allowance.
 
 **The limit, stated plainly.** *Amended (TKT-525):* for staff and bulk post-purchase refunds,
-`record-refund-outcome … refunded_outside` now records "refunded outside the platform" (ADR-087).
+`record-refund-outcome … refunded_outside` now records "refunded outside the platform", and
+`record-refund-outcome … abandoned` records that nobody will refund the attempt (ADR-087).
 The paragraph below still describes recovery and exchange downgrades (TKT-532, TKT-533), and the
 case where no proof is possible (a leg whose provider refund has no stamp).
 No existing surface can record "refunded outside the platform".

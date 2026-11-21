@@ -136,6 +136,11 @@ if (Astro.request.method === 'POST') {
             ambiguous: outcome.kind === 'ambiguous',
           };
           Astro.response.status = outcome.kind === 'not-found' ? 404 : 200;
+          if (outcome.kind === 'abandoned') {
+            // The fresh form must be BLANK (TKT-525 S2): a new refund after an
+            // abandonment is a deliberate decision, not the old terms resent.
+            submitted = { ...submitted, quantity: '', reason: '' };
+          }
         }
         unresolved = unresolvedRefund(
           outcome,

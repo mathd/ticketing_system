@@ -190,6 +190,68 @@ describe('the order page gates unresolved refunds before dispatch', () => {
   }, 30_000);
 });
 
+// TKT-525 S2 (D12). The saved retry's refund was recorded abandoned by an
+// operator. Submitting the retry gets commerce's 409 `refund_abandoned`; the page
+// retires THAT saved key and renders a blank refund form with a fresh key. A
+// generic 409 keeps the saved retry, exactly as before.
+describe('the order page retires a saved retry only when commerce says it was abandoned', () => {
+  async function submitSavedRetry(answer: Response) {
+    const { unresolvedRefunds } = await import('../src/lib/unresolved-refunds');
+    unresolvedRefunds.note(ORGANIZER, {
+      orderId: ORDER,
+      quantity: 2,
+      reason: 'original request',
+      idempotencyKey: REFUND_KEY,
+    });
+    const writes: { url: string; key: string | null }[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === 'POST') {
+        writes.push({ url, key: new Headers(init.headers).get('Idempotency-Key') });
+        return answer;
+      }
+      if (url.includes(`/api/commerce/orders/${ORDER}`)) {
+        return json({ order_id: ORDER, status: 'completed' });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    }));
+    const response = await renderPage(
+      '../src/pages/orders.astro',
+      post('/admin/orders', {
+        _action: 'refund',
+        order_id: ORDER,
+        quantity: '2',
+        reason: 'original request',
+        idempotency_key: REFUND_KEY,
+      }),
+    );
+    return { html: await response.text(), writes, unresolvedRefunds };
+  }
+
+  it('renders a fresh blank form after refund_abandoned', async () => {
+    const { html, writes, unresolvedRefunds } = await submitSavedRetry(
+      json({ error: 'refund abandoned', code: 'refund_abandoned' }, 409),
+    );
+    expect(writes).toEqual([{ url: expect.stringContaining(`/internal/orders/${ORDER}/refunds`), key: REFUND_KEY }]);
+    expect(unresolvedRefunds.find(ORGANIZER, ORDER)).toBeUndefined();
+    expect(html).not.toContain('Retry the same refund');
+    expect(html).not.toContain(`value="${REFUND_KEY}"`);
+    const keys = [...html.matchAll(/name="idempotency_key" value="([0-9a-f-]{36})"/g)].map((m) => m[1]);
+    expect(keys.length).toBeGreaterThan(0);
+    expect(keys).not.toContain(REFUND_KEY);
+    expect(html).not.toContain('name="quantity" value="2"');
+    expect(html).not.toContain('original request');
+    expect(html).toContain('abandoned');
+  }, 30_000);
+
+  it('keeps the saved retry after a generic 409', async () => {
+    const { html, unresolvedRefunds } = await submitSavedRetry(json({ error: 'refund unresolved' }, 409));
+    expect(unresolvedRefunds.find(ORGANIZER, ORDER)).toMatchObject({ idempotencyKey: REFUND_KEY });
+    expect(html).toContain('Retry the same refund');
+    expect(html).toContain(`name="idempotency_key" value="${REFUND_KEY}"`);
+  }, 30_000);
+});
+
 describe('mutation pages classify unreadable success responses', () => {
   it('keeps the event key and tells the operator to reconcile before retrying', async () => {
     const key = '00000000-0000-4000-8000-000000000099';

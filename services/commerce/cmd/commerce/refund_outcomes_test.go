@@ -70,7 +70,12 @@ func TestRecordRefundOutcomeRefusesInvalidCommandsBeforeAnyConnection(t *testing
 		{"overlong operator", with(3, strings.Repeat("a", 201)), "operator name"},
 		{"overlong external reference", with(4, strings.Repeat("a", 201)), "external reference"},
 		{"overlong reason", with(5, strings.Repeat("a", 501)), "reason"},
-		{"abandoned is not in this release", []string{org, refund, "abandoned", "Ada Operator", "nobody will refund"}, "not available in this release"},
+		{"too few for abandoned", []string{org, refund, "abandoned", "Ada Operator"}, "usage:"},
+		{"too many for abandoned", []string{org, refund, "abandoned", "Ada Operator", "re_typed", "nobody will refund"}, "usage:"},
+		{"blank abandoned operator", []string{org, refund, "abandoned", " ", "nobody will refund"}, "operator name"},
+		{"blank abandoned reason", []string{org, refund, "abandoned", "Ada Operator", "\t"}, "reason"},
+		{"overlong abandoned reason", []string{org, refund, "abandoned", "Ada Operator", strings.Repeat("a", 501)}, "reason"},
+		{"nil organizer for abandoned", []string{uuid.Nil.String(), refund, "abandoned", "Ada Operator", "nobody will refund"}, "organizer id"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			dials := listenForDials(t)
@@ -111,18 +116,25 @@ func TestRecordRefundOutcomeNeedsPaymentsConfigurationFirst(t *testing.T) {
 }
 
 // The valid command passes validation and reaches the database: the refusals above are
-// refusals of THOSE inputs, not of everything.
+// refusals of THOSE inputs, not of everything. Both forms read the refund before payments.
 func TestRecordRefundOutcomeValidCommandReachesTheDatabase(t *testing.T) {
-	dials := listenForDials(t)
-	paymentsDials := listenForPaymentsDials(t)
-	err := recordRefundOutcome([]string{uuid.NewString(), uuid.NewString(), "refunded_outside", "Ada Operator", "SEPA-0001", "paid by bank transfer"})
-	if err == nil {
-		t.Fatal("the command succeeded against a listener that closes every connection")
-	}
-	if dials() == 0 {
-		t.Fatalf("a valid command never reached the database (err=%v)", err)
-	}
-	if paymentsDials() != 0 {
-		t.Fatalf("the command called payments before it could read the refund (%d dials)", paymentsDials())
+	for name, args := range map[string][]string{
+		"refunded_outside": {uuid.NewString(), uuid.NewString(), "refunded_outside", "Ada Operator", "SEPA-0001", "paid by bank transfer"},
+		"abandoned":        {uuid.NewString(), uuid.NewString(), "abandoned", "Ada Operator", "nobody will refund this attempt"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dials := listenForDials(t)
+			paymentsDials := listenForPaymentsDials(t)
+			err := recordRefundOutcome(args)
+			if err == nil {
+				t.Fatal("the command succeeded against a listener that closes every connection")
+			}
+			if dials() == 0 {
+				t.Fatalf("a valid command never reached the database (err=%v)", err)
+			}
+			if paymentsDials() != 0 {
+				t.Fatalf("the command called payments before it could read the refund (%d dials)", paymentsDials())
+			}
+		})
 	}
 }

@@ -91,10 +91,15 @@ export type Refund = {
  * verify — the refund **may have happened**, and the only honest thing to render
  * is "retry this exact request", with the idempotency key preserved so the retry
  * is a replay rather than a second refund.
+ *
+ * `abandoned` (TKT-525 S2) is a decided refusal with one specific meaning: an
+ * operator recorded the refund behind this key as abandoned, so nothing will
+ * ever move under it. Commerce sends it as a 409 with `code: refund_abandoned`,
+ * and only that combination is read as this kind.
  */
 export type RefundOutcome =
   | { ok: true; value: Refund }
-  | { ok: false; kind: 'not-found' | 'refused' | 'ambiguous'; message: string };
+  | { ok: false; kind: 'not-found' | 'refused' | 'ambiguous' | 'abandoned'; message: string };
 
 export type RefundRequest = {
   orderId: string;
@@ -139,6 +144,15 @@ export async function refundOrder(req: RefundRequest): Promise<RefundOutcome> {
 
       const message = await commerceMessage(res);
       if (res.status === 404) return { ok: false, kind: 'not-found', message };
+      if (res.status === 409 && (await commerceCode(res)) === 'refund_abandoned') {
+        return {
+          ok: false,
+          kind: 'abandoned',
+          message:
+            'An operator recorded this refund as abandoned. Nothing was sent to the payment provider. ' +
+            'If the buyer is still owed, submit a new refund below.',
+        };
+      }
       if (res.status === 400 || res.status === 409) {
         return { ok: false, kind: 'refused', message };
       }
@@ -194,6 +208,16 @@ export async function refundOrder(req: RefundRequest): Promise<RefundOutcome> {
     // The request may have reached commerce and been applied. Never "no refund
     // happened".
     return { ok: false, kind: 'ambiguous', message: 'Commerce could not be reached.' };
+  }
+}
+
+/** Commerce's machine-readable refusal code, or undefined. */
+async function commerceCode(res: Response): Promise<string | undefined> {
+  try {
+    const b = responseObject(await res.clone().json(), 'commerce error');
+    return typeof b.code === 'string' ? b.code : undefined;
+  } catch {
+    return undefined;
   }
 }
 

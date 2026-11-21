@@ -49,6 +49,8 @@ func refundProblem(err error) (int, string) {
 		return http.StatusConflict, "refund unresolved"
 	case errors.Is(err, refunds.ErrProviderRefundFailed):
 		return http.StatusUnprocessableEntity, "provider refund failed"
+	case errors.Is(err, refunds.ErrRefundAbandoned):
+		return http.StatusConflict, "refund abandoned"
 	case errors.Is(err, refunds.ErrPaymentsUnresolved):
 		return http.StatusBadGateway, "refund unresolved"
 	case errors.Is(err, refunds.ErrJournalUnavailable):
@@ -113,6 +115,13 @@ func (s *Server) refundOrder(w http.ResponseWriter, r *http.Request) {
 			write(w, http.StatusUnprocessableEntity, map[string]string{
 				"error": "provider refund failed", "code": "provider_refund_failed",
 			})
+			return
+		}
+		// An operator recorded this refund as abandoned (TKT-525 S2, D12). The specific
+		// code is what lets the Back Office retire its saved retry for this key and offer a
+		// fresh form; every other 409 stays generic, so a saved retry survives it.
+		if errors.Is(err, refunds.ErrRefundAbandoned) {
+			write(w, http.StatusConflict, map[string]string{"error": "refund abandoned", "code": "refund_abandoned"})
 			return
 		}
 		code, message := refundProblem(err)

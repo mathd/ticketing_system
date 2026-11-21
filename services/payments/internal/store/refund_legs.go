@@ -21,7 +21,8 @@ import (
 
 // ErrRefundExceedsCapture reports that a leg would take the cumulative refunded amount
 // past the money the provider actually captured. BOUND legs count: an unresolved leg may
-// yet settle, and releasing its allowance is how a charge gets over-refunded.
+// yet settle, and releasing its allowance is how a charge gets over-refunded. The one
+// exception is a leg with an abandonment marker (TKT-525 S2, ADR-087 §12).
 var ErrRefundExceedsCapture = errors.New("refund legs would exceed the captured amount")
 
 // ErrWholeRefundBound reports that the recovery path already owns this operation's
@@ -120,8 +121,19 @@ func (j *Journal) BindRefundLeg(ctx context.Context, org uuid.UUID, sourceKey, r
 	if whole > 0 {
 		return RefundLeg{}, ErrWholeRefundBound
 	}
+	// A leg with an abandonment marker (TKT-525 S2, ADR-087) no longer counts: an operator
+	// established, with the provider's own terminal-failure evidence, that nobody will refund
+	// that attempt. ONLY this sum excludes it. The whole-refund exclusion above still counts
+	// every leg, and the marked leg itself stays bound.
 	var bound sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT sum(amount) FROM payment_refund_legs WHERE organizer_id=$1 AND source_idempotency_key=$2`, org, sourceKey).Scan(&bound); err != nil {
+	if err := tx.QueryRowContext(ctx, `
+		SELECT sum(l.amount) FROM payment_refund_legs l
+		WHERE l.organizer_id=$1 AND l.source_idempotency_key=$2
+		  AND NOT EXISTS (
+		    SELECT 1 FROM payment_refund_leg_abandonments m
+		    WHERE m.organizer_id = l.organizer_id
+		      AND m.source_idempotency_key = l.source_idempotency_key
+		      AND m.refund_idempotency_key = l.refund_idempotency_key)`, org, sourceKey).Scan(&bound); err != nil {
 		return RefundLeg{}, err
 	}
 	// Checked, because `amount` is the one caller-supplied money value on this path and
@@ -304,4 +316,114 @@ func (j *Journal) LookupRefundLegProofState(ctx context.Context, org uuid.UUID, 
 	s.Completed = status == "refunded"
 	s.ProviderPaymentRef = piRef.String
 	return s, true, nil
+}
+
+// RefundLegAbandonment is one committed abandonment marker (TKT-525 S2, ADR-087).
+type RefundLegAbandonment struct {
+	// ProviderRef is the provider's reference for the failed or canceled refund that the marker
+	// was proven against.
+	ProviderRef string
+	AbandonedAt time.Time
+}
+
+var (
+	// ErrRefundLegCompleted reports a leg that settled. Its money moved; there is nothing to
+	// abandon.
+	ErrRefundLegCompleted = errors.New("refund leg completed")
+	// ErrRefundLegChanged reports that the leg or its charge no longer matches what the
+	// lock-free provider proof was built on.
+	ErrRefundLegChanged = errors.New("refund leg changed since the proof")
+	// ErrRefundLegAbandonedOtherwise reports a committed marker carrying another provider
+	// reference than the proof found.
+	ErrRefundLegAbandonedOtherwise = errors.New("refund leg abandoned under other evidence")
+)
+
+// LookupRefundLegAbandonment reads the marker for one exact leg, scoped by organizer. It is the
+// replay read of the abandon endpoint and the dispatch check of ordinary partial refunds.
+func (j *Journal) LookupRefundLegAbandonment(ctx context.Context, org uuid.UUID, sourceKey, refundKey string) (RefundLegAbandonment, bool, error) {
+	return lookupRefundLegAbandonment(ctx, j.db, org, sourceKey, refundKey)
+}
+
+func lookupRefundLegAbandonment(ctx context.Context, q rowQuerier, org uuid.UUID, sourceKey, refundKey string) (RefundLegAbandonment, bool, error) {
+	var m RefundLegAbandonment
+	err := q.QueryRowContext(ctx, `
+		SELECT provider_ref, abandoned_at FROM payment_refund_leg_abandonments
+		WHERE organizer_id=$1 AND source_idempotency_key=$2 AND refund_idempotency_key=$3`,
+		org, sourceKey, refundKey).Scan(&m.ProviderRef, &m.AbandonedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RefundLegAbandonment{}, false, nil
+	}
+	if err != nil {
+		return RefundLegAbandonment{}, false, err
+	}
+	m.AbandonedAt = m.AbandonedAt.UTC()
+	return m, true, nil
+}
+
+// AbandonRefundLeg writes the abandonment marker for one leg, in ONE short transaction, after
+// the caller has obtained the provider's terminal-failure proof with no lock held (D10).
+//
+// `proved` is the leg state the proof was built on. Under the payment_operations row lock (the
+// lock BindRefundLeg decides the ceiling under) and the leg's own row lock, the transaction
+// rechecks that the leg is still bound and that its money, its provider key and the charge's
+// provider reference are still the ones the proof used. A marker committed by a concurrent
+// request with the same provider reference is a replay; with another reference it is a
+// conflict.
+//
+// replay=true returns the committed marker and writes nothing.
+func (j *Journal) AbandonRefundLeg(ctx context.Context, org uuid.UUID, sourceKey, refundKey string, proved RefundLegProofState, providerRef string) (RefundLegAbandonment, bool, error) {
+	tx, err := j.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RefundLegAbandonment{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var piRef sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT provider_payment_ref FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2 FOR UPDATE`, org, sourceKey).
+		Scan(&piRef)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RefundLegAbandonment{}, false, sql.ErrNoRows
+	}
+	if err != nil {
+		return RefundLegAbandonment{}, false, err
+	}
+	var providerKey, currency, status string
+	var amount int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT provider_idempotency_key, amount, currency, status FROM payment_refund_legs
+		WHERE organizer_id=$1 AND source_idempotency_key=$2 AND refund_idempotency_key=$3 FOR UPDATE`,
+		org, sourceKey, refundKey).Scan(&providerKey, &amount, &currency, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RefundLegAbandonment{}, false, sql.ErrNoRows
+	}
+	if err != nil {
+		return RefundLegAbandonment{}, false, err
+	}
+	if status != "bound" {
+		return RefundLegAbandonment{}, false, ErrRefundLegCompleted
+	}
+	if providerKey != proved.ProviderKey || amount != proved.Amount || currency != proved.Currency ||
+		piRef.String != proved.ProviderPaymentRef {
+		return RefundLegAbandonment{}, false, ErrRefundLegChanged
+	}
+
+	existing, found, err := lookupRefundLegAbandonment(ctx, tx, org, sourceKey, refundKey)
+	if err != nil {
+		return RefundLegAbandonment{}, false, err
+	}
+	if found {
+		if existing.ProviderRef != providerRef {
+			return RefundLegAbandonment{}, false, ErrRefundLegAbandonedOtherwise
+		}
+		return existing, true, tx.Commit()
+	}
+
+	m := RefundLegAbandonment{ProviderRef: providerRef}
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO payment_refund_leg_abandonments(organizer_id,source_idempotency_key,refund_idempotency_key,provider_ref)
+		VALUES($1,$2,$3,$4) RETURNING abandoned_at`, org, sourceKey, refundKey, providerRef).Scan(&m.AbandonedAt); err != nil {
+		return RefundLegAbandonment{}, false, err
+	}
+	m.AbandonedAt = m.AbandonedAt.UTC()
+	return m, false, tx.Commit()
 }

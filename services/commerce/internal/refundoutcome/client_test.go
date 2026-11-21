@@ -2,6 +2,7 @@ package refundoutcome
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -84,6 +85,76 @@ func TestHTTPPaymentsClassifiesEveryOtherAnswer(t *testing.T) {
 		srv.Close()
 		if _, err := NewHTTPPayments(srv.URL, "t", time.Second).ProveRefundFailure(context.Background(), uuid.New(), "k", uuid.NewString()); !errors.Is(err, ErrProofUnavailable) {
 			t.Fatalf("err = %v, want ErrProofUnavailable", err)
+		}
+	})
+}
+
+// The abandon client (TKT-525 S2): one POST with the stored identities and money. A 200 in the
+// declared shape is evidence; 404 and 409 are conclusive refusals; everything else is
+// uncertain, because payments may have committed its marker before the answer was lost.
+func TestHTTPAbandonerPostsOneScopedAbandon(t *testing.T) {
+	org, refund := uuid.New(), uuid.New()
+	var seen *http.Request
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = w.Write([]byte(`{"provider_ref":"re_failed","amount":2000,"currency":"EUR"}`))
+	}))
+	t.Cleanup(srv.Close)
+	got, err := NewHTTPAbandoner(srv.URL, "payments-token", time.Second).AbandonRefundLeg(context.Background(), org, "charge-key", refund.String(), 2000, "EUR")
+	if err != nil || got != (FailureProof{ProviderRef: "re_failed", Amount: 2000, Currency: "EUR"}) {
+		t.Fatalf("abandon = %+v err=%v", got, err)
+	}
+	if seen.Method != http.MethodPost || seen.URL.Path != "/internal/psp/partial-refund/abandon" || seen.Header.Get("X-Internal-Token") != "payments-token" {
+		t.Fatalf("request = %s %s token=%q", seen.Method, seen.URL.Path, seen.Header.Get("X-Internal-Token"))
+	}
+	want := map[string]any{"organizer_id": org.String(), "idempotency_key": "charge-key", "refund_key": refund.String(), "amount": float64(2000), "currency": "EUR"}
+	if len(body) != len(want) {
+		t.Fatalf("body = %v", body)
+	}
+	for k, v := range want {
+		if body[k] != v {
+			t.Fatalf("body[%s] = %v, want %v", k, body[k], v)
+		}
+	}
+}
+
+func TestHTTPAbandonerClassifiesEveryAnswer(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		status int
+		body   string
+		want   error
+	}{
+		{"no such leg", 404, `{"error":"refund leg not found"}`, ErrAbandonRefused},
+		{"leg completed", 409, `{"error":"refund leg completed"}`, ErrAbandonRefused},
+		{"provider inconclusive", 502, `{"error":"refund failure proof unavailable"}`, ErrAbandonUncertain},
+		{"server error", 500, `{"error":"persist refund leg abandonment"}`, ErrAbandonUncertain},
+		{"bad request", 400, `{"error":"invalid body"}`, ErrAbandonUncertain},
+		{"unauthorized", 401, `{"error":"unauthorized"}`, ErrAbandonUncertain},
+		{"200 not the declared shape", 200, `{"provider_ref":"SEPA","amount":2000,"currency":"EUR"}`, ErrAbandonUncertain},
+		{"200 with trailing content", 200, `{"provider_ref":"re_x","amount":2000,"currency":"EUR"}{}`, ErrAbandonUncertain},
+		{"200 with an unknown field", 200, `{"provider_ref":"re_x","amount":2000,"currency":"EUR","x":1}`, ErrAbandonUncertain},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(c.status)
+				_, _ = w.Write([]byte(c.body))
+			}))
+			t.Cleanup(srv.Close)
+			_, err := NewHTTPAbandoner(srv.URL, "t", time.Second).AbandonRefundLeg(context.Background(), uuid.New(), "k", uuid.NewString(), 2000, "EUR")
+			if !errors.Is(err, c.want) {
+				t.Fatalf("err = %v, want %v", err, c.want)
+			}
+		})
+	}
+	t.Run("transport failure", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		srv.Close()
+		_, err := NewHTTPAbandoner(srv.URL, "t", time.Second).AbandonRefundLeg(context.Background(), uuid.New(), "k", uuid.NewString(), 2000, "EUR")
+		if !errors.Is(err, ErrAbandonUncertain) {
+			t.Fatalf("err = %v, want ErrAbandonUncertain", err)
 		}
 	})
 }
