@@ -405,6 +405,7 @@ func serviceLogCount(t *testing.T, ctx context.Context, service string, fragment
 type remoteCalls struct {
 	sourceAdmission, replacementAdmission, targetReturn, sourceReturn int
 	paymentsFacts, paymentsRefunds                                    int
+	paymentsOperations, paymentsLegs                                  int
 }
 
 func countRemoteCalls(t *testing.T, ctx context.Context, x racedExchange) remoteCalls {
@@ -417,6 +418,8 @@ func countRemoteCalls(t *testing.T, ctx context.Context, x racedExchange) remote
 		sourceReturn:         serviceLogCount(t, ctx, "inventory", `"method":"POST"`, path("/internal/holds/"+x.sourceHold.String()+"/refund-capacity")),
 		paymentsFacts:        serviceLogCount(t, ctx, "payments", `"method":"POST"`, path("/internal/facts")),
 		paymentsRefunds:      serviceLogCount(t, ctx, "payments", `"method":"POST"`, path("/internal/psp/partial-refund")),
+		paymentsOperations:   serviceLogCount(t, ctx, "payments", `"method":"GET"`, path("/internal/operations")),
+		paymentsLegs:         serviceLogCount(t, ctx, "payments", `"method":"GET"`, path("/internal/refund-legs")),
 	}
 }
 
@@ -543,6 +546,18 @@ func abandonAndAssert(t *testing.T, ctx context.Context, x racedExchange) {
 	if callsAfter.sourceAdmission-callsBefore.sourceAdmission != 1 || callsAfter.replacementAdmission-callsBefore.replacementAdmission != 1 ||
 		callsAfter.paymentsFacts <= callsBefore.paymentsFacts {
 		t.Fatalf("the first run's Access and journal calls are not visible in the request logs: before %+v after %+v", callsBefore, callsAfter)
+	}
+	// Positive controls for the payments evidence reads, so the replay check below can see one:
+	// an upgrade reads its capture and its abandonment leg, a downgrade its original refund leg.
+	switch {
+	case spec.delta() > 0:
+		if callsAfter.paymentsOperations <= callsBefore.paymentsOperations || callsAfter.paymentsLegs <= callsBefore.paymentsLegs {
+			t.Fatalf("the upgrade's operation and refund-leg reads are not visible in the request logs: before %+v after %+v", callsBefore, callsAfter)
+		}
+	case spec.delta() < 0:
+		if callsAfter.paymentsLegs <= callsBefore.paymentsLegs {
+			t.Fatalf("the downgrade's refund-leg read is not visible in the request logs: before %+v after %+v", callsBefore, callsAfter)
+		}
 	}
 	if n := callsAfter.targetReturn - callsBefore.targetReturn; n != 1 {
 		t.Fatalf("inventory received %d capacity return(s) for the target hold, want 1", n)
@@ -753,7 +768,7 @@ func abandonAndAssert(t *testing.T, ctx context.Context, x racedExchange) {
 	}
 	assertNoReplacementIssued(t, after, x, "after the abandonment")
 
-	// The terminal row leaves the listing; the buyer-facing exchange replay is unchanged.
+	// The terminal row leaves the listing; the exchange replay reports the terminal state (D24).
 	if listedCandidate(t, x) {
 		t.Fatalf("the abandoned exchange %s is still listed", x.exchange)
 	}
@@ -764,11 +779,15 @@ func abandonAndAssert(t *testing.T, ctx context.Context, x racedExchange) {
 	}
 	code, body := internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, x.sourceOrder), x.exchangeKey, request)
 	var replayed struct {
-		Status string `json:"status"`
-		Replay bool   `json:"replay"`
+		Status             string    `json:"status"`
+		Replay             bool      `json:"replay"`
+		ExchangeID         uuid.UUID `json:"exchange_id"`
+		ReplacementOrderID uuid.UUID `json:"replacement_order_id"`
+		DeltaAmount        int64     `json:"delta_amount"`
 	}
-	if code != http.StatusOK || json.Unmarshal(body, &replayed) != nil || replayed.Status != "switch_pending" || !replayed.Replay {
-		t.Fatalf("exchange replay after the abandonment = %d %s, want 200 switch_pending as a replay", code, body)
+	if code != http.StatusOK || json.Unmarshal(body, &replayed) != nil || replayed.Status != "abandoned" || !replayed.Replay ||
+		replayed.ExchangeID != x.exchange || replayed.ReplacementOrderID != x.replacementOrder || replayed.DeltaAmount != spec.delta() {
+		t.Fatalf("exchange replay after the abandonment = %d %s, want 200 abandoned as a replay with the original exchange and delta", code, body)
 	}
 }
 

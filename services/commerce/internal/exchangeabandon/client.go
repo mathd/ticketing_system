@@ -5,8 +5,9 @@ package exchangeabandon
 //
 // The client decodes; the service judges. Every answer is decoded strictly: exactly one JSON
 // object of the declared shape, no unknown field, no trailing content. An answer that does not
-// decode is ErrUnavailable, never a verdict. The HTTP mechanics follow exchangeunwind and
-// refundoutcome, whose rules came from review there.
+// decode is ErrUnavailable, never a verdict. A 404 is absence only when it is the endpoint's own
+// "not found" object, and a redirect is never followed. The HTTP mechanics follow exchangeunwind
+// and refundoutcome, whose rules came from review there.
 
 import (
 	"bytes"
@@ -31,7 +32,7 @@ import (
 const maxAnswerBytes = 64 << 10
 
 // HTTP reaches the three services. Payments takes its own credential; Access and inventory take
-// the internal token.
+// the internal token. Each call site names its credential: a configured URL never chooses it.
 type HTTP struct {
 	Client                               *http.Client
 	AccessURL, PaymentsURL, InventoryURL string
@@ -50,9 +51,12 @@ func NewHTTP(accessURL, paymentsURL, inventoryURL, internalToken, paymentsToken 
 	}
 }
 
-// call performs one request. It has the accessadmission.Caller shape so that the admission
-// read is the same code the pre-money check runs.
-func (h HTTP) call(ctx context.Context, method, u, key string, in any, internal bool) (int, []byte, error) {
+// send performs one request with the credential its caller names.
+//
+// It never follows a redirect: the 3xx answer is returned as it is, so every method reads it as
+// an unresolved answer, and the redirect target receives no request and no credential. The rule
+// is applied to a copy of the client on each call, so an HTTP built without NewHTTP keeps it.
+func (h HTTP) send(ctx context.Context, method, u, token string, in any) (int, []byte, error) {
 	var body io.Reader
 	if in != nil {
 		raw, err := json.Marshal(in)
@@ -68,23 +72,42 @@ func (h HTTP) call(ctx context.Context, method, u, key string, in any, internal 
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if key != "" {
-		req.Header.Set("Idempotency-Key", key)
-	}
-	if internal {
-		token := h.InternalToken
-		if h.PaymentsURL != "" && strings.HasPrefix(u, h.PaymentsURL) {
-			token = h.PaymentsToken
-		}
-		req.Header.Set("X-Internal-Token", token)
-	}
-	resp, err := h.Client.Do(req)
+	req.Header.Set("X-Internal-Token", token)
+	client := *h.Client
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, err := httpx.ReadResponseBody(resp.Body, maxAnswerBytes)
 	return resp.StatusCode, raw, err
+}
+
+// payments calls payments with the payments credential.
+func (h HTTP) payments(ctx context.Context, method, u string, in any) (int, []byte, error) {
+	return h.send(ctx, method, u, h.PaymentsToken, in)
+}
+
+// internal calls Access or inventory with the internal token.
+func (h HTTP) internal(ctx context.Context, method, u string, in any) (int, []byte, error) {
+	return h.send(ctx, method, u, h.InternalToken, in)
+}
+
+// accessCaller has the accessadmission.Caller shape, so that the admission read is the same code
+// the pre-money check runs. It always sends the internal token.
+func (h HTTP) accessCaller(ctx context.Context, method, u, _ string, in any, _ bool) (int, []byte, error) {
+	return h.internal(ctx, method, u, in)
+}
+
+// absent reports payments' own 404 for a missing record: exactly the JSON object
+// {"error": message} that the endpoint writes. A 404 from a missing route, a proxy, or an
+// answer of any other shape is not evidence that the record is absent.
+func absent(raw []byte, message string) bool {
+	var body struct {
+		Error *string `json:"error"`
+	}
+	return decodeStrict(raw, &body) == nil && body.Error != nil && *body.Error == message
 }
 
 // decodeStrict accepts exactly one object of out's shape with no unknown field and no
@@ -115,22 +138,23 @@ func errorText(raw []byte) string {
 
 // Admission reads Access's admission summary of one order through the shared strict reader.
 func (h HTTP) Admission(ctx context.Context, org, order uuid.UUID) (accessadmission.Admission, error) {
-	return accessadmission.Read(ctx, h.call, h.AccessURL, order, org)
+	return accessadmission.Read(ctx, h.accessCaller, h.AccessURL, order, org)
 }
 
-// ChargeOperation reads `GET /internal/operations` for one charge key. 404 is the only absence.
+// ChargeOperation reads `GET /internal/operations` for one charge key. Payments' own
+// `operation not found` 404 is the only absence.
 func (h HTTP) ChargeOperation(ctx context.Context, org uuid.UUID, key string) (ChargeEvidence, error) {
 	q := url.Values{}
 	q.Set("organizer_id", org.String())
 	q.Set("idempotency_key", key)
-	code, raw, err := h.call(ctx, http.MethodGet, h.PaymentsURL+"/internal/operations?"+q.Encode(), "", nil, true)
+	code, raw, err := h.payments(ctx, http.MethodGet, h.PaymentsURL+"/internal/operations?"+q.Encode(), nil)
 	if err != nil {
 		return ChargeEvidence{}, fmt.Errorf("%w: payments operation read: %v", ErrUnavailable, err)
 	}
-	switch code {
-	case http.StatusNotFound:
+	switch {
+	case code == http.StatusNotFound && absent(raw, "operation not found"):
 		return ChargeEvidence{}, nil
-	case http.StatusOK:
+	case code == http.StatusOK:
 	default:
 		return ChargeEvidence{}, fmt.Errorf("%w: payments operation read answered %d", ErrUnavailable, code)
 	}
@@ -158,21 +182,21 @@ func (h HTTP) ChargeOperation(ctx context.Context, org uuid.UUID, key string) (C
 	}, nil
 }
 
-// RefundLeg reads `GET /internal/refund-legs` for one (source key, refund key) leg. 404 is the
-// only absence.
+// RefundLeg reads `GET /internal/refund-legs` for one (source key, refund key) leg. Payments'
+// own `refund leg not found` 404 is the only absence.
 func (h HTTP) RefundLeg(ctx context.Context, org uuid.UUID, sourceKey, refundKey string) (LegEvidence, error) {
 	q := url.Values{}
 	q.Set("organizer_id", org.String())
 	q.Set("source_idempotency_key", sourceKey)
 	q.Set("refund_idempotency_key", refundKey)
-	code, raw, err := h.call(ctx, http.MethodGet, h.PaymentsURL+"/internal/refund-legs?"+q.Encode(), "", nil, true)
+	code, raw, err := h.payments(ctx, http.MethodGet, h.PaymentsURL+"/internal/refund-legs?"+q.Encode(), nil)
 	if err != nil {
 		return LegEvidence{}, fmt.Errorf("%w: payments refund-leg read: %v", ErrUnavailable, err)
 	}
-	switch code {
-	case http.StatusNotFound:
+	switch {
+	case code == http.StatusNotFound && absent(raw, "refund leg not found"):
 		return LegEvidence{}, nil
-	case http.StatusOK:
+	case code == http.StatusOK:
 	default:
 		return LegEvidence{}, fmt.Errorf("%w: payments refund-leg read answered %d", ErrUnavailable, code)
 	}
@@ -201,10 +225,10 @@ func (h HTTP) RefundLeg(ctx context.Context, org uuid.UUID, sourceKey, refundKey
 // request. Everything else, and every answer that does not decode, is ErrUnavailable: payments
 // may have moved the money, and the same key resolves it on the next run.
 func (h HTTP) PartialRefund(ctx context.Context, r RefundRequest) (RefundAnswer, error) {
-	code, raw, err := h.call(ctx, http.MethodPost, h.PaymentsURL+"/internal/psp/partial-refund", "", map[string]any{
+	code, raw, err := h.payments(ctx, http.MethodPost, h.PaymentsURL+"/internal/psp/partial-refund", map[string]any{
 		"organizer_id": r.OrganizerID, "idempotency_key": r.ChargeKey, "refund_key": r.RefundKey,
 		"amount": r.Amount, "currency": r.Currency,
-	}, true)
+	})
 	if err != nil {
 		return RefundAnswer{}, fmt.Errorf("%w: payments partial refund: %v", ErrUnavailable, err)
 	}
@@ -248,12 +272,12 @@ func (h HTTP) PartialRefund(ctx context.Context, r RefundRequest) (RefundAnswer,
 // (D13: an older payments does not know the type, and that must fail closed). Everything else
 // is ErrUnavailable: payments may have journalled the fact, and the same fact id replays.
 func (h HTTP) AppendFact(ctx context.Context, f store.ExchangeAbandonedFact) error {
-	code, raw, err := h.call(ctx, http.MethodPost, h.PaymentsURL+"/internal/facts", "", map[string]any{
+	code, raw, err := h.payments(ctx, http.MethodPost, h.PaymentsURL+"/internal/facts", map[string]any{
 		"fact_id": f.ID, "organizer_id": f.OrganizerID, "fact_type": store.ExchangeAbandonedFactType,
 		"buyer_id": f.BuyerID, "amount": f.Amount, "currency": f.Currency,
 		"occurred_at": f.OccurredAt.UTC().Format(time.RFC3339Nano),
 		"payload":     f.Payload(),
-	}, true)
+	})
 	if err != nil {
 		return fmt.Errorf("%w: payments journal: %v", ErrUnavailable, err)
 	}
@@ -282,8 +306,8 @@ func (h HTTP) AppendFact(ctx context.Context, f store.ExchangeAbandonedFact) err
 // id. 4xx is inventory's conclusive refusal; everything else that is not a decoded 200 is
 // ErrUnavailable, and the same receipt id replays.
 func (h HTTP) ReturnCapacity(ctx context.Context, org, hold, receipt uuid.UUID, quantity int32) (CapacityReturn, error) {
-	code, raw, err := h.call(ctx, http.MethodPost, fmt.Sprintf("%s/internal/holds/%s/refund-capacity", h.InventoryURL, hold), "",
-		map[string]any{"organizer_id": org, "refund_id": receipt, "quantity": quantity}, true)
+	code, raw, err := h.internal(ctx, http.MethodPost, fmt.Sprintf("%s/internal/holds/%s/refund-capacity", h.InventoryURL, hold),
+		map[string]any{"organizer_id": org, "refund_id": receipt, "quantity": quantity})
 	if err != nil {
 		return CapacityReturn{}, fmt.Errorf("%w: inventory capacity return: %v", ErrUnavailable, err)
 	}

@@ -491,7 +491,8 @@ paths:
       # TKT-158 / ADR-039. Settles exactly the DIFFERENCE — one net provider movement, not
       # a refund of the old gross plus a charge of the new — and journals both gross legs.
       # Ends in `switch_pending`: the replacement is confirmed and the buyer still holds
-      # VALID OLD TICKETS. Switching the entitlement is TKT-166.
+      # VALID OLD TICKETS. Switching the entitlement is TKT-166. A replay after an operator
+      # abandoned the settled exchange (TKT-498) answers 200 with status `abandoned`.
       #
       # Seated sources, admitted source tickets, currency mismatches and unavailable
       # targets are refused before any money moves. Access retains a row-locked check
@@ -1517,7 +1518,12 @@ components:
         # capacity_pending is switched-but-under-selling: the old tickets have stopped
         # admitting and the old capacity has not come back yet. It is a real, retryable
         # substate, and reporting it as `completed` hid an under-selling exchange (TKT-166).
-        status: {type: string, enum: [switch_pending, capacity_pending, completed]}
+        # abandoned is terminal and appears only on a replay (TKT-498, ADR-039 §2): an operator
+        # abandoned the settled exchange because Access refused its switch, refunded an upgrade
+        # delta or wrote off a downgrade delta, and returned the target capacity. The switch will
+        # never happen. The other fields keep the original exchange and money values as history.
+        # A started abandonment that is not terminal still answers switch_pending.
+        status: {type: string, enum: [switch_pending, capacity_pending, completed, abandoned]}
         tickets_exchanged: {type: boolean}
         capacity_returned: {type: boolean}
         replay: {type: boolean}

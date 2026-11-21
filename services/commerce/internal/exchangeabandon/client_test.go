@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,6 +93,10 @@ func TestChargeOperationReadsTheScopedKey(t *testing.T) {
 		{"unknown field", `{"resolved":true,"extra":1}`, 200},
 		{"wrong type", `{"resolved":true,"captured_amount":"1000"}`, 200},
 		{"trailing", `{"resolved":true}{}`, 200},
+		{"route-level 404", "404 page not found\n", 404},
+		{"404 with another message", `{"error":"not found"}`, 404},
+		{"404 with an extra field", `{"error":"operation not found","x":1}`, 404},
+		{"404 with no body", ``, 404},
 	} {
 		h, _ := wire(t, tc.status, tc.body)
 		if _, err := h.ChargeOperation(context.Background(), org, "k"); !errors.Is(err, ErrUnavailable) {
@@ -125,6 +131,10 @@ func TestRefundLegReadsTheScopedLeg(t *testing.T) {
 		{"null currency", `{"completed":true,"amount":700,"currency":null}`, 200},
 		{"unknown field", `{"completed":true,"amount":700,"currency":"EUR","abandoned":true}`, 200},
 		{"not JSON", `leg`, 200},
+		{"route-level 404", "404 page not found\n", 404},
+		{"404 with another message", `{"error":"operation not found"}`, 404},
+		{"404 with an extra field", `{"error":"refund leg not found","x":1}`, 404},
+		{"404 with no body", ``, 404},
 	} {
 		h, _ := wire(t, tc.status, tc.body)
 		if _, err := h.RefundLeg(context.Background(), org, "a", "b"); !errors.Is(err, ErrUnavailable) {
@@ -252,5 +262,82 @@ func TestReturnCapacityPostsTheReceiptAndDecodesStrictly(t *testing.T) {
 		if _, err := h.ReturnCapacity(context.Background(), org, hold, receipt, 2); !errors.Is(err, tc.want) {
 			t.Errorf("%s: err = %v, want %v", tc.name, err, tc.want)
 		}
+	}
+}
+
+// R1-4. Each dependency call names its own credential. The configured URLs share a prefix with
+// the payments URL, so a credential chosen from the URL would send the payments token to Access
+// and inventory.
+func TestEachDependencyCallSendsItsOwnCredential(t *testing.T) {
+	tokens := map[string]string{}
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		tokens[r.URL.Path] = r.Header.Get("X-Internal-Token")
+		mu.Unlock()
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	base := srv.URL + "/svc"
+	h := NewHTTP(base+"-access", base, base+"-inventory", "internal-token", "payments-token", 5*time.Second)
+	ctx, org, order, hold := context.Background(), uuid.New(), uuid.New(), uuid.New()
+	_, _ = h.Admission(ctx, org, order)
+	_, _ = h.ReturnCapacity(ctx, org, hold, uuid.New(), 1)
+	_, _ = h.ChargeOperation(ctx, org, "k")
+	_, _ = h.RefundLeg(ctx, org, "a", "b")
+	_, _ = h.PartialRefund(ctx, RefundRequest{OrganizerID: org, ChargeKey: "k", RefundKey: "r", Amount: 1, Currency: "EUR"})
+	_ = h.AppendFact(ctx, store.ExchangeAbandonedFact{ID: uuid.New(), OrganizerID: org})
+	want := map[string]string{
+		"/svc-access/internal/orders/" + order.String() + "/admission":        "internal-token",
+		"/svc-inventory/internal/holds/" + hold.String() + "/refund-capacity": "internal-token",
+		"/svc/internal/operations":         "payments-token",
+		"/svc/internal/refund-legs":        "payments-token",
+		"/svc/internal/psp/partial-refund": "payments-token",
+		"/svc/internal/facts":              "payments-token",
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(tokens) != len(want) {
+		t.Fatalf("requests = %v, want %v", tokens, want)
+	}
+	for path, token := range want {
+		if tokens[path] != token {
+			t.Errorf("%s sent %q, want %q", path, tokens[path], token)
+		}
+	}
+}
+
+// RA1-5. A redirect is not an answer. The client does not follow it, so the redirect target
+// receives no request and no credential, and every call stays unresolved.
+func TestARedirectIsUnresolvedAndIsNotFollowed(t *testing.T) {
+	var reached atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(target.Close)
+	for _, code := range []int{http.StatusFound, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, target.URL+r.URL.Path, code)
+		}))
+		h := NewHTTP(origin.URL, origin.URL+"/payments", origin.URL+"/inventory", "internal-token", "payments-token", 5*time.Second)
+		ctx, org := context.Background(), uuid.New()
+		calls := map[string]error{}
+		_, calls["admission"] = h.Admission(ctx, org, uuid.New())
+		_, calls["operation"] = h.ChargeOperation(ctx, org, "k")
+		_, calls["refund leg"] = h.RefundLeg(ctx, org, "a", "b")
+		_, calls["partial refund"] = h.PartialRefund(ctx, RefundRequest{OrganizerID: org, ChargeKey: "k", RefundKey: "r", Amount: 1, Currency: "EUR"})
+		calls["fact"] = h.AppendFact(ctx, store.ExchangeAbandonedFact{ID: uuid.New(), OrganizerID: org})
+		_, calls["capacity"] = h.ReturnCapacity(ctx, org, uuid.New(), uuid.New(), 1)
+		origin.Close()
+		for name, err := range calls {
+			if err == nil || errors.Is(err, ErrRefused) {
+				t.Errorf("%d %s: err = %v, want an unresolved answer", code, name, err)
+			}
+		}
+	}
+	if n := reached.Load(); n != 0 {
+		t.Fatalf("the redirect target received %d request(s), want 0", n)
 	}
 }

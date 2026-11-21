@@ -119,6 +119,7 @@ func (e ErrorCode) Valid() bool {
 
 // Defines values for ExchangeStatus.
 const (
+	ExchangeStatusAbandoned       ExchangeStatus = "abandoned"
 	ExchangeStatusCapacityPending ExchangeStatus = "capacity_pending"
 	ExchangeStatusCompleted       ExchangeStatus = "completed"
 	ExchangeStatusSwitchPending   ExchangeStatus = "switch_pending"
@@ -127,6 +128,8 @@ const (
 // Valid indicates whether the value is a known member of the ExchangeStatus enum.
 func (e ExchangeStatus) Valid() bool {
 	switch e {
+	case ExchangeStatusAbandoned:
+		return true
 	case ExchangeStatusCapacityPending:
 		return true
 	case ExchangeStatusCompleted:

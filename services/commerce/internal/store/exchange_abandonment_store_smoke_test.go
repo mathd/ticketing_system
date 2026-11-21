@@ -714,6 +714,43 @@ func TestFinishRefusesAConflictingFactIdentity(t *testing.T) {
 	}
 }
 
+// R1-5. The stored fact is read in the exchange's organizer only. A row under the derived id in
+// another organizer is a scoped miss after the insert conflict, and it answers the same generic
+// conflict without reading that organizer's row.
+func TestFinishRefusesAFactIdentityHeldByAnotherOrganizer(t *testing.T) {
+	db, ctx := outboxDB(t)
+	f := seedAbandonable(t, db, ctx, abandonSeedOpts{TargetUnit: 1500})
+	fact := abandonThroughReturn(t, db, ctx, f)
+	other := uuid.New()
+	mustExec(t, db, ctx, `INSERT INTO order_facts(fact_id,order_id,organizer_id,buyer_id,fact_type,amount,currency,occurred_at)
+		VALUES($1,$2,$3,$4,'order.exchange.abandoned',$5,'EUR',$6)`,
+		fact.ID, fact.OrderID, other, fact.BuyerID, fact.Amount, fact.OccurredAt)
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM order_facts WHERE organizer_id=$1`, other) })
+	if _, _, err := FinishExchangeAbandonment(ctx, db, fact); !errors.Is(err, ErrAbandonmentFactConflict) {
+		t.Fatalf("err=%v, want ErrAbandonmentFactConflict", err)
+	}
+	if r := readStarted(t, db, ctx, f.Org, f.ExchangeID); r.AbandonedAt.Valid {
+		t.Fatal("the exchange went terminal over another organizer's fact")
+	}
+}
+
+// R1-5. The loader projects an order's fields only through a reservation in the exchange's
+// organizer. A source or replacement reservation moved to another organizer leaves that order's
+// checkout key unread, and the row reads as inconsistent.
+func TestTheLoaderReadsOrderFieldsOnlyThroughAnInOrganizerReservation(t *testing.T) {
+	db, ctx := outboxDB(t)
+	source := seedAbandonable(t, db, ctx, abandonSeedOpts{})
+	mustExec(t, db, ctx, `UPDATE reservations SET organizer_id=$2 WHERE id=$1`, source.SourceReservation, uuid.New())
+	if e := loadSettled(t, db, ctx, source); e.PaymentSourceKey != "" || e.FreshEligibility() == nil {
+		t.Fatalf("source out of organizer: payment source key %q, eligibility %v; want no key and a refusal", e.PaymentSourceKey, e.FreshEligibility())
+	}
+	replacement := seedAbandonable(t, db, ctx, abandonSeedOpts{})
+	mustExec(t, db, ctx, `UPDATE reservations SET organizer_id=$2 WHERE id=$1`, replacement.ReplacementReservation, uuid.New())
+	if e := loadSettled(t, db, ctx, replacement); e.ReplacementPaymentKey != "" || e.FreshEligibility() == nil {
+		t.Fatalf("replacement out of organizer: replacement key %q, eligibility %v; want no key and a refusal", e.ReplacementPaymentKey, e.FreshEligibility())
+	}
+}
+
 // The fact submitted to payments must be the one the locked row describes.
 func TestFinishRefusesAFactTheRowDoesNotDescribe(t *testing.T) {
 	db, ctx := outboxDB(t)
@@ -972,6 +1009,41 @@ func TestBindOrderRefundReadsOnlyAStartedMarkerOfItsOwnOrganizer(t *testing.T) {
 		foreign.Org, foreign.ExchangeID, f.ReplacementReservation)
 	mustExec(t, db, ctx, startStmt, foreign.Org, foreign.ExchangeID)
 	bindReplacementRefund(t, db, ctx, f, "staff-1")
+}
+
+// The void binder reads the same marker (D23): only a started marker of its own organizer
+// refuses a comped replacement's void. An unstarted exchange, and a started one in another
+// organizer naming the same reservation, leave the void alone.
+func TestBindOrderVoidRefusesOnlyAStartedMarkerOfItsOwnOrganizer(t *testing.T) {
+	db, ctx := outboxDB(t)
+	comped := func(o abandonSeedOpts) abandonFixture {
+		f := seedAbandonable(t, db, ctx, o)
+		mustExec(t, db, ctx, `UPDATE reservations SET unit_amount=0, total_amount=0, face_value_amount=0
+			WHERE organizer_id=$1 AND id=$2`, f.Org, f.ReplacementReservation)
+		t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM order_voids WHERE organizer_id=$1`, f.Org) })
+		return f
+	}
+	void := func(f abandonFixture) error {
+		_, err := BindOrderVoid(ctx, db, VoidRequest{OrderID: f.ReplacementOrder, OrganizerID: f.Org,
+			IdempotencyKey: "staff-void", Actor: "support@example.test", Reason: "comp withdrawn"})
+		return err
+	}
+	if err := void(comped(abandonSeedOpts{})); err != nil {
+		t.Fatalf("void of an unstarted exchange's replacement: %v", err)
+	}
+	f := comped(abandonSeedOpts{})
+	foreign := seedAbandonable(t, db, ctx, abandonSeedOpts{})
+	mustExec(t, db, ctx, `UPDATE order_exchanges SET replacement_reservation_id=$3 WHERE organizer_id=$1 AND id=$2`,
+		foreign.Org, foreign.ExchangeID, f.ReplacementReservation)
+	mustExec(t, db, ctx, startStmt, foreign.Org, foreign.ExchangeID)
+	if err := void(f); err != nil {
+		t.Fatalf("void beside another organizer's started exchange: %v", err)
+	}
+	started := comped(abandonSeedOpts{})
+	reserveAbandonment(t, db, ctx, started)
+	if err := void(started); !errors.Is(err, ErrExchangeReplacementVoidAbandoned) || !errors.Is(err, ErrOrderNotVoidable) {
+		t.Fatalf("void after the reservation: err=%v, want ErrExchangeReplacementVoidAbandoned wrapping ErrOrderNotVoidable", err)
+	}
 }
 
 func countAbandonRows(t *testing.T, db *sql.DB, ctx context.Context, query string, args ...any) int {

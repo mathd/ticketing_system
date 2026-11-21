@@ -54,8 +54,9 @@ var (
 	// (TKT-525 S2, ADR-087). Nothing is sent to payments: the platform never re-submits that
 	// attempt. Staff can refund again under a NEW key; the abandoned unit is already released.
 	ErrRefundAbandoned = errors.New("refund abandoned by an operator (refund_abandoned)")
-	// ErrReplacementNotIssued reports a refund of an exchange REPLACEMENT order for which Access
-	// did not report issued replacement tickets (TKT-498, D14). Nothing was sent to payments. It
+	// ErrReplacementNotIssued reports a refund of an exchange REPLACEMENT order whose switch
+	// Commerce has not recorded and for which Access did not report issued replacement tickets
+	// (TKT-498, D22). Nothing was sent to payments. It
 	// wraps ErrPaymentsUnresolved, so the refund stays pending behind the existing retry path:
 	// the staff 502 and the bulk `unavailable`.
 	ErrReplacementNotIssued = fmt.Errorf("%w: the exchange replacement has no issued tickets", ErrPaymentsUnresolved)
@@ -107,7 +108,7 @@ func (s *Service) Refund(ctx context.Context, in commercestore.RefundRequest) (R
 	if refund.Abandoned {
 		return Result{}, ErrRefundAbandoned
 	}
-	// Immediately before payments, for both callers (TKT-498, D10, D14).
+	// Immediately before payments, for both callers (TKT-498, D10, D22).
 	if err := s.requireIssuedReplacement(ctx, refund); err != nil {
 		return Result{}, err
 	}
@@ -334,14 +335,22 @@ func (s *Service) DriveVoid(ctx context.Context, v commercestore.OrderVoid) comm
 	return v
 }
 
-// requireIssuedReplacement lets a refund of an exchange replacement order reach payments only
-// after Access reports issued replacement tickets.
+// requireIssuedReplacement lets a refund of an exchange replacement order whose switch Commerce
+// has not recorded reach payments only after Access reports issued replacement tickets.
 //
-// A replacement refund can move money only through the TKT-586 alias, under which payments
-// resolves the replacement's checkout key `exchange:<id>` to the exchange's charge. A settled
-// exchange whose switch Access refused has no replacement ticket, and its abandonment refunds
-// the delta and returns the target capacity itself. A replacement refund bound before the
-// abandonment reserved would otherwise dispatch after it and pay a second time.
+// A replacement refund can move money only through the TKT-586 alias. Payments looks up the
+// exact (organizer, key) pair and does not translate the replacement's key `exchange:<id>` to
+// the exchange's own `exchange-charge:<id>` operation. Checkout accepts the literal key
+// `exchange:<id>`, so a same-organizer checkout that used it holds a real charge under the
+// replacement's key, and the replacement refund would refund that charge. A settled exchange
+// whose switch Access refused has no replacement ticket, and its abandonment refunds the delta
+// and returns the target capacity itself. A replacement refund bound before the abandonment
+// reserved must not then move money through the alias.
+//
+// The binder reads the replacement identity and the switch marker under the order lock (D22,
+// supersedes D14). A recorded switch needs no Access read: Commerce writes
+// tickets_exchanged_at only after Access committed the switch, so the replacement has issued
+// tickets and no abandonment can start. Only an unrecorded switch is asked about.
 //
 // Issued replacement tickets are permanent, and the abandonment's second Access read refuses
 // any exchange that has them. So a dispatch that passes this read cannot race a successful
@@ -350,14 +359,9 @@ func (s *Service) DriveVoid(ctx context.Context, v commercestore.OrderVoid) comm
 // HTTP call; this read does not.
 //
 // Missing, malformed or zero issuance leaves the refund unresolved through the existing retry
-// path. So does a failed read of the replacement identity: an order that may be a replacement
-// is treated as one until the read succeeds. An order that is not a replacement is not affected.
+// path. An order that is not a replacement is not affected.
 func (s *Service) requireIssuedReplacement(ctx context.Context, refund commercestore.Refund) error {
-	replacement, err := commercestore.IsExchangeReplacementOrder(ctx, s.db, refund.OrganizerID, refund.OrderID)
-	if err != nil {
-		return fmt.Errorf("%w (%v)", ErrReplacementNotIssued, err)
-	}
-	if !replacement {
+	if !refund.ExchangeReplacement || refund.ReplacementSwitched {
 		return nil
 	}
 	admission, err := accessadmission.Read(ctx, accessadmission.Caller(s.call), s.accessURL, refund.OrderID, refund.OrganizerID)

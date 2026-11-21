@@ -33,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -107,6 +108,10 @@ type SettledExchange struct {
 // another organizer reads as absent, and consistencyError refuses it. Compared with
 // x.organizer_id, not the caller's argument, as LoadExchangeSwitch does: the invariant holds
 // between persisted rows, and the WHERE makes x.organizer_id the caller's organizer.
+//
+// An order's own fields are projected only when its reservation is in the organizer (R1-5): an
+// order whose reservation is elsewhere reads as absent too, so no field of another organizer's
+// order reaches the caller.
 const settledExchangeSelect = `
 	SELECT x.organizer_id, x.id, x.source_order_id, x.replacement_order_id, x.replacement_reservation_id,
 	       x.target_hold_id, x.quantity, x.source_total, x.source_gross_total, x.target_total,
@@ -114,9 +119,10 @@ const settledExchangeSelect = `
 	       x.abandonment_started_at, x.abandonment_operator_name, x.abandonment_session_user,
 	       x.abandonment_reason, x.abandonment_refund_fact_id, x.abandonment_refund_failed_ref,
 	       x.abandonment_target_returned_at, x.abandonment_written_off_amount, x.abandoned_at,
-	       so.idempotency_key,
+	       CASE WHEN sr.id IS NOT NULL THEN so.idempotency_key END,
 	       sr.id, sr.hold_id, sr.buyer_id, sr.quantity,
-	       ro.id, ro.idempotency_key, ro.status, ro.reservation_id,
+	       CASE WHEN rr.id IS NOT NULL THEN ro.id END, CASE WHEN rr.id IS NOT NULL THEN ro.idempotency_key END,
+	       CASE WHEN rr.id IS NOT NULL THEN ro.status END, CASE WHEN rr.id IS NOT NULL THEN ro.reservation_id END,
 	       rr.id, rr.hold_id, rr.quantity, rr.status
 	FROM order_exchanges x
 	JOIN orders so ON so.id = x.source_order_id
@@ -135,7 +141,7 @@ func scanSettledExchange(s rowScanner) (SettledExchange, error) {
 	var settledAt, switchedAt sql.NullTime
 	var srID, srHold, srBuyer, roID, roReservation, rrID, rrHold uuid.NullUUID
 	var srQty, rrQty sql.NullInt32
-	var roKey, roStatus, rrStatus sql.NullString
+	var soKey, roKey, roStatus, rrStatus sql.NullString
 	var startedAt, returnedAt, abandonedAt sql.NullTime
 	var operator, sessionUser, reason, failedRef sql.NullString
 	var refundFact uuid.NullUUID
@@ -146,7 +152,7 @@ func scanSettledExchange(s rowScanner) (SettledExchange, error) {
 		&startedAt, &operator, &sessionUser,
 		&reason, &refundFact, &failedRef,
 		&returnedAt, &writtenOff, &abandonedAt,
-		&e.PaymentSourceKey,
+		&soKey,
 		&srID, &srHold, &srBuyer, &srQty,
 		&roID, &roKey, &roStatus, &roReservation,
 		&rrID, &rrHold, &rrQty, &rrStatus); err != nil {
@@ -156,7 +162,7 @@ func scanSettledExchange(s rowScanner) (SettledExchange, error) {
 	e.TargetTotal, e.DeltaAmount = targetTotal.Int64, delta.Int64
 	e.Settled, e.SettledAt = settledAt.Valid, settledAt.Time.UTC()
 	e.TicketsExchanged = switchedAt.Valid
-	e.sourceInOrg = srID.Valid
+	e.sourceInOrg, e.PaymentSourceKey = srID.Valid, soKey.String
 	e.SourceReservationID, e.SourceHoldID, e.BuyerID, e.sourceQuantity = srID.UUID, srHold.UUID, srBuyer.UUID, srQty.Int32
 	e.replacementFound = roID.Valid
 	e.ReplacementPaymentKey, e.replacementOrderStatus, e.replacementOrderReservation = roKey.String, roStatus.String, roReservation.UUID
@@ -188,7 +194,9 @@ func (e SettledExchange) stateError() error {
 // input class is refused by exactly one predicate and its message names the actual defect: an
 // absent reservation reads as quantity 0, which would otherwise also fail the quantity check.
 // An unsettled row has no replacement order (0010's settlement shape), so the listing's
-// exclusion of unsettled rows is the `replacement order is missing` check.
+// exclusion of unsettled rows is the `replacement order is missing` check. The loader projects
+// the replacement order only through a reservation in the organizer, so a replacement
+// reservation in another organizer also reads as a missing replacement order.
 func (e SettledExchange) consistencyError() error {
 	reason := ""
 	switch {
@@ -197,13 +205,11 @@ func (e SettledExchange) consistencyError() error {
 	case e.sourceInOrg && e.sourceQuantity != e.Quantity:
 		reason = "the source reservation's quantity differs from the exchange's"
 	case !e.replacementFound:
-		reason = "the replacement order is missing"
+		reason = "the replacement order is missing, or its reservation is not in the exchange's organizer"
 	case e.replacementFound && e.replacementOrderReservation != e.ReplacementReservationID:
 		reason = "the replacement order is on another reservation than the exchange records"
 	case e.replacementFound && e.replacementOrderStatus != "completed":
 		reason = "the replacement order did not complete"
-	case e.replacementFound && !e.replacementInOrg:
-		reason = "the replacement reservation is not in the exchange's organizer"
 	case e.replacementInOrg && e.replacementStatus != "completed":
 		reason = "the replacement reservation did not complete"
 	case e.replacementInOrg && e.replacementQuantity != e.Quantity:
@@ -372,6 +378,13 @@ func (e SettledExchange) FreshEligibility() error {
 	return e.consistencyError()
 }
 
+// ResumeConsistency reports whether a started abandonment's rows still meet the candidate
+// definition. A resume does not run FreshEligibility, so the command checks this before it
+// resumes any remote effect (R1-5).
+func (e SettledExchange) ResumeConsistency() error {
+	return e.consistencyError()
+}
+
 // ReplacementRefund is one refund of a replacement order, as the caller inspected it.
 type ReplacementRefund struct {
 	ID     uuid.UUID
@@ -487,7 +500,8 @@ func ReserveExchangeAbandonment(ctx context.Context, db *sql.DB, r AbandonmentRe
 	if err != nil {
 		return SettledExchange{}, false, err
 	}
-	if !sameRefundSet(refunds, r.InspectedRefunds) {
+	// Both sets come from ListReplacementRefunds, ordered by id, so they compare positionally.
+	if !slices.Equal(refunds, r.InspectedRefunds) {
 		return SettledExchange{}, false, fmt.Errorf("%w: exchange %s", ErrReplacementRefundSetChanged, id)
 	}
 	for _, rf := range refunds {
@@ -522,22 +536,6 @@ func sameIdentities(a, b SettledExchange) bool {
 		a.ReplacementReservationID == b.ReplacementReservationID && a.TargetHoldID == b.TargetHoldID &&
 		a.BuyerID == b.BuyerID && a.Quantity == b.Quantity && a.DeltaAmount == b.DeltaAmount &&
 		a.Currency == b.Currency
-}
-
-func sameRefundSet(current, inspected []ReplacementRefund) bool {
-	if len(current) != len(inspected) {
-		return false
-	}
-	want := make(map[uuid.UUID]string, len(inspected))
-	for _, r := range inspected {
-		want[r.ID] = r.Status
-	}
-	for _, r := range current {
-		if status, ok := want[r.ID]; !ok || status != r.Status {
-			return false
-		}
-	}
-	return true
 }
 
 // RecordExchangeAbandonmentRefund records the payments fact of an upgrade's delta refund. A
@@ -772,12 +770,18 @@ func FinishExchangeAbandonment(ctx context.Context, db *sql.DB, f ExchangeAbando
 		f.ID, f.OrderID, f.OrganizerID, f.BuyerID, ExchangeAbandonedFactType, f.Amount, f.Currency, f.OccurredAt); err != nil {
 		return SettledExchange{}, false, fmt.Errorf("append abandonment fact of %s: %w", id, err)
 	}
+	// Read in this organizer only (R1-5). A row under the id in another organizer is a scoped
+	// miss after the insert conflict: the same generic conflict, without reading that row.
 	var stored ExchangeAbandonedFact
 	var storedType string
-	if err := tx.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		SELECT order_id, organizer_id, buyer_id, fact_type, amount, currency, occurred_at
-		FROM order_facts WHERE fact_id = $1`, f.ID).
-		Scan(&stored.OrderID, &stored.OrganizerID, &stored.BuyerID, &storedType, &stored.Amount, &stored.Currency, &stored.OccurredAt); err != nil {
+		FROM order_facts WHERE fact_id = $1 AND organizer_id = $2`, f.ID, org).
+		Scan(&stored.OrderID, &stored.OrganizerID, &stored.BuyerID, &storedType, &stored.Amount, &stored.Currency, &stored.OccurredAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SettledExchange{}, false, fmt.Errorf("%w: fact %s", ErrAbandonmentFactConflict, f.ID)
+	}
+	if err != nil {
 		return SettledExchange{}, false, fmt.Errorf("read abandonment fact of %s: %w", id, err)
 	}
 	if stored.OrderID != f.OrderID || stored.OrganizerID != f.OrganizerID || stored.BuyerID != f.BuyerID ||
@@ -843,23 +847,4 @@ func VerifyExchangeGrossFacts(ctx context.Context, q rowQuerier, e SettledExchan
 		}
 	}
 	return nil
-}
-
-// IsExchangeReplacementOrder reports whether an order is the replacement of an exchange in the
-// organizer. It finds the exchange through the replacement RESERVATION, which the basis
-// persists before settlement publishes replacement_order_id, so an order whose settlement is
-// still in flight is found too. Both the order's reservation and the exchange are scoped to the
-// organizer; 0028's partial index on (organizer_id, replacement_reservation_id) backs the read.
-func IsExchangeReplacementOrder(ctx context.Context, q rowQuerier, org, order uuid.UUID) (bool, error) {
-	var found bool
-	err := q.QueryRowContext(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM orders o
-			JOIN reservations r ON r.id = o.reservation_id AND r.organizer_id = $1
-			JOIN order_exchanges x ON x.organizer_id = $1 AND x.replacement_reservation_id = r.id
-			WHERE o.id = $2)`, org, order).Scan(&found)
-	if err != nil {
-		return false, fmt.Errorf("read replacement identity of order %s: %w", order, err)
-	}
-	return found, nil
 }

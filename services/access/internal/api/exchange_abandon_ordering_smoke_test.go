@@ -115,42 +115,29 @@ func (c *countingDependency) count() int {
 	return len(c.calls)
 }
 
-// buildCommerce builds the commerce binary from this checkout once per test binary.
-var (
-	commerceBinOnce sync.Once
-	commerceBin     string
-	commerceBinErr  error
-)
-
-func commerceBinary(t *testing.T) string {
+// buildCommerce builds the commerce binary once, from the Commerce module directory, into the
+// parent test's temporary directory, which the testing package removes after the test. The
+// build has its own time bound.
+func buildCommerce(t *testing.T) string {
 	t.Helper()
-	commerceBinOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "commerce-abandon-*")
-		if err != nil {
-			commerceBinErr = err
-			return
-		}
-		commerceBin = filepath.Join(dir, "commerce")
-		root, err := filepath.Abs(filepath.Join("..", "..", "..", ".."))
-		if err != nil {
-			commerceBinErr = err
-			return
-		}
-		cmd := exec.Command("go", "build", "-o", commerceBin, "./services/commerce/cmd/commerce")
-		cmd.Dir = root
-		if out, err := cmd.CombinedOutput(); err != nil {
-			commerceBinErr = fmt.Errorf("go build commerce: %v\n%s", err, out)
-		}
-	})
-	if commerceBinErr != nil {
-		t.Fatal(commerceBinErr)
+	module, err := filepath.Abs(filepath.Join("..", "..", "..", "commerce"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	return commerceBin
+	bin := filepath.Join(t.TempDir(), "commerce")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/commerce")
+	cmd.Dir = module
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build commerce: %v\n%s", err, out)
+	}
+	return bin
 }
 
 // commerceDatabase creates and migrates a Commerce database of its own, through the commerce
 // binary's `migrate` command.
-func commerceDatabase(t *testing.T, ctx context.Context) (*sql.DB, string) {
+func commerceDatabase(t *testing.T, ctx context.Context, bin string) (*sql.DB, string) {
 	t.Helper()
 	admin, err := sql.Open("pgx", os.Getenv("ACCESS_MIGRATION_TEST_DATABASE_URL"))
 	if err != nil {
@@ -175,7 +162,7 @@ func commerceDatabase(t *testing.T, ctx context.Context) (*sql.DB, string) {
 		_ = db.Close()
 		_, _ = admin.Exec("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)")
 	})
-	cmd := exec.CommandContext(ctx, commerceBinary(t), "migrate")
+	cmd := exec.CommandContext(ctx, bin, "migrate")
 	cmd.Env = append(os.Environ(), "DATABASE_URL="+dsn)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("commerce migrate: %v\n%s", err, out)
@@ -290,11 +277,12 @@ type abandonStack struct {
 	st       *store.Postgres
 	qr       *ticket.Signer
 	commerce *sql.DB
+	bin      string
 	env      []string
 	c        abandonCase
 }
 
-func newAbandonStack(t *testing.T, ctx context.Context) *abandonStack {
+func newAbandonStack(t *testing.T, ctx context.Context, bin string) *abandonStack {
 	t.Helper()
 	_, st, qr := newSmokeServer(t, ctx)
 	srv := New(ServerConfig{Store: st, InternalToken: abandonAccessToken})
@@ -308,17 +296,17 @@ func newAbandonStack(t *testing.T, ctx context.Context) *abandonStack {
 	depServer := httptest.NewServer(deps)
 	t.Cleanup(depServer.Close)
 
-	commerce, dsn := commerceDatabase(t, ctx)
+	commerce, dsn := commerceDatabase(t, ctx, bin)
 	seedCommerceUpgrade(t, ctx, commerce, c)
 	c.sourceTickets = issueAccessOrder(t, ctx, st, qr, c.org, c.source, c.slot, 2)
-	return &abandonStack{access: access, deps: deps, st: st, qr: qr, commerce: commerce, c: c, env: append(os.Environ(),
+	return &abandonStack{access: access, deps: deps, st: st, qr: qr, commerce: commerce, bin: bin, c: c, env: append(os.Environ(),
 		"DATABASE_URL="+dsn, "ACCESS_URL="+accessServer.URL, "PAYMENTS_URL="+depServer.URL+"/payments",
 		"INVENTORY_URL="+depServer.URL+"/inventory", "INTERNAL_SERVICE_TOKEN="+abandonAccessToken,
 		"PAYMENTS_INTERNAL_TOKEN=payments-token-for-abandonment-tests")}
 }
 
 func (s *abandonStack) command(ctx context.Context, t *testing.T) (*exec.Cmd, *bytes.Buffer) {
-	cmd := exec.CommandContext(ctx, commerceBinary(t), "abandon-exchange", s.c.org.String(), s.c.exchange.String(),
+	cmd := exec.CommandContext(ctx, s.bin, "abandon-exchange", s.c.org.String(), s.c.exchange.String(),
 		"Ada Operator", "source admitted before the switch")
 	cmd.Env = s.env
 	var out bytes.Buffer
@@ -355,12 +343,23 @@ func (s *abandonStack) admission(t *testing.T, ctx context.Context, order uuid.U
 	return a
 }
 
+// Both schedules share one build of the commerce binary (D19's compile cost, paid once).
+func TestAbandonmentReadOrderingAgainstRealAccess(t *testing.T) {
+	bin := buildCommerce(t)
+	t.Run("the replacement is read after a late admission on a switched source", func(t *testing.T) {
+		readsTheReplacementAfterALateAdmissionOnASwitchedSource(t, bin)
+	})
+	t.Run("the source is read before the replacement", func(t *testing.T) {
+		readsTheSourceBeforeTheReplacement(t, bin)
+	})
+}
+
 // The skipped-read schedule. The source reads admitted and fully issued, exactly like a source
 // whose switch Access refused; only the replacement read sees the switch.
-func TestAbandonmentReadsTheReplacementAfterALateAdmissionOnASwitchedSource(t *testing.T) {
+func readsTheReplacementAfterALateAdmissionOnASwitchedSource(t *testing.T, bin string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	s := newAbandonStack(t, ctx)
+	s := newAbandonStack(t, ctx, bin)
 	switchAndAdmitLate(t, ctx, s.st, s.qr, s.c)
 	// The schedule is real: the source alone passes, and the replacement carries the switch.
 	if a := s.admission(t, ctx, s.c.source); !a.Admitted || a.IssuedCount != 2 {
@@ -382,10 +381,10 @@ func TestAbandonmentReadsTheReplacementAfterALateAdmissionOnASwitchedSource(t *t
 
 // The swapped-order schedule. The first answer is held after its snapshot; the switch and the
 // late admission commit in the gap. Source-first refuses on the captured `admitted=false`.
-func TestAbandonmentReadsTheSourceBeforeTheReplacement(t *testing.T) {
+func readsTheSourceBeforeTheReplacement(t *testing.T, bin string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	s := newAbandonStack(t, ctx)
+	s := newAbandonStack(t, ctx, bin)
 	if a := s.admission(t, ctx, s.c.source); a.Admitted || a.IssuedCount != 2 {
 		t.Fatalf("source before the schedule = %+v, want unadmitted with 2 issued", a)
 	}

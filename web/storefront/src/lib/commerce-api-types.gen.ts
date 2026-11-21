@@ -878,7 +878,7 @@ export interface components {
             delta_amount: number;
             currency: string;
             /** @enum {string} */
-            status: "switch_pending" | "capacity_pending" | "completed";
+            status: "switch_pending" | "capacity_pending" | "completed" | "abandoned";
             tickets_exchanged: boolean;
             capacity_returned: boolean;
             replay: boolean;

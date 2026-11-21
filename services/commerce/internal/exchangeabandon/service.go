@@ -274,7 +274,7 @@ func confirmationAgrees(amount *int64, currency *string, wantAmount int64, wantC
 // inspectReplacementRefunds reads the replacement's refunds and asks payments about each
 // pending one (D10). A completed refund refuses. A pending refund continues only when payments
 // conclusively holds no leg for it: a found leg, bound or abandoned, refuses, and an answer that
-// is not a clean 404 stops for a retry.
+// is not payments' own leg-absence answer stops for a retry.
 func (s *Service) inspectReplacementRefunds(ctx context.Context, e store.SettledExchange) ([]store.ReplacementRefund, error) {
 	refunds, err := store.ListReplacementRefunds(ctx, s.db, e.OrganizerID, e.ReplacementOrderID)
 	if err != nil {
@@ -302,6 +302,11 @@ func (s *Service) drive(ctx context.Context, e store.SettledExchange) (Result, e
 	}
 	if e.AbandonmentRefundFailedRef != "" {
 		return Result{Exchange: e}, fmt.Errorf("%w: exchange %s (%s)", store.ErrAbandonmentRefundFailed, e.ID, e.AbandonmentRefundFailedRef)
+	}
+	// Before any remote effect: a resume skips fresh eligibility, and the rows can have changed
+	// since the reservation (R1-5).
+	if err := e.ResumeConsistency(); err != nil {
+		return Result{Exchange: e}, err
 	}
 	org, id := e.OrganizerID, e.ID
 	receipt := store.ExchangeAbandonmentRefundID(org, id)
@@ -364,8 +369,8 @@ func (s *Service) reload(ctx context.Context, e store.SettledExchange, cause err
 // refund key, and returns payments' refund fact.
 //
 // The leg is read first. Payments' binder returns an existing leg before it rechecks the
-// amount and currency, so a found leg must already match before the POST replays it. A 404
-// permits the first bind.
+// amount and currency, so a found leg must already match before the POST replays it. Payments'
+// leg-absence answer permits the first bind.
 func (s *Service) refundDelta(ctx context.Context, e store.SettledExchange, receipt uuid.UUID) (uuid.UUID, error) {
 	chargeKey, refundKey := exchangeunwind.ChargeKey(e.ID), receipt.String()
 	leg, err := s.payments.RefundLeg(ctx, e.OrganizerID, chargeKey, refundKey)

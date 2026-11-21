@@ -104,6 +104,10 @@ type Exchange struct {
 	// exchange `completed` from TicketsExchanged alone hid the exact substate the column
 	// was introduced to expose, and left an under-selling exchange findable only by hand.
 	CapacityReturned bool
+	// Abandoned reports a terminal abandonment (TKT-498, abandoned_at): the exchange settled,
+	// Access refused its switch, and an operator returned the target and settled the delta's
+	// correction. The switch will never happen. A started abandonment is not Abandoned.
+	Abandoned bool
 	// BasisRecorded is the pre-money commitment (ai-review F3): target hold, replacement
 	// reservation, target total and signed delta, all persisted BEFORE the provider is
 	// called. A retry settles against these, never against a re-resolved price or a
@@ -319,19 +323,20 @@ func lookupExchange(ctx context.Context, q rowQuerier, org, id uuid.UUID) (store
 	var s storedExchange
 	var replacement uuid.NullUUID
 	var target, delta sql.NullInt64
-	var settled, switched, returned, basis, settling sql.NullTime
+	var settled, switched, returned, basis, settling, abandoned sql.NullTime
 	var targetHold, replacementReservation, targetSlot uuid.NullUUID
 	var targetUnit sql.NullInt64
 	var createdAt time.Time
 	err := q.QueryRowContext(ctx, `
 		SELECT id,source_order_id,replacement_order_id,target_ticket_type_id,request_fingerprint,quantity,
 		       source_total,source_gross_total,target_total,delta_amount,currency,created_at,settled_at,tickets_exchanged_at,capacity_returned_at,
-		       target_hold_id,replacement_reservation_id,basis_at,target_unit_amount,target_slot_id,target_price_snapshot,settling_at
+		       target_hold_id,replacement_reservation_id,basis_at,target_unit_amount,target_slot_id,target_price_snapshot,settling_at,
+		       abandoned_at
 		FROM order_exchanges WHERE organizer_id=$1 AND id=$2`, org, id).
 		Scan(&s.exchange.ID, &s.exchange.SourceOrderID, &replacement, &s.exchange.TargetTicketTypeID,
 			&s.fingerprint, &s.exchange.Quantity, &s.exchange.SourceTotal, &s.exchange.SourceGrossTotal, &target, &delta,
 			&s.exchange.Currency, &createdAt, &settled, &switched, &returned, &targetHold, &replacementReservation, &basis,
-			&targetUnit, &targetSlot, &s.exchange.TargetPriceSnapshot, &settling)
+			&targetUnit, &targetSlot, &s.exchange.TargetPriceSnapshot, &settling, &abandoned)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storedExchange{}, false, nil
 	}
@@ -344,6 +349,7 @@ func lookupExchange(ctx context.Context, q rowQuerier, org, id uuid.UUID) (store
 	s.exchange.Settled, s.exchange.TicketsExchanged = settled.Valid, switched.Valid
 	s.exchange.Settling = settling.Valid
 	s.exchange.CapacityReturned = returned.Valid
+	s.exchange.Abandoned = abandoned.Valid
 	s.exchange.BasisRecorded = basis.Valid
 	s.exchange.TargetHoldID, s.exchange.ReplacementReservationID = targetHold.UUID, replacementReservation.UUID
 	s.exchange.TargetUnitAmount, s.exchange.TargetSlotID = targetUnit.Int64, targetSlot.UUID

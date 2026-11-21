@@ -435,10 +435,10 @@ organizer=… exchange=… source_order=… replacement_order=… target_hold=�
 | `REFUSED: no exchange … for this organizer` | No such organizer and exchange pair. | Check both ids against the listing. |
 | `REFUSED: the abandonment of exchange … belongs to another operator name and reason` | Another pair started this abandonment. Nothing changed. | Repeat the first pair exactly. |
 | `STOPPED: the provider refused the upgrade's delta refund` | The provider failed the delta refund for good. | Stop. See [The provider refused the delta refund](#the-provider-refused-the-delta-refund-tkt-588). |
-| `REFUSED: exchange … is not a candidate` | The exchange is not settled, Access switched its tickets, its rows are inconsistent, or its gross journal facts disagree with it. Nothing changed. | Not settled: use the [wedged exchange unwind](#wedged-exchange-operator-unwind). Switched: the [exchange obligation sweep](#exchange-obligation-sweep) owns it. Inconsistent rows or facts: treat as an incident. |
+| `REFUSED: exchange … is not a candidate` | The exchange is not settled, Access switched its tickets, its rows are inconsistent, or its gross journal facts disagree with it. A started abandonment whose rows became inconsistent is refused the same way before any further step. Nothing changed. | Not settled: use the [wedged exchange unwind](#wedged-exchange-operator-unwind). Switched: the [exchange obligation sweep](#exchange-obligation-sweep) owns it. Inconsistent rows or facts: treat as an incident. |
 | `REFUSED: Access does not prove an admitted source with an unissued replacement` | Access reports the source not admitted or not fully issued, or reports replacement tickets. Nothing changed. | Replacement tickets mean that the switch happened and its Commerce callback is late. Follow the failed-event procedure in [ticket lifecycle](./ticket-lifecycle.md). A source that is not admitted is not this procedure's case. |
 | `REFUSED: payments evidence for exchange … needs reconciliation first` | The delta charge or the downgrade refund does not match the exchange, a refund of the replacement completed, or Payments holds a leg for a pending refund of the replacement. | Reconcile by hand. Money can have moved on the replacement through the TKT-586 checkout-key alias. Do not abandon until it is understood. |
-| `INCOMPLETE: exchange … was not abandoned` | A dependency was unavailable, or refused one request. Every recorded step stays. | Clear the cause and run the **same** command again. |
+| `INCOMPLETE: exchange … was not abandoned` | A dependency was unavailable, gave an answer that proves nothing (a redirect, or a `404` that is not Payments' own "not found" answer), or refused one request. Every recorded step stays. | Clear the cause and run the **same** command again. |
 
 ### The provider refused the delta refund (TKT-588)
 
@@ -462,12 +462,19 @@ leave the exchange as it is.
 - **After the abandonment starts**, the replacement order cannot bind or replay a refund. A staff
   refund answers `409 only a completed order can be refunded`, and a cancellation run reports
   `not_refundable`.
-- **A refund of an exchange replacement reaches Payments only after Access reports issued
-  replacement tickets.** This applies to staff refunds and cancellation runs. Without issued tickets,
-  or when Access or the Commerce identity read cannot answer, a staff refund answers
+- **After the abandonment starts**, the replacement order cannot bind or replay a void either. A
+  staff void answers `409 only a completed, unexchanged order can be voided`, and a cancellation run
+  reports `refund_refused`. An existing void row stays as history.
+- **A refund of an exchange replacement whose switch Commerce has not recorded reaches Payments only
+  after Access reports issued replacement tickets.** This applies to staff refunds and cancellation
+  runs. Without issued tickets, or when Access cannot answer, a staff refund answers
   `502 refund unresolved`, a cancellation run reports `unavailable`, and the refund stays `pending`.
-  The check exists because of the TKT-586 checkout-key alias, through which a replacement refund can
-  reach the exchange's own charge.
+  A replacement with `tickets_exchanged_at` set needs no Access read, so an Access outage does not
+  block its refunds. The check exists because of the TKT-586 checkout-key alias. Payments looks up the
+  exact (organizer, key) pair. It does not translate the replacement's key `exchange:<id>` to the
+  exchange's `exchange-charge:<id>` operation. The risk is a checkout in the same organizer that used
+  the literal key `exchange:<id>`: a replacement refund would refund that checkout's charge. When you
+  reconcile, look for that checkout, not for the exchange's own charge.
 - **A pending replacement refund for which Payments answered 404 does not stop the abandonment, and it
   stays `pending` after it.** `record-refund-outcome` cannot close it: both of its outcomes need
   Payments' proof of a provider failure, and there is no Payments leg to prove.
@@ -478,8 +485,10 @@ leave the exchange as it is.
   and the oldest age).
 - The exchange, both orders and the original journal facts stay as history. The source order still
   cannot be refunded, voided or exchanged again, because its exchange row still exists.
-- A buyer-facing replay of the exchange request still answers `switch_pending`. The exchange stays
-  settled and unswitched for good. Tell the buyer the outcome through support.
+- A replay of the exchange request answers `200` with status `abandoned`. The other fields keep the
+  original exchange and money values as history, and the replay repairs nothing. The exchange stays
+  settled and unswitched for good. Tell the buyer the outcome through support. While the abandonment
+  is started but not finished, the replay still answers `switch_pending`.
 - A redelivery of the original `order.exchanged` event is refused again by Access. It issues no
   ticket.
 

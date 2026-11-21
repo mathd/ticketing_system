@@ -67,6 +67,12 @@ type Refund struct {
 	// refund whose money moved but whose tickets are still valid is a real state, and
 	// it has to be visible rather than rounded up to "done".
 	TicketsVoided bool
+	// ExchangeReplacement reports that the order is the replacement of an exchange in this
+	// organizer, found through its reservation under the order lock (TKT-498).
+	// ReplacementSwitched reports that Commerce recorded the switch of every such exchange
+	// (tickets_exchanged_at). The refund service asks Access for issuance only for a replacement
+	// whose switch is not recorded (D22).
+	ExchangeReplacement, ReplacementSwitched bool
 	// Abandoned reports a recorded `abandoned` operator outcome for this refund, in its own
 	// organizer (TKT-525 S2, ADR-087). The refund stays pending and is never driven again: the
 	// shared refund service refuses it before any payments call, and the bulk runner skips it.
@@ -145,16 +151,23 @@ func BindOrderRefund(ctx context.Context, db *sql.DB, in RefundRequest) (Refund,
 	// found by the replacement RESERVATION, which the basis persists before settlement publishes
 	// replacement_order_id, in this organizer only. The reservation transaction locks this order
 	// before it writes the marker, so this read sees a reservation entirely or not at all.
-	var abandoning bool
+	//
+	// The same read gives the refund service the replacement identity and the switch marker
+	// (D22). The schema does not make the reservation unique across exchanges, so the switch
+	// counts as recorded only when every such exchange recorded it.
+	var replacing int
+	var abandoning, switched bool
 	if err := tx.QueryRowContext(ctx, `
-		SELECT EXISTS (SELECT 1 FROM order_exchanges
-		               WHERE organizer_id=$1 AND replacement_reservation_id=$2
-		                 AND abandonment_started_at IS NOT NULL)`, in.OrganizerID, reservation).Scan(&abandoning); err != nil {
+		SELECT count(*), coalesce(bool_or(abandonment_started_at IS NOT NULL), false),
+		       coalesce(bool_and(tickets_exchanged_at IS NOT NULL), false)
+		FROM order_exchanges WHERE organizer_id=$1 AND replacement_reservation_id=$2`,
+		in.OrganizerID, reservation).Scan(&replacing, &abandoning, &switched); err != nil {
 		return Refund{}, err
 	}
 	if abandoning {
 		return Refund{}, ErrExchangeReplacementAbandoned
 	}
+	replacement := replacing > 0
 
 	id := RefundID(in.OrganizerID, in.IdempotencyKey)
 	fingerprint := refundFingerprint(in)
@@ -171,6 +184,7 @@ func BindOrderRefund(ctx context.Context, db *sql.DB, in RefundRequest) (Refund,
 		}
 		out := existing.refund
 		out.OrganizerID, out.BuyerID, out.PaymentSourceKey, out.HoldID = in.OrganizerID, buyer, chargeKey, hold
+		out.ExchangeReplacement, out.ReplacementSwitched = replacement, switched
 		out.RefundedQty, out.RefundedAmount, out.OrderRefundState, err = orderProjection(ctx, tx, in.OrderID)
 		if err != nil {
 			return Refund{}, err
@@ -253,6 +267,7 @@ func BindOrderRefund(ctx context.Context, db *sql.DB, in RefundRequest) (Refund,
 	}
 	out := bound.refund
 	out.OrganizerID, out.BuyerID, out.PaymentSourceKey, out.HoldID = in.OrganizerID, buyer, chargeKey, hold
+	out.ExchangeReplacement, out.ReplacementSwitched = replacement, switched
 	out.RefundedQty, out.RefundedAmount, out.OrderRefundState, err = orderProjection(ctx, tx, in.OrderID)
 	if err != nil {
 		return Refund{}, err
@@ -333,8 +348,8 @@ type OrderCancellationState struct {
 	// captured total. Carried separately because the void's eligibility turns on
 	// "nothing was captured", and UnitAmount alone cannot answer that (TKT-171,
 	// ai-review F1).
-	TotalAmount int64
-	Currency    string
+	TotalAmount      int64
+	Currency         string
 	OrderStatus      string
 	RefundedQuantity int32
 	RefundedAmount   int64

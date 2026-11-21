@@ -10,27 +10,25 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/stdlib"
 
 	commercestore "ticketing/services/commerce/internal/store"
 )
 
-// TKT-498 (plan v2 Build order 4, D10, D14, D18). Staff refunds of an exchange REPLACEMENT order.
+// TKT-498 (plan v2 Build order 4, D10, D18, D22). Staff refunds of an exchange REPLACEMENT order.
 //
-// A replacement refund can reach money only through the TKT-586 alias: payments binds the
-// replacement's checkout key `exchange:<id>` to the exchange's own charge. The shared refund
-// service therefore requires Access to report issued replacement tickets before it calls
-// payments, and the binder refuses once the exchange's abandonment has started. These tests
+// A replacement refund can reach money only through the TKT-586 alias: payments looks up the
+// exact (organizer, key) pair, and a same-organizer checkout that used the literal key
+// `exchange:<id>` holds a real charge under the replacement's key. The shared refund service
+// therefore requires Access to report issued replacement tickets before it calls payments,
+// unless Commerce recorded the switch, and the binder refuses once the exchange's abandonment
+// has started. These tests
 // drive the real staff handler, the real refund service and a real Commerce database. Access,
 // payments and inventory are one recording stub, so every call is asserted with its scope.
 
@@ -139,7 +137,9 @@ func (s *dependencyStub) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(`{"admitted":false,"issued_count":` + strconv.Itoa(int(issued)) + `}`))
 	case r.URL.Path == "/payments/internal/psp/partial-refund":
-		// The TKT-586 alias: payments resolves `exchange:<id>` to a captured charge and refunds.
+		// A dispatch control, not the alias: it answers success to any partial refund, so a test
+		// sees whether the refund service dispatched. Payments' own exact-key lookup is not
+		// exercised here.
 		_, _ = w.Write([]byte(`{"status":"refunded","fact_id":"` + uuid.NewString() + `","amount":1,"currency":"EUR","replay":false}`))
 	case r.URL.Path == "/payments/internal/facts":
 		_, _ = w.Write([]byte(`{"sequence":1,"hash":"00","replay":false}`))
@@ -306,6 +306,32 @@ func TestStaffRefundOfAnUnissuedReplacementNeverReachesPayments(t *testing.T) {
 	}
 }
 
+// A replacement whose switch Commerce recorded (tickets_exchanged_at) needs no Access read: the
+// marker follows Access's committed switch, so the replacement has issued tickets and no
+// abandonment can start (D22, supersedes D14's every-refund scope). During an Access outage the
+// refund still reaches payments, and Access is not asked.
+func TestStaffRefundOfARecordedSwitchDispatchesWithoutAccess(t *testing.T) {
+	db, ctx := exchangeAPIDB(t)
+	f := seedSettledReplacement(t, db, ctx)
+	if _, err := db.ExecContext(ctx, `UPDATE order_exchanges SET tickets_exchanged_at=now() WHERE organizer_id=$1 AND id=$2`,
+		f.organizer, f.exchange); err != nil {
+		t.Fatal(err)
+	}
+	stub := newDependencyStub(t)
+	stub.set(0, http.StatusServiceUnavailable)
+	s := replacementRefundServer(t, db, stub)
+
+	if code, body := staffRefund(t, s, f.organizer, f.replacementOrder, "staff-switched-replacement"); code != http.StatusOK {
+		t.Fatalf("staff refund of a recorded switch during an Access outage = %d %v, want 200", code, body)
+	}
+	if n := stub.count(http.MethodGet, "/access/internal/orders/"+f.replacementOrder.String()+"/admission"); n != 0 {
+		t.Fatalf("a recorded switch asked Access about issuance %d time(s), want 0", n)
+	}
+	if n := stub.count(http.MethodPost, "/payments/internal/psp/partial-refund"); n != 1 {
+		t.Fatalf("a recorded switch reached payments %d time(s), want 1", n)
+	}
+}
+
 // After the abandonment reservation, the binder refuses both a fresh key and the replay of a
 // refund bound before it. The staff answer is the existing 409 (D18), and nothing downstream
 // is called.
@@ -388,62 +414,7 @@ func TestAReplacementRefundPausedAfterBindingStopsBeforePaymentsOnceAbandonmentR
 	}
 }
 
-// replacementIdentitySQL is the join only store.IsExchangeReplacementOrder runs. The binder's
-// started-marker read does not contain it.
-const replacementIdentitySQL = "JOIN order_exchanges x ON x.organizer_id = $1 AND x.replacement_reservation_id = r.id"
-
-// failReplacementIdentity is a pgx tracer that cancels the context of the replacement identity
-// read and of nothing else, so that one read fails while the binder before it succeeds.
-type failReplacementIdentity struct{ hits atomic.Int32 }
-
-func (f *failReplacementIdentity) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
-	if !strings.Contains(d.SQL, replacementIdentitySQL) {
-		return ctx
-	}
-	f.hits.Add(1)
-	failed, cancel := context.WithCancel(ctx)
-	cancel()
-	return failed
-}
-
-func (*failReplacementIdentity) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-// A failed read of the replacement identity fails closed, the same way as a failed Access read:
-// the refund stays pending behind the staff 502, and neither Access nor payments is called.
-// Returning the raw error would answer a 500 and leave the operator no retry signal.
-func TestStaffRefundWhoseReplacementIdentityReadFailsStaysUnresolved(t *testing.T) {
-	db, ctx := exchangeAPIDB(t)
-	f := seedSettledReplacement(t, db, ctx)
-	cfg, err := pgx.ParseConfig(os.Getenv("COMMERCE_API_TEST_DATABASE_URL"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	tracer := &failReplacementIdentity{}
-	cfg.Tracer = tracer
-	failing := stdlib.OpenDB(*cfg)
-	t.Cleanup(func() { _ = failing.Close() })
-	stub := newDependencyStub(t)
-	stub.set(f.quantity, http.StatusOK)
-	s := replacementRefundServer(t, failing, stub)
-	const key = "staff-replacement-identity-read-fails"
-
-	code, body := staffRefund(t, s, f.organizer, f.replacementOrder, key)
-	// database/sql retries a read that failed on a bad connection, so the count is at least one.
-	if tracer.hits.Load() < 1 {
-		t.Fatal("the replacement identity read never ran: the injected failure did not apply")
-	}
-	if code != http.StatusBadGateway || body["error"] != "refund unresolved" {
-		t.Fatalf("staff refund with a failed identity read = %d %v, want 502 refund unresolved", code, body)
-	}
-	if n := len(stub.recorded()); n != 0 {
-		t.Fatalf("a refund whose replacement identity is unknown made %d dependency call(s), want 0", n)
-	}
-	if got := refundStatus(t, db, ctx, f.organizer, commercestore.RefundID(f.organizer, key)); got != "pending" {
-		t.Fatalf("refund status = %q, want pending", got)
-	}
-}
-
-// IsExchangeReplacementOrder is organizer-scoped. Organizer B's ordinary order sits on a
+// The binder's replacement identity read is organizer-scoped. Organizer B's ordinary order sits on a
 // reservation that organizer A's exchange names as its replacement reservation (the schema has
 // no foreign key there, so the row is representable though no writer produces it). B's refund
 // is not a replacement refund: it reaches payments with no Access read. Without the exchange's
@@ -490,5 +461,78 @@ func TestAnOrdinaryRefundIsNotAReplacementOfAnotherOrganizersExchange(t *testing
 	}
 	if n := stub.count(http.MethodPost, "/payments/internal/psp/partial-refund"); n != 1 {
 		t.Fatalf("organizer B's ordinary refund reached payments %d time(s), want 1", n)
+	}
+}
+
+// makeComped turns the fixture's replacement into a zero-gross comp, the shape a void reverses:
+// target face 0 and nothing captured. The exchange keeps 0010's delta = target - source.
+func makeComped(t *testing.T, db *sql.DB, ctx context.Context, f replacementFixture) {
+	t.Helper()
+	for _, q := range []string{
+		`UPDATE reservations SET unit_amount=0, total_amount=0, face_value_amount=0 WHERE organizer_id=$1 AND id=$2`,
+		`UPDATE order_exchanges SET target_total=0, target_unit_amount=0, delta_amount=-source_total WHERE organizer_id=$1 AND replacement_reservation_id=$2`,
+	} {
+		if _, err := db.ExecContext(ctx, q, f.organizer, f.replacementReservation); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func staffVoid(t *testing.T, s *Server, org, order uuid.UUID, key string) (int, map[string]any) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/internal/orders/"+order.String()+"/voids",
+		bytes.NewBufferString(`{"actor":"support","reason":"target slot cancelled"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Commerce-Staff-Write-Token", staffTok)
+	req.Header.Set(organizerAssertionHeader, mintTestAssertion(t, testOrgKey(), org.String(), time.Now().Add(time.Hour)))
+	req.Header.Set("Idempotency-Key", key)
+	rec := httptest.NewRecorder()
+	s.Router(nil, true).ServeHTTP(rec, req)
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	return rec.Code, out
+}
+
+// A comped replacement whose exchange abandonment started cannot bind a void, and a void bound
+// before the reservation does not replay (D23, supersedes D10's void part). The abandonment
+// makes zero issuance permanent, so the void's ticket obligation could never be discharged. The
+// staff answer is the existing 409, nothing downstream is called, and the existing void row
+// stays as history.
+func TestStaffVoidOfACompedReplacementAfterTheAbandonmentReservationAnswers409(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		preBound bool
+	}{{"fresh void", false}, {"void bound before the reservation", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, ctx := exchangeAPIDB(t)
+			f := seedSettledReplacement(t, db, ctx)
+			makeComped(t, db, ctx, f)
+			t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM order_voids WHERE organizer_id=$1`, f.organizer) })
+			stub := newDependencyStub(t)
+			s := replacementRefundServer(t, db, stub)
+			if tc.preBound {
+				if code, body := staffVoid(t, s, f.organizer, f.replacementOrder, "staff-void-before"); code != http.StatusOK {
+					t.Fatalf("void before the reservation = %d %v, want 200", code, body)
+				}
+			}
+			reserveReplacementAbandonment(t, db, ctx, f)
+			calls := len(stub.recorded())
+
+			code, body := staffVoid(t, s, f.organizer, f.replacementOrder, "staff-void-after")
+			if code != http.StatusConflict || body["error"] != "only a completed, unexchanged order can be voided" {
+				t.Fatalf("void after the reservation = %d %v, want 409", code, body)
+			}
+			if n := len(stub.recorded()) - calls; n != 0 {
+				t.Fatalf("a refused void made %d dependency call(s)", n)
+			}
+			want := 0
+			if tc.preBound {
+				want = 1
+			}
+			if n := countCommerceRows(t, ctx, db, `SELECT count(*) FROM order_voids WHERE organizer_id=$1 AND order_id=$2`,
+				f.organizer, f.replacementOrder); n != want {
+				t.Fatalf("%d void rows, want %d (history kept, nothing new bound)", n, want)
+			}
+		})
 	}
 }

@@ -18,13 +18,14 @@ import (
 	"ticketing/services/commerce/internal/store"
 )
 
-// TKT-498 (plan v2 Build order 4, D10, D14, D18). A cancellation of the exchange's TARGET slot
+// TKT-498 (plan v2 Build order 4, D10, D18, D22). A cancellation of the exchange's TARGET slot
 // enumerates the exchange's replacement order and refunds it through the shared refund unit.
 // The real refunds.New runs against a real Commerce database; its HTTP is the recording
 // transport below.
 
-// replacementTransport answers Access's admission read with `issued` tickets and lets payments
-// refund the replacement's alias key. Every call is recorded with its body.
+// replacementTransport answers Access's admission read with `issued` tickets and answers
+// success to any partial refund. That answer is a dispatch control, not the TKT-586 alias:
+// payments' exact-key lookup is not exercised. Every call is recorded with its body.
 type replacementTransport struct {
 	mu     sync.Mutex
 	issued int32
@@ -203,5 +204,88 @@ func TestBulkRefundOfAReplacementAfterTheAbandonmentReservationIsNotRefundable(t
 	var n int
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM order_refunds WHERE organizer_id=$1`, f.org).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("%d refund rows (err %v), want none bound after the reservation", n, err)
+	}
+}
+
+// A replacement whose switch Commerce recorded reaches payments with no Access read (D22): the
+// transport would report zero issued tickets, and the runner never asks.
+func TestBulkRefundOfARecordedSwitchDispatchesWithoutAccess(t *testing.T) {
+	db, ctx := runnerDB(t)
+	f := seedSettledReplacement(t, ctx, db)
+	if _, err := db.ExecContext(ctx, `UPDATE order_exchanges SET tickets_exchanged_at=now() WHERE organizer_id=$1 AND id=$2`,
+		f.org, f.exchange); err != nil {
+		t.Fatal(err)
+	}
+	cancelTargetSlot(t, ctx, db, f)
+	transport := &replacementTransport{issued: 0}
+	refunder := refunds.New(db, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")
+	New(DBStore{DB: db}, refunder, time.Minute, 10, time.Minute).RunOnce(ctx)
+
+	if calls := transport.matching("GET http://access.test/internal/orders/" + f.replacementOrder.String() + "/admission"); len(calls) != 0 {
+		t.Fatalf("a recorded switch asked Access about issuance: %v", calls)
+	}
+	if calls := transport.matching("POST http://payments.test/internal/psp/partial-refund"); len(calls) != 1 {
+		t.Fatalf("a recorded switch made %d partial refund(s), want 1: %v", len(calls), transport.matching(""))
+	}
+}
+
+// A target-slot cancellation of a comped replacement whose exchange abandonment started binds no
+// void and does not replay one bound before the reservation (D23). The row fails with the
+// existing void refusal, nothing is called downstream, and an existing void row stays.
+func TestBulkVoidOfACompedReplacementAfterTheAbandonmentReservationIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		preBound bool
+	}{{"fresh void", false}, {"void bound before the reservation", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, ctx := runnerDB(t)
+			f := seedSettledReplacement(t, ctx, db)
+			for _, q := range []string{
+				`UPDATE reservations SET unit_amount=0, total_amount=0, face_value_amount=0 WHERE organizer_id=$1 AND id=$2`,
+				`UPDATE order_exchanges SET target_total=0, target_unit_amount=0, delta_amount=-source_total WHERE organizer_id=$1 AND replacement_reservation_id=$2`,
+			} {
+				if _, err := db.ExecContext(ctx, q, f.org, f.replacement); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM order_voids WHERE organizer_id=$1`, f.org) })
+			if tc.preBound {
+				if _, err := store.BindOrderVoid(ctx, db, store.VoidRequest{OrderID: f.replacementOrder, OrganizerID: f.org,
+					IdempotencyKey: "staff-void", Actor: "support", Reason: "comp withdrawn"}); err != nil {
+					t.Fatalf("void before the reservation: %v", err)
+				}
+			}
+			e, err := store.LoadSettledExchange(ctx, db, f.org, f.exchange)
+			if err != nil {
+				t.Fatal(err)
+			}
+			attribution, err := store.NewAbandonmentAttribution("Ada Operator", "source admitted before the switch")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, reserved, err := store.ReserveExchangeAbandonment(ctx, db, store.AbandonmentReservation{Expected: e, Attribution: attribution}); err != nil || !reserved {
+				t.Fatalf("reserve: reserved=%v err=%v", reserved, err)
+			}
+			cancelTargetSlot(t, ctx, db, f)
+			transport := &replacementTransport{issued: 0}
+			refunder := refunds.New(db, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")
+			New(DBStore{DB: db}, refunder, time.Minute, 10, time.Minute).RunOnce(ctx)
+
+			if calls := transport.matching(""); len(calls) != 0 {
+				t.Fatalf("a refused bulk void made dependency calls: %v", calls)
+			}
+			if outcome, code, _ := replacementVerdict(t, ctx, db, f); outcome != "failed" || code != "refund_refused" {
+				t.Fatalf("verdict = %q/%q, want failed/refund_refused", outcome, code)
+			}
+			want := 0
+			if tc.preBound {
+				want = 1
+			}
+			var n int
+			if err := db.QueryRowContext(ctx, `SELECT count(*) FROM order_voids WHERE organizer_id=$1 AND order_id=$2`,
+				f.org, f.replacementOrder).Scan(&n); err != nil || n != want {
+				t.Fatalf("%d void rows (err %v), want %d", n, err, want)
+			}
+		})
 	}
 }

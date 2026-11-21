@@ -191,16 +191,31 @@ money, issuance and capacity; no terminal marker. The exchange stays in the list
 reversal backlog. **TKT-588** owns the next disposition.
 
 **Replacement refunds.** Once the abandonment starts, the refund binder refuses a fresh bind and a
-replay on the replacement order, with the existing staff `409` and bulk `not_refundable`. Before it
-sends any pending refund of an exchange replacement to Payments, the shared refund dispatch requires
-Access to report issued replacement tickets. Without them, or without an answer, the refund stays
-pending behind the existing retry path (staff `502`, bulk `unavailable`). A dispatch that passes this
-check cannot race a successful abandonment, because issued replacement tickets persist and defeat
-the second read. A replacement refund can reach money only through the **TKT-586** checkout-key
-alias, so this prerequisite exists because of that alias; reconsider it when TKT-586 removes the
-alias. The abandonment refuses a completed replacement refund or one for which Payments holds a leg.
-A pending replacement refund for which Payments answers 404 does not stop it, and stays pending
-afterwards.
+replay on the replacement order, with the existing staff `409` and bulk `not_refundable`. The same
+locked read gives the replacement identity and the switch marker. A replacement whose switch
+Commerce recorded (`tickets_exchanged_at`) goes to Payments with no Access read: Commerce writes the
+marker only after Access committed the switch, so the replacement has issued tickets and no
+abandonment can start. For a replacement whose switch is not recorded, the shared refund dispatch
+requires Access to report issued replacement tickets before it calls Payments. Without them, or
+without an answer, the refund stays pending behind the existing retry path (staff `502`, bulk
+`unavailable`). A dispatch that passes this check cannot race a successful abandonment, because
+issued replacement tickets persist and defeat the second read. A replacement refund can reach money
+only through the **TKT-586** checkout-key alias: Payments looks up the exact (organizer, key) pair,
+and a same-organizer checkout that used the literal key `exchange:<id>` holds a real charge under the
+replacement's key. This prerequisite exists because of that alias; reconsider it when TKT-586 removes
+the alias. The abandonment refuses a completed replacement refund or one for which Payments holds a
+leg. Only Payments' own leg-absence answer counts as no leg; any other 404 stops the command for a
+retry. A pending replacement refund with that answer does not stop the abandonment, and stays
+pending afterwards.
+
+**Replacement voids.** A zero-gross replacement is reversed by a void, not a refund. Once the
+abandonment starts, the void binder refuses a fresh bind and a replay on the replacement order, with
+the existing staff `409` and bulk `refund_refused`: the abandonment makes zero issuance permanent, so
+the void's ticket obligation could never be discharged. An existing void row stays as history.
+
+**The exchange replay.** A replay of the original exchange request after a terminal abandonment
+answers `200` with status `abandoned` and the original exchange and money values, and does not repair
+the switch outbox. A started abandonment that is not terminal still answers `switch_pending`.
 
 **Attribution, and the adversary (ADR-021).** The command records the trimmed typed operator name,
 the reason, and the PostgreSQL `session_user`. Only the first name and reason pair can resume or
@@ -220,6 +235,9 @@ check is still in flight.
 This slice ends with the delta settled and the replacement order confirmed, while **the buyer still
 holds valid old tickets**. It under-sells, cannot oversell, and never leaves the buyer with
 nothing — the same safety argument ADR-037 §6 and ADR-038 make for their own intermediate states.
+
+**Amended by TKT-498.** An exchange abandoned under §2 leaves `switch_pending` for good: its switch
+will never happen. A replay of the exchange request then reports the terminal status `abandoned`.
 
 The four orderings rejected to arrive at it:
 

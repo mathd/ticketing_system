@@ -122,6 +122,12 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		write(w, code, map[string]string{"error": message})
 		return
 	}
+	if found && existing.Settled && existing.Abandoned {
+		// A terminal abandonment (TKT-498, D24): the switch will never happen, so the replay
+		// repairs no switch obligation and answers `abandoned` with the original values.
+		writeExchange(w, existing, true)
+		return
+	}
 	if found && existing.Settled {
 		// Re-driving settlement is idempotent. It is normally a locked read, and it also
 		// repairs a settled row whose outbox obligation is absent without relying on rollout
@@ -567,6 +573,9 @@ func writeExchange(w http.ResponseWriter, ex commercestore.Exchange, replay bool
 	// still withheld — hiding the very substate migration 0011 exists to expose.
 	status := "switch_pending"
 	switch {
+	case ex.Abandoned:
+		// Terminal (TKT-498): the money and target were settled by the abandonment instead.
+		status = "abandoned"
 	case ex.TicketsExchanged && ex.CapacityReturned:
 		status = "completed"
 	case ex.TicketsExchanged:

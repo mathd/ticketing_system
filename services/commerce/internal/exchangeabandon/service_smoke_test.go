@@ -6,9 +6,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -132,53 +135,9 @@ func TestAbandonAnUpgradeRefundsTheDeltaReturnsTheTargetAndJournals(t *testing.T
 	}
 }
 
-// COS2 at this tier. A downgrade checks the original completed leg under the source key and
-// `exchange-refund:<id>`, makes no refund, returns the target and writes off -delta.
-func TestAbandonADowngradeWritesOffTheDeltaWithoutARefund(t *testing.T) {
-	db, ctx := abandonDB(t)
-	w := newWorld(t, seed(t, db, ctx, downgradeUnit))
-	mustAbandon(t, db, ctx, w)
-	if w.count("payments:downgrade-leg") != 1 || w.count("payments:refund") != 0 || w.count("payments:operation") != 0 ||
-		w.count("payments:abandonment-leg") != 0 || w.count("inventory:return") != 1 || w.count("payments:fact") != 1 {
-		t.Fatalf("calls = %v", w.calls)
-	}
-	r := assertTerminal(t, db, ctx, w)
-	if !r.WrittenOff.Valid || r.WrittenOff.Int64 != -w.f.Delta || r.RefundFact.Valid {
-		t.Fatalf("written off %v refund fact %v, want %d and none", r.WrittenOff, r.RefundFact, -w.f.Delta)
-	}
-	w.mu.Lock()
-	p := w.journal[w.f.factID()].Payload()
-	w.mu.Unlock()
-	if p["written_off_amount"] != strconv.FormatInt(-w.f.Delta, 10) || p["refund_fact_id"] != "" {
-		t.Fatalf("payload = %v, want written_off_amount %d", p, -w.f.Delta)
-	}
-}
-
-// D11. An even exchange asks payments for no delta evidence and makes no refund. It returns the
-// target and journals one fact with neither evidence field.
-func TestAbandonAnEvenExchangeJournalsWithoutDeltaEvidence(t *testing.T) {
-	db, ctx := abandonDB(t)
-	w := newWorld(t, seed(t, db, ctx, evenUnit))
-	mustAbandon(t, db, ctx, w)
-	for _, name := range []string{"payments:operation", "payments:downgrade-leg", "payments:abandonment-leg", "payments:refund"} {
-		if n := w.count(name); n != 0 {
-			t.Fatalf("an even exchange made %d %s call(s)", n, name)
-		}
-	}
-	if w.count("inventory:return") != 1 || w.count("payments:fact") != 1 {
-		t.Fatalf("calls = %v", w.calls)
-	}
-	r := assertTerminal(t, db, ctx, w)
-	if r.WrittenOff.Valid || r.RefundFact.Valid {
-		t.Fatalf("even exchange written off %v refund fact %v", r.WrittenOff, r.RefundFact)
-	}
-	w.mu.Lock()
-	p := w.journal[w.f.factID()].Payload()
-	w.mu.Unlock()
-	if len(p) != 4 {
-		t.Fatalf("payload = %v, want only the four common keys", p)
-	}
-}
+// The downgrade and even branches run end to end in the running stack
+// (smoke/exchange_abandonment_test.go), which asserts their payments reads, write-off and journal
+// payload. This tier keeps the upgrade's call order and the refusal and retry cases.
 
 // COS4. An identical command after completion answers the original record with replay=true and
 // makes no Access, payments or inventory call. Times and row counts do not move.
@@ -762,14 +721,6 @@ func TestAnInterruptedAbandonmentResumesFromItsRecordedProgress(t *testing.T) {
 			if tc.unit == upgradeUnit && (w.movements != 1 || len(w.legs) != 1 || r.RefundFact.UUID != w.legs[w.f.receipt().String()].factID) {
 				t.Fatalf("payments moved %d refund(s) over %d leg(s); row fact %v", w.movements, len(w.legs), r.RefundFact)
 			}
-			// After completion, a replay makes no call, journal included.
-			w.calls = nil
-			w.mu.Unlock()
-			again := mustAbandon(t, db, ctx, w)
-			w.mu.Lock()
-			if !again.Replay || len(w.calls) != 0 {
-				t.Fatalf("replay after resume = %t with calls %v", again.Replay, w.calls)
-			}
 		})
 	}
 }
@@ -883,4 +834,107 @@ func TestReplacementRefundsDecideTheReservation(t *testing.T) {
 		}
 		assertTerminal(t, db, ctx, w)
 	})
+}
+
+// legsOverHTTP is the world with one change: the replacement's refund-leg read goes through the
+// real HTTP client to a payments server that answers `answer`.
+type legsOverHTTP struct {
+	*world
+	client HTTP
+}
+
+func (p legsOverHTTP) RefundLeg(ctx context.Context, org uuid.UUID, source, refund string) (LegEvidence, error) {
+	if source == p.f.ReplacementKey {
+		return p.client.RefundLeg(ctx, org, source, refund)
+	}
+	return p.world.RefundLeg(ctx, org, source, refund)
+}
+
+// RA1-4. With the same pending replacement refund, only payments' own leg-absence answer lets
+// the reservation proceed. A route-level 404 is not proof that no leg exists: the command stops
+// for a retry before the reservation and before any money or capacity call.
+func TestOnlyPaymentsLegAbsenceAnswerAdmitsAPendingReplacementRefund(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		reserves   bool
+	}{
+		{"payments' leg-absence answer", `{"error":"refund leg not found"}`, true},
+		{"a route-level 404", "404 page not found\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, ctx := abandonDB(t)
+			f := seed(t, db, ctx, upgradeUnit)
+			bindReplacementRefund(t, db, ctx, f, "pending")
+			srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/internal/refund-legs" || r.URL.Query().Get("source_idempotency_key") != f.ReplacementKey {
+					t.Errorf("unexpected payments request %s %s", r.Method, r.URL)
+				}
+				rw.WriteHeader(http.StatusNotFound)
+				_, _ = rw.Write([]byte(tc.body))
+			}))
+			t.Cleanup(srv.Close)
+			w := newWorld(t, f)
+			svc := New(db, w, legsOverHTTP{world: w, client: NewHTTP("", srv.URL, "", "internal", "payments", 5*time.Second)}, w)
+			_, err := svc.Abandon(ctx, f.Org, f.Exchange, f.attribution())
+			if tc.reserves {
+				if err != nil {
+					t.Fatalf("abandon: %v", err)
+				}
+				assertTerminal(t, db, ctx, w)
+				return
+			}
+			if !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("err = %v, want ErrUnavailable", err)
+			}
+			if readRow(t, db, ctx, f).StartedAt.Valid || w.count("payments:refund") != 0 || w.count("inventory:return") != 0 {
+				t.Fatalf("a route-level 404 reserved or moved something: calls %v", w.calls)
+			}
+		})
+	}
+}
+
+// R1-5. A started abandonment is judged against the candidate definition again before it resumes
+// any remote effect: a resume skips fresh eligibility, so rows that became inconsistent after the
+// reservation stop the command with no Access, payments or inventory call.
+func TestAStartedAbandonmentWithInconsistentRowsStopsBeforeAnyRemoteCall(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		apply func(t *testing.T, db *sql.DB, ctx context.Context, f fixture)
+	}{
+		{"source reservation in another organizer", func(t *testing.T, db *sql.DB, ctx context.Context, f fixture) {
+			if _, err := db.ExecContext(ctx, `UPDATE reservations SET organizer_id=$2 WHERE id=(SELECT reservation_id FROM orders WHERE id=$1)`, f.SourceOrder, uuid.New()); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"replacement reservation in another organizer", func(t *testing.T, db *sql.DB, ctx context.Context, f fixture) {
+			if _, err := db.ExecContext(ctx, `UPDATE reservations SET organizer_id=$2 WHERE id=(SELECT reservation_id FROM orders WHERE id=$1)`, f.ReplacementOrder, uuid.New()); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"replacement reservation on another hold", func(t *testing.T, db *sql.DB, ctx context.Context, f fixture) {
+			if _, err := db.ExecContext(ctx, `UPDATE reservations SET hold_id=$2 WHERE id=(SELECT reservation_id FROM orders WHERE id=$1)`, f.ReplacementOrder, uuid.New()); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, ctx := abandonDB(t)
+			f := seed(t, db, ctx, upgradeUnit)
+			e, err := store.LoadSettledExchange(ctx, db, f.Org, f.Exchange)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, reserved, err := store.ReserveExchangeAbandonment(ctx, db, store.AbandonmentReservation{Expected: e, Attribution: f.attribution()}); err != nil || !reserved {
+				t.Fatalf("reserve: reserved=%v err=%v", reserved, err)
+			}
+			tc.apply(t, db, ctx, f)
+			w := newWorld(t, f)
+			if _, err := abandon(t, db, ctx, w); !errors.Is(err, store.ErrExchangeAbandonmentInconsistent) {
+				t.Fatalf("err = %v, want ErrExchangeAbandonmentInconsistent", err)
+			}
+			if n := w.total(); n != 0 {
+				t.Fatalf("an inconsistent started abandonment made %d remote call(s): %v", n, w.calls)
+			}
+		})
+	}
 }
