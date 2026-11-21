@@ -90,6 +90,35 @@ func TestStripeProveRefundFailureFindsTheMatchOnALaterPage(t *testing.T) {
 	}
 }
 
+// A provider that answers a cursor with a page ending on the same cursor cannot reach the rest
+// of the listing (R2-2). The third page would end the listing with nothing more, but the proof
+// must already have refused: the listing never advanced past re_a.
+func TestStripeProveRefundFailureRefusesACursorThatDoesNotAdvance(t *testing.T) {
+	foreign := `{"id":"re_a","object":"refund","amount":5,"currency":"eur","status":"succeeded","payment_intent":"pi_proof","metadata":{}}`
+	pages := []string{
+		proofList(true, proofRefund("re_ours", "failed", proofPI, proofKey, 1000, "eur"), foreign),
+		proofList(true, foreign),
+		proofList(false),
+	}
+	var queries []url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/refunds" {
+			t.Errorf("the proof made a %s %s; it may only list refunds", r.Method, r.URL.Path)
+		}
+		queries = append(queries, r.URL.Query())
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(pages[min(len(queries), len(pages))-1]))
+	}))
+	t.Cleanup(srv.Close)
+	got, err := NewStripe("sk_test_dummy", srv.URL, srv.Client()).ProveRefundFailure(context.Background(), proofPI, proofKey, 1000, "EUR")
+	if !errors.Is(err, ErrRefundProofInconclusive) || got.ProviderRef != "" {
+		t.Fatalf("proof = %+v err=%v, want inconclusive for a repeated cursor", got, err)
+	}
+	if len(queries) != 2 || queries[1].Get("starting_after") != "re_a" {
+		t.Fatalf("listing queries = %v, want two pages, the second after re_a", queries)
+	}
+}
+
 // Every case that is not a proof, with the verdict it must get. Each fixture differs from the
 // accepted one in ONE field, so each predicate in the match rule and the status mapping is
 // reached on its own.
@@ -117,6 +146,15 @@ func TestStripeProveRefundFailureRefusesEverythingElse(t *testing.T) {
 		{"a corroborated match beside an uncorroborated one", 200, proofList(false, ok, proofRefund("re_odd", "failed", proofPI, proofKey, 5, "eur")), ErrRefundProofInconclusive},
 		{"a corroborated match beside a stamped refund with no id", 200, proofList(false, ok, proofRefund("", "failed", proofPI, proofKey, 1000, "eur")), ErrRefundProofInconclusive},
 		{"a stamped refund with no id before a corroborated match", 200, proofList(false, proofRefund("", "failed", proofPI, proofKey, 1000, "eur"), ok), ErrRefundProofInconclusive},
+		// Every entry must be classifiable (R2-2): an id and a metadata object. A malformed entry
+		// beside a valid failed match makes the whole listing inconclusive, in either position.
+		{"a corroborated match beside a null entry", 200, proofList(false, ok, `null`), ErrRefundProofInconclusive},
+		{"a null entry before a corroborated match", 200, proofList(false, `null`, ok), ErrRefundProofInconclusive},
+		{"a corroborated match beside an empty object", 200, proofList(false, ok, `{}`), ErrRefundProofInconclusive},
+		{"a corroborated match beside an entry with null metadata", 200, proofList(false, ok, `{"id":"re_x","object":"refund","amount":5,"currency":"eur","status":"succeeded","payment_intent":"pi_proof","metadata":null}`), ErrRefundProofInconclusive},
+		{"a corroborated match beside an entry with no metadata", 200, proofList(false, ok, `{"id":"re_x","object":"refund","amount":5,"currency":"eur","status":"succeeded","payment_intent":"pi_proof"}`), ErrRefundProofInconclusive},
+		{"a corroborated match beside an unstamped entry with no id", 200, proofList(false, ok, `{"id":"","object":"refund","amount":5,"currency":"eur","status":"succeeded","payment_intent":"pi_proof","metadata":{}}`), ErrRefundProofInconclusive},
+		{"more pages after an entry with no id", 200, proofList(true, ok, `{"object":"refund","amount":5,"currency":"eur","status":"succeeded","payment_intent":"pi_proof","metadata":{}}`), ErrRefundProofInconclusive},
 		{"an incomplete page", 200, `{"object":"list","data":[` + ok + `]}`, ErrRefundProofInconclusive},
 		{"a malformed page", 200, `{"object":"list",`, ErrRefundProofInconclusive},
 		{"more pages but none returned", 200, proofList(true), ErrRefundProofInconclusive},

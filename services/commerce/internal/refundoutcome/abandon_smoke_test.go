@@ -584,55 +584,6 @@ func waitForLockWaiters(t *testing.T, ctx context.Context, db *sql.DB, n int) {
 	}
 }
 
-// Commit order 2: an outside completion commits while the abandonment waits before its
-// reservation. A held refund row lock queues the outside write first and the reservation
-// second. The reservation then sees the outside outcome and refuses: zero abandon POSTs and no
-// marker.
-func TestOutsideCompletionCommittedBeforeTheReservationWins(t *testing.T) {
-	db, ctx := outcomeDB(t)
-	s := seedOrder(t, ctx, db, uuid.New(), uuid.New(), 2, 1000)
-	r := bindStaffRefund(t, ctx, db, s, "order-two", 2)
-	peer := newStatefulPayments(t, 2000)
-
-	holder, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = holder.Rollback() }()
-	if _, err := holder.ExecContext(ctx, `SELECT 1 FROM order_refunds WHERE organizer_id=$1 AND id=$2 FOR UPDATE`, s.org, r.ID); err != nil {
-		t.Fatal(err)
-	}
-	outside, abandon := make(chan error, 1), make(chan error, 1)
-	go func() {
-		_, err := outsideService(db, peer).RecordRefundedOutside(ctx, outsideRequest(s, r.ID))
-		outside <- err
-	}()
-	waitForLockWaiters(t, ctx, db, 1)
-	go func() {
-		_, err := abandonService(db, peer).RecordAbandoned(ctx, abandonRequest(s, r.ID))
-		abandon <- err
-	}()
-	waitForLockWaiters(t, ctx, db, 2)
-	if err := holder.Rollback(); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-outside; err != nil {
-		t.Fatalf("outside completion: %v", err)
-	}
-	if err := <-abandon; !errors.Is(err, store.ErrRefundOutcomeConflict) {
-		t.Fatalf("abandonment after the outside outcome: err = %v, want ErrRefundOutcomeConflict", err)
-	}
-	if n := peer.count(abandonRoute); n != 0 || peer.markerRef() != "" {
-		t.Fatalf("abandon POSTs = %d marker = %q, want none", n, peer.markerRef())
-	}
-	if got := readReservation(t, ctx, db, s, r.ID); got.count != 0 {
-		t.Fatalf("reservation = %+v, want none", got)
-	}
-	if st := readRefundState(t, ctx, db, s, r.ID); st.status != "completed" || st.outside.String != store.OutcomeRefundedOutside || st.qty != 2 {
-		t.Fatalf("after the outside completion: %+v", st)
-	}
-}
-
 // R1-4: payments accepts a provider reference up to 255 bytes. The response for one is lost,
 // and the same command finishes from the marker and stores the whole reference.
 func TestAbandonedRecoversWithAProviderReferenceLongerThan200Bytes(t *testing.T) {

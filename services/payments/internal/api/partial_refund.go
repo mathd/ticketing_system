@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -86,10 +87,10 @@ func (s *Server) pspPartialRefund(w http.ResponseWriter, r *http.Request) {
 	// its allowance is already released. Read in its own short statement right before the
 	// provider call; no lock spans the HTTP call. A read error fails closed.
 	//
-	// A replay that passes this read just before a marker commits reaches the adapter, which
-	// resolves before it submits: it lists the PaymentIntent's refunds, finds the stamped
-	// FAILED refund the marker was proven against, and answers the terminal 422 without a
-	// POST (TestPartialRefundDispatchRefusesAnAbandonedLeg pins both halves).
+	// A dispatch that passes this read before a marker commits can still make one POST under
+	// the stored provider key, which the provider deduplicates within its key retention. Its
+	// answer is never recorded: the marker is read again after the provider answers (below),
+	// and CompleteRefundLeg refuses a marked leg (ADR-087 §13).
 	if _, abandoned, err := s.journal.LookupRefundLegAbandonment(r.Context(), in.OrganizerID, key, refundKey); err != nil {
 		write(w, 500, map[string]string{"error": "lookup refund leg abandonment"})
 		return
@@ -118,6 +119,21 @@ func (s *Server) pspPartialRefund(w http.ResponseWriter, r *http.Request) {
 	}
 	if result.Outcome != psp.Refunded {
 		write(w, 502, map[string]string{"error": "provider refund unresolved"})
+		return
+	}
+	// The marker may have committed while the provider call ran. A Refunded answer for an
+	// abandoned leg is never recorded: no fact, no completion, the same 409 as above. The
+	// marker was proven against a failed refund, so a succeeded one is a reconciliation alarm
+	// whatever its id; a different id is the stronger alarm (ADR-087 §13).
+	if m, abandoned, err := s.journal.LookupRefundLegAbandonment(r.Context(), in.OrganizerID, key, refundKey); err != nil {
+		write(w, 500, map[string]string{"error": "lookup refund leg abandonment"})
+		return
+	} else if abandoned {
+		slog.Error("payments: provider refunded an abandoned refund leg; nothing recorded",
+			"organizer_id", in.OrganizerID, "refund_key", refundKey,
+			"marker_provider_ref", m.ProviderRef, "result_provider_ref", result.ProviderRef,
+			"reconciliation_alarm", m.ProviderRef != result.ProviderRef)
+		write(w, 409, map[string]string{"error": "refund leg abandoned"})
 		return
 	}
 	// Fail closed when the provider returned something other than what this leg bound

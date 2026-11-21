@@ -275,6 +275,34 @@ func TestRefundOutcomeTargetIsOrganizerScoped(t *testing.T) {
 	}
 }
 
+// R2-3: the outcome write never locks another organizer's order. A queue row claiming this
+// organizer on another organizer's order is refused by the scoped lock statement itself, and the
+// foreign order stays free while the writing transaction is still open.
+func TestOutcomeWriteDoesNotLockAForeignOrder(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, _ := seedCompleted(t, db, ctx, "charge-"+uuid.NewString(), 1, 1000)
+	_, otherOrder := seedCompleted(t, db, ctx, "charge-"+uuid.NewString(), 1, 700)
+	malformed := uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO order_refunds(organizer_id,id,order_id,idempotency_key,request_fingerprint,quantity,unit_amount,amount,currency,actor,reason)
+		VALUES($1,$2,$3,'malformed-lock','fp',1,700,700,'EUR','ops@example.test','malformed')`, c.OrganizerID, malformed, otherOrder); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	forged := RefundOutcomeTarget{OrganizerID: c.OrganizerID, RefundID: malformed, OrderID: otherOrder, Amount: 700, Currency: "EUR", ChargeKey: "x"}
+	if _, err := lockOutcomeTarget(ctx, tx, outsideRequest(c, malformed), forged); !errors.Is(err, ErrRefundOutcomeNotFound) {
+		t.Fatalf("lock: err = %v, want ErrRefundOutcomeNotFound", err)
+	}
+	var one int
+	if err := db.QueryRowContext(ctx, `SELECT 1 FROM orders WHERE id=$1 FOR UPDATE NOWAIT`, otherOrder).Scan(&one); err != nil {
+		t.Fatalf("the foreign order is locked by the refused outcome write: %v", err)
+	}
+}
+
 // The locked write rechecks what was inspected before the payments call. A change to the order's
 // charge key or to the refund's money in between refuses, and writes nothing.
 func TestRecordRefundedOutsideRechecksTheInspectedRow(t *testing.T) {

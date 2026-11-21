@@ -86,6 +86,32 @@ func TestAbandonedLegDoesNotReleaseACompletedLeg(t *testing.T) {
 	}
 }
 
+// CompleteRefundLeg never completes a marked leg (ADR-087 §13). The dispatch handler re-reads
+// the marker after the provider answers; this is the backstop for a marker that commits after
+// that read. A marker on another leg of the same charge does not block this leg.
+func TestCompleteRefundLegRefusesAMarkedLeg(t *testing.T) {
+	db, ctx := journalDB(t)
+	j := New(db, fullRing(t))
+	org, key := uuid.New(), "charge-abandon-complete"
+	seedCapturedKeepingMarkedLegs(t, db, ctx, org, key, 2000)
+	for _, rk := range []string{"refund-a", "refund-b"} {
+		if _, err := j.BindRefundLeg(ctx, org, key, rk, 1000, "EUR"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	markAbandoned(t, ctx, db, org, key, "refund-a")
+	if err := j.CompleteRefundLeg(ctx, org, key, "refund-a", "re_late", uuid.New(), ConfirmedRefund{Amount: 1000, Currency: "EUR"}); !errors.Is(err, ErrRefundLegNotCompleted) {
+		t.Fatalf("completing a marked leg: err = %v, want ErrRefundLegNotCompleted", err)
+	}
+	leg, found, err := j.LookupRefundLeg(ctx, org, key, "refund-a")
+	if err != nil || !found || leg.Status != "bound" || leg.ProviderRef != "" || leg.ConfirmedAmount != nil {
+		t.Fatalf("marked leg after the refused completion = %+v found=%v err=%v, want still bound with no result", leg, found, err)
+	}
+	if err := j.CompleteRefundLeg(ctx, org, key, "refund-b", "re_b", uuid.New(), ConfirmedRefund{Amount: 1000, Currency: "EUR"}); err != nil {
+		t.Fatalf("the unmarked leg beside it must complete: %v", err)
+	}
+}
+
 // The whole-refund exclusion counts EVERY leg. A charge whose only leg is marked is still not
 // eligible for a whole refund: the leg is bound history, and the recovery path must not refund
 // the entire capture beside it.

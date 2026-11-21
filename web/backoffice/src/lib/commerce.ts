@@ -145,13 +145,7 @@ export async function refundOrder(req: RefundRequest): Promise<RefundOutcome> {
       const message = await commerceMessage(res);
       if (res.status === 404) return { ok: false, kind: 'not-found', message };
       if (res.status === 409 && (await commerceCode(res)) === 'refund_abandoned') {
-        return {
-          ok: false,
-          kind: 'abandoned',
-          message:
-            'An operator recorded this refund as abandoned. Nothing was sent to the payment provider. ' +
-            'If the buyer is still owed, submit a new refund below.',
-        };
+        return { ok: false, kind: 'abandoned', message: ABANDONED_REFUND_MESSAGE };
       }
       if (res.status === 400 || res.status === 409) {
         return { ok: false, kind: 'refused', message };
@@ -208,6 +202,58 @@ export async function refundOrder(req: RefundRequest): Promise<RefundOutcome> {
     // The request may have reached commerce and been applied. Never "no refund
     // happened".
     return { ok: false, kind: 'ambiguous', message: 'Commerce could not be reached.' };
+  }
+}
+
+/** What the page says when commerce settles a refund key as abandoned. */
+export const ABANDONED_REFUND_MESSAGE =
+  'An operator recorded this refund as abandoned. Nothing was sent to the payment provider. ' +
+  'If the buyer is still owed, submit a new refund below.';
+
+/**
+ * Whether commerce's staff order detail confirms a COMMITTED abandonment of the
+ * refund behind exactly this organizer, order and idempotency key (TKT-525,
+ * ADR-087).
+ *
+ * The saved retry keeps the original request, actor included, because commerce
+ * fingerprints the key over it. Another staff member's retry of that key is a
+ * generic 409, not `refund_abandoned`, so the refund write cannot tell this page
+ * that the key is settled. This read can: it is scoped by the session's verified
+ * organizer assertion, not by the actor.
+ *
+ * Fails closed. Any answer other than a readable 200 that names this order, this
+ * organizer and an abandoned refund under this key is `false`, and the caller
+ * keeps the saved retry.
+ */
+export async function confirmsAbandonedRefund(req: {
+  orderId: string;
+  organizerId: string;
+  idempotencyKey: string;
+  /** The session's organizer assertion. Server-side only. */
+  assertion: string;
+}): Promise<boolean> {
+  const credential = commerceStaffCredential();
+  try {
+    return await withUpstreamDeadline(async (signal) => {
+      const res = await fetch(`${COMMERCE_URL}/internal/orders/${encodeURIComponent(req.orderId)}`, {
+        headers: {
+          'X-Commerce-Staff-Write-Token': credential,
+          'X-Catalog-Organizer-Assertion': req.assertion,
+        },
+        signal,
+      });
+      if (res.status !== 200) return false;
+      const b = responseObject(await res.json(), 'staff order detail');
+      if (b.order_id !== req.orderId || b.organizer_id !== req.organizerId) return false;
+      if (!Array.isArray(b.refunds)) return false;
+      return b.refunds.some((f: unknown) => {
+        if (typeof f !== 'object' || f === null) return false;
+        const r = f as Record<string, unknown>;
+        return r.idempotency_key === req.idempotencyKey && r.abandoned === true;
+      });
+    });
+  } catch {
+    return false;
   }
 }
 

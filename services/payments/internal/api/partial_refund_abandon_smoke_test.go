@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -83,18 +84,26 @@ func (f *proofFixture) assertLegUntouched(t *testing.T) {
 
 // A proven terminal failure writes ONE marker carrying the provider's reference, and answers
 // with it. A replay answers from the committed marker without asking the provider, even when
-// the provider is down.
+// the provider is down. The 255-byte case is the longest reference both services store (RA2-2):
+// Commerce's recovery fixture covers its half, this one the Payments marker and its replay.
 func TestAbandonMarksTheLegAfterAProof(t *testing.T) {
-	for _, status := range []string{"failed", "canceled"} {
-		t.Run(status, func(t *testing.T) {
+	for _, c := range []struct{ name, status, ref string }{
+		{"failed", "failed", "re_ours_failed"},
+		{"canceled", "canceled", "re_ours_canceled"},
+		{"255-byte reference", "failed", "re_" + strings.Repeat("x", 252)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if len(c.ref) > 255 {
+				t.Fatalf("fixture reference is %d bytes", len(c.ref))
+			}
 			f := newProofFixture(t, nil)
-			f.peer.list = f.listWith("re_ours_"+status, status)
-			want := `{"amount":1000,"currency":"EUR","provider_ref":"re_ours_` + status + `"}`
+			f.peer.list = f.listWith(c.ref, c.status)
+			want := `{"amount":1000,"currency":"EUR","provider_ref":"` + c.ref + `"}`
 			assertProofResponse(t, f.abandonValid(t), 200, want)
 			if calls, queries := f.peer.snapshot(); len(calls) != 1 || queries[0].Get("payment_intent") != f.pi {
 				t.Fatalf("provider calls = %v %v, want one listing under the stored PaymentIntent", calls, queries)
 			}
-			if m := f.marker(t); m != (markerRow{1, "re_ours_" + status}) {
+			if m := f.marker(t); m != (markerRow{1, c.ref}) {
 				t.Fatalf("marker = %+v", m)
 			}
 			f.assertLegUntouched(t)
@@ -279,6 +288,19 @@ func TestAbandonRechecksTheLegAfterTheProvider(t *testing.T) {
 	}
 }
 
+// dispatch sends the fixture leg's ordinary partial-refund request.
+func (f *proofFixture) dispatch(t *testing.T) *httptest.ResponseRecorder {
+	t.Helper()
+	body := fmt.Sprintf(`{"organizer_id":%q,"idempotency_key":%q,"refund_key":%q,"amount":1000,"currency":"EUR"}`,
+		f.org, f.sourceKey, f.refundKey)
+	req := httptest.NewRequest(http.MethodPost, "/internal/psp/partial-refund", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Token", refundCredential)
+	res := httptest.NewRecorder()
+	f.h.ServeHTTP(res, req)
+	return res
+}
+
 // COS 4, payments half. Ordinary dispatch of a marked leg answers the existing 409 and never
 // reaches the provider: no listing, no POST.
 //
@@ -291,13 +313,7 @@ func TestPartialRefundDispatchRefusesAnAbandonedLeg(t *testing.T) {
 	assertProofResponse(t, f.abandonValid(t), 200, `{"amount":1000,"currency":"EUR","provider_ref":"re_failed_ours"}`)
 	before, _ := f.peer.snapshot()
 
-	body := fmt.Sprintf(`{"organizer_id":%q,"idempotency_key":%q,"refund_key":%q,"amount":1000,"currency":"EUR"}`,
-		f.org, f.sourceKey, f.refundKey)
-	req := httptest.NewRequest(http.MethodPost, "/internal/psp/partial-refund", bytes.NewBufferString(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Internal-Token", refundCredential)
-	res := httptest.NewRecorder()
-	f.h.ServeHTTP(res, req)
+	res := f.dispatch(t)
 
 	after, _ := f.peer.snapshot()
 	posts := 0
@@ -337,13 +353,7 @@ func TestPartialRefundDispatchFailsClosedWhenTheMarkerReadFails(t *testing.T) {
 	}
 	t.Cleanup(restore)
 
-	body := fmt.Sprintf(`{"organizer_id":%q,"idempotency_key":%q,"refund_key":%q,"amount":1000,"currency":"EUR"}`,
-		f.org, f.sourceKey, f.refundKey)
-	req := httptest.NewRequest(http.MethodPost, "/internal/psp/partial-refund", bytes.NewBufferString(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Internal-Token", refundCredential)
-	res := httptest.NewRecorder()
-	f.h.ServeHTTP(res, req)
+	res := f.dispatch(t)
 	restore()
 
 	if res.Code != 500 || res.Body.String() != `{"error":"lookup refund leg abandonment"}`+"\n" {
@@ -353,4 +363,70 @@ func TestPartialRefundDispatchFailsClosedWhenTheMarkerReadFails(t *testing.T) {
 		t.Fatalf("a failed marker read reached the provider: %v", calls)
 	}
 	f.assertLegUntouched(t)
+}
+
+const emptyRefundList = `{"object":"list","has_more":false,"data":[]}`
+
+func (f *proofFixture) succeededRefund(id string) string {
+	return f.refund(id, "succeeded", f.pi, f.legKey, 1000, "eur")
+}
+
+// ADR-087 §13: a dispatch admitted before a marker commits can make one POST, and it is the
+// SAME request as the original — the stored leg provider key as both the Idempotency-Key header
+// and the metadata stamp, with the same amount and PaymentIntent — so the provider deduplicates
+// it within its key retention. The first POST's answer is lost (a provider 500); the replay
+// must send byte-identical parameters.
+func TestPartialRefundReplaySendsTheStoredKeyAsHeaderAndStamp(t *testing.T) {
+	f := newProofFixture(t, nil)
+	f.peer.list = emptyRefundList
+	f.peer.submit = func() (int, string) {
+		if len(f.peer.posts) == 1 {
+			return 500, `{"error":{"message":"lost","type":"api_error"}}`
+		}
+		return 200, f.succeededRefund("re_replayed")
+	}
+	assertProofResponse(t, f.dispatch(t), 502, `{"error":"provider refund unresolved"}`)
+	if res := f.dispatch(t); res.Code != 200 {
+		t.Fatalf("replay: status=%d body=%s, want 200", res.Code, res.Body.String())
+	}
+	f.peer.mu.Lock()
+	posts := append([]stripePost(nil), f.peer.posts...)
+	f.peer.mu.Unlock()
+	if len(posts) != 2 {
+		t.Fatalf("refund POSTs = %d, want the original and the replay", len(posts))
+	}
+	for i, p := range posts {
+		if p.idempotencyKey != f.legKey || p.form.Get("metadata[compensation_key]") != f.legKey {
+			t.Fatalf("POST %d: header key %q, stamp %q, want the stored leg key %q as both",
+				i+1, p.idempotencyKey, p.form.Get("metadata[compensation_key]"), f.legKey)
+		}
+		if p.form.Get("amount") != "1000" || p.form.Get("payment_intent") != f.pi {
+			t.Fatalf("POST %d: amount %q, payment_intent %q, want 1000 and %q", i+1, p.form.Get("amount"), p.form.Get("payment_intent"), f.pi)
+		}
+	}
+	if posts[0].form.Encode() != posts[1].form.Encode() {
+		t.Fatalf("the replay changed the request: %q then %q", posts[0].form.Encode(), posts[1].form.Encode())
+	}
+}
+
+// ADR-087 §13: the marker commits while the provider call runs, and the provider answers
+// Refunded. Nothing is recorded: no payment.refunded fact, no completion, the existing 409.
+func TestPartialRefundDispatchRecordsNothingWhenTheMarkerCommitsDuringTheProviderCall(t *testing.T) {
+	f := newProofFixture(t, nil)
+	f.peer.list = emptyRefundList
+	f.peer.submit = func() (int, string) {
+		if _, err := f.db.ExecContext(f.ctx, `INSERT INTO payment_refund_leg_abandonments(organizer_id,source_idempotency_key,refund_idempotency_key,provider_ref)
+			VALUES($1,$2,$3,'re_failed_ours')`, f.org, f.sourceKey, f.refundKey); err != nil {
+			t.Errorf("marker inside the provider call: %v", err)
+		}
+		return 200, f.succeededRefund("re_late")
+	}
+	assertProofResponse(t, f.dispatch(t), 409, `{"error":"refund leg abandoned"}`)
+	if len(f.peer.posts) != 1 {
+		t.Fatalf("refund POSTs = %d, want the one admitted before the marker", len(f.peer.posts))
+	}
+	assertLegStillBound(t, f.db, f.ctx, f.org)
+	if m := f.marker(t); m != (markerRow{1, "re_failed_ours"}) {
+		t.Fatalf("marker = %+v", m)
+	}
 }

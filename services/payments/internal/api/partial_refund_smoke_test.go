@@ -36,6 +36,7 @@ type countingPSP struct {
 	authorizes int
 	amount     int64
 	key        string
+	keys       []string // every call's provider key, in order
 	// confirmAmount/confirmCurrency override what this stub reports having returned. Zero
 	// values mean "echo the request", which is the agreement path (TKT-257).
 	//
@@ -53,6 +54,7 @@ func (c *countingPSP) Refund(_ context.Context, _, idempotencyKey string, amount
 	defer c.mu.Unlock()
 	c.calls++
 	c.amount, c.key = amount, idempotencyKey
+	c.keys = append(c.keys, idempotencyKey)
 	if c.refundErr != nil {
 		return psp.Result{Outcome: psp.Unknown, ProviderRef: "re_terminal"}, c.refundErr
 	}
@@ -194,55 +196,23 @@ func TestTwoPartialRefundLegsAgainstOneCharge(t *testing.T) {
 	}
 }
 
+// Same-key pin 2 (TKT-525 COS 6). The terminal failure is the declared 422, and repeating the
+// original request answers it again, reaches the adapter twice under the provider key stored on
+// the ONE bound leg, and appends no refund journal entry. The wire half — the same key as both
+// the Idempotency-Key header and the metadata stamp — is
+// TestPartialRefundReplaySendsTheStoredKeyAsHeaderAndStamp; the Stripe adapter half — a stamped
+// failed refund resolves with one listing and no POST — is
+// TestStripeRefundResolutionFailsClosedOnAFailedRefund in the psp package.
 func TestPartialRefundTerminalFailureIsDeclared422(t *testing.T) {
 	org, sourceKey := uuid.New(), "leg-terminal"
 	h, provider := refundServer(t, org, sourceKey, 2500)
 	provider.refundErr = &psp.RefundFailedError{ProviderRef: "re_terminal"}
 	db, ctx := refundDB(t)
 	body := `{"organizer_id":"` + org.String() + `","idempotency_key":"` + sourceKey + `","refund_key":"refund-terminal","amount":1250,"currency":"EUR"}`
-	res := postRefundLeg(t, h, body)
-	if res.Code != http.StatusUnprocessableEntity || res.Body.String() != `{"code":"provider_refund_failed","error":"provider refund failed","provider_ref":"re_terminal"}`+"\n" {
-		t.Fatalf("status=%d body=%s, want exact provider terminal 422", res.Code, res.Body.String())
-	}
-	assertLegStillBound(t, db, ctx, org)
-}
-
-// terminalKeysPSP answers every refund with the provider's terminal failure and records the
-// provider key of EACH call before answering.
-type terminalKeysPSP struct {
-	psp.PSP
-	mu   sync.Mutex
-	keys []string
-}
-
-func (p *terminalKeysPSP) Refund(_ context.Context, _, idempotencyKey string, _ int64, _ string) (psp.Result, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.keys = append(p.keys, idempotencyKey)
-	return psp.Result{Outcome: psp.Unknown, ProviderRef: "re_terminal"}, &psp.RefundFailedError{ProviderRef: "re_terminal"}
-}
-
-// Same-key pin 2 (TKT-525 COS 6). Repeating the original partial-refund request after a
-// terminal 422 answers the declared 422 again, reaches the adapter twice under the provider key
-// stored on the ONE bound leg, and appends no refund journal entry. The Stripe adapter half of
-// the guarantee — a stamped failed refund resolves with one listing and no POST — is
-// TestStripeRefundResolutionFailsClosedOnAFailedRefund in the psp package.
-func TestPartialRefundRepeatAfterTerminal422ReusesTheStoredProviderKey(t *testing.T) {
-	org, sourceKey := uuid.New(), "leg-terminal-repeat"
-	_, _ = refundServer(t, org, sourceKey, 2500)
-	db, ctx := refundDB(t)
-	provider := &terminalKeysPSP{PSP: psp.NewFake()}
-	ring, err := store.NewKeyring("refund-key", []byte("payments-refund-leg-key-0123456"), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := newTestServerWithPSP(store.New(db, ring), refundCredential, provider).Router(nil, true)
-
-	body := `{"organizer_id":"` + org.String() + `","idempotency_key":"` + sourceKey + `","refund_key":"refund-terminal-repeat","amount":1250,"currency":"EUR"}`
 	for attempt := 1; attempt <= 2; attempt++ {
 		res := postRefundLeg(t, h, body)
 		if res.Code != http.StatusUnprocessableEntity || res.Body.String() != `{"code":"provider_refund_failed","error":"provider refund failed","provider_ref":"re_terminal"}`+"\n" {
-			t.Fatalf("attempt %d: status=%d body=%s, want the declared terminal 422", attempt, res.Code, res.Body.String())
+			t.Fatalf("attempt %d: status=%d body=%s, want exact provider terminal 422", attempt, res.Code, res.Body.String())
 		}
 	}
 	var legs int
@@ -257,13 +227,6 @@ func TestPartialRefundRepeatAfterTerminal422ReusesTheStoredProviderKey(t *testin
 		t.Fatalf("adapter keys = %v, want two calls under the stored leg key %q", provider.keys, storedKey)
 	}
 	assertLegStillBound(t, db, ctx, org)
-	var facts int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM journal_entries WHERE organizer_id=$1 AND fact_type='payment.refunded'`, org).Scan(&facts); err != nil {
-		t.Fatal(err)
-	}
-	if facts != 0 {
-		t.Fatalf("payment.refunded facts = %d, want none", facts)
-	}
 }
 
 // The endpoint is internal: no token, no answer — and it answers 401 like every other

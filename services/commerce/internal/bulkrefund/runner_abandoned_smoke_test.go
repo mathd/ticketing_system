@@ -309,6 +309,74 @@ func TestBulkRunClassifiesAnAbandonmentThatLandsAfterItsLookup(t *testing.T) {
 	}
 }
 
+// refusingTransport is payments refusing the partial refund with its generic 409, after running
+// `during` inside the call: the window in which an abandonment and a staff replacement commit.
+type refusingTransport struct {
+	recordingTransport
+	during func()
+}
+
+func (c *refusingTransport) call(ctx context.Context, method, u, token string, in any, idem bool) (int, []byte, error) {
+	if strings.HasSuffix(u, "/internal/psp/partial-refund") {
+		_, _, _ = c.recordingTransport.call(ctx, method, u, token, in, idem)
+		c.during()
+		return 409, []byte(`{"error":"refund leg abandoned"}`), nil
+	}
+	return c.recordingTransport.call(ctx, method, u, token, in, idem)
+}
+
+// R2-5: payments refuses the bulk refund because an abandonment committed after the bind, and a
+// staff replacement refunded the order before the runner handled the refusal. The runner re-reads
+// its own refund and classifies as a skip does, with no further payments call. A refusal with no
+// abandonment keeps the terminal refund_refused.
+func TestBulkRunClassifiesAPaymentsRefusalAfterAnAbandonment(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		during func(t *testing.T, ctx context.Context, db *sql.DB, o abandonedOrder)
+		want   verdict
+		reason string
+	}{
+		{"abandoned, replacement discharged", func(t *testing.T, ctx context.Context, db *sql.DB, o abandonedOrder) {
+			recordAbandonedOutcome(t, ctx, db, o)
+			refundTheRestByStaff(t, ctx, db, o, true)
+		}, verdict{outcome: "already_refunded", money: true, voided: true, returned: true, refundedQuantity: 2, refundedAmount: 2000}, ""},
+		{"abandoned, replacement reversal outstanding", func(t *testing.T, ctx context.Context, db *sql.DB, o abandonedOrder) {
+			recordAbandonedOutcome(t, ctx, db, o)
+			refundTheRestByStaff(t, ctx, db, o, false)
+		}, verdict{outcome: "failed", failureCode: "reversal_outstanding", money: true, refundedQuantity: 2, refundedAmount: 2000}, ""},
+		// The payments refusal itself is reported, not the abandonment classification.
+		{"not abandoned", func(*testing.T, context.Context, *sql.DB, abandonedOrder) {},
+			verdict{outcome: "failed", failureCode: "refund_refused"}, refunds.ErrPaymentsRefused.Error()},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			db, ctx := runnerDB(t)
+			o := seedAbandonedCancellation(t, ctx, db, false)
+			startRun(t, ctx, db, o, false)
+			transport := &refusingTransport{}
+			transport.during = func() { c.during(t, ctx, db, o) }
+			refunder := &countingRefunder{Service: refunds.New(db, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")}
+			New(DBStore{DB: db}, refunder, time.Minute, 10, time.Minute).RunOnce(ctx)
+
+			if n := transport.payments(); n != 1 {
+				t.Fatalf("payments calls = %d, want only the refused one", n)
+			}
+			got := readVerdict(t, ctx, db, o)
+			want := c.want
+			want.attempts = 1
+			want.requestedQuantity = got.requestedQuantity
+			if got != want {
+				t.Fatalf("verdict = %+v, want %+v", got, want)
+			}
+			if c.reason != "" {
+				var reason sql.NullString
+				if err := db.QueryRowContext(ctx, `SELECT failure_reason FROM cancellation_refund_orders WHERE organizer_id=$1 AND order_id=$2`, o.org, o.order).Scan(&reason); err != nil || reason.String != c.reason {
+					t.Fatalf("failure reason = %q err=%v, want %q", reason.String, err, c.reason)
+				}
+			}
+		})
+	}
+}
+
 // staffOrder is a two-unit order at 1000 with no cancellation refund.
 func staffOrder(t *testing.T, ctx context.Context, db *sql.DB) abandonedOrder {
 	t.Helper()

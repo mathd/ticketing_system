@@ -23,8 +23,9 @@ import (
 // peer and a real database. Every case asserts the declared status and body, and that the
 // provider saw no POST, no marker was written and no journal entry was appended.
 
-// stripePeer is a recording Stripe. It answers the refund listing with `list` and fails every
-// other route, so any submit is both recorded and visible.
+// stripePeer is a recording Stripe. It answers the refund listing with `list`. A refund POST is
+// answered by `submit` when a test sets it; every other route fails, so any submit is both
+// recorded and visible.
 type stripePeer struct {
 	srv    *httptest.Server
 	mu     sync.Mutex
@@ -35,6 +36,15 @@ type stripePeer struct {
 	// beforeAnswer runs inside the listing request, after the handler's first read and before
 	// its second: the window a concurrent writer has.
 	beforeAnswer func()
+	// submit answers POST /v1/refunds. It runs inside the provider call.
+	submit func() (int, string)
+	// posts records each refund POST: its Idempotency-Key header and its form.
+	posts []stripePost
+}
+
+type stripePost struct {
+	idempotencyKey string
+	form           url.Values
 }
 
 func newStripePeer(t *testing.T) *stripePeer {
@@ -44,9 +54,21 @@ func newStripePeer(t *testing.T) *stripePeer {
 		p.mu.Lock()
 		p.calls = append(p.calls, r.Method+" "+r.URL.Path)
 		p.query = append(p.query, r.URL.Query())
-		status, list, hook := p.status, p.list, p.beforeAnswer
+		status, list, hook, submit := p.status, p.list, p.beforeAnswer, p.submit
 		p.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		if submit != nil && r.Method == http.MethodPost && r.URL.Path == "/v1/refunds" {
+			if err := r.ParseForm(); err != nil {
+				t.Errorf("refund POST form: %v", err)
+			}
+			p.mu.Lock()
+			p.posts = append(p.posts, stripePost{idempotencyKey: r.Header.Get("Idempotency-Key"), form: r.PostForm})
+			p.mu.Unlock()
+			code, body := submit()
+			w.WriteHeader(code)
+			_, _ = w.Write([]byte(body))
+			return
+		}
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/refunds" {
 			w.WriteHeader(500)
 			_, _ = w.Write([]byte(`{"error":{"message":"peer: unexpected route","type":"api_error"}}`))

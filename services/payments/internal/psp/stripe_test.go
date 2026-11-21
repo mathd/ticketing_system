@@ -742,6 +742,9 @@ func TestStripeRefundTreatsIncompleteListPagesAsInconclusive(t *testing.T) {
 		"missing data":         refundListNoData,
 		"not a list":           `{"object":"refund","has_more":false,"data":[]}`,
 		"more pages but empty": refundListMorePagesButEmpty,
+		// R2-2: an entry that cannot be classified is not somebody else's refund.
+		"a null entry":              `{"object":"list","has_more":false,"data":[null]}`,
+		"an entry with no metadata": `{"object":"list","has_more":false,"data":[{"id":"re_x","object":"refund","amount":1250,"currency":"eur","status":"succeeded","payment_intent":"pi_test_authonly"}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			stub := newStripeStub(t, map[string]stubResp{

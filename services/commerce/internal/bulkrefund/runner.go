@@ -377,7 +377,19 @@ func (r *Runner) process(ctx context.Context, w store.CancellationWork) bool {
 		// An abandonment of this row's own refund committed after resolveQuantity read it, or
 		// the order has an abandoned refund of any key and this is a fresh bind. The shared
 		// refund unit refused before any payments call; classify exactly as the skip does.
-		if errors.Is(err, refunds.ErrRefundAbandoned) || errors.Is(err, store.ErrOrderHasAbandonedRefund) {
+		abandoned := errors.Is(err, refunds.ErrRefundAbandoned) || errors.Is(err, store.ErrOrderHasAbandonedRefund)
+		// Payments refuses an abandoned leg with its generic 409. When the abandonment
+		// committed after the bind, that refusal is the same verdict and gets the same
+		// classification: re-read this row's own refund, scoped to the organizer, and apply
+		// abandonedPlan with no further payments call. Any other refusal keeps its handling.
+		if !abandoned && errors.Is(err, refunds.ErrPaymentsRefused) {
+			existing, bound, lookupErr := r.store.LookupRefund(ctx, w.OrganizerID, store.RefundID(w.OrganizerID, key))
+			if lookupErr != nil {
+				return r.record(ctx, w, failure("internal", "read refund after a payments refusal"), true)
+			}
+			abandoned = bound && existing.Abandoned
+		}
+		if abandoned {
 			decided := r.abandonedPlan(ctx, w, store.RefundID(w.OrganizerID, key))
 			if decided.terminal {
 				return r.finalize(ctx, w, decided.outcome)

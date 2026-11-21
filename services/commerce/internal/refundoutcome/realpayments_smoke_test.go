@@ -292,7 +292,8 @@ func TestAbandonedRecoversThroughRealPaymentsAfterALostAnswerAndACommitFailure(t
 
 // RA1-1: two Commerce orders with their own quantity ceilings store the same payments charge
 // key (the checkout and exchange alias, TKT-586). The outside completion of order A wins the
-// race against an abandonment of the same refund, so payments never marks A's leg. A fresh
+// race against an abandonment of the same refund (commit order 2: the outside write commits
+// while the abandonment waits before its reservation), so payments never marks A's leg. A fresh
 // staff refund of order B then fits B's Commerce ceiling, and payments refuses it at the
 // captured-money ceiling: no leg is bound and nothing reaches the provider.
 func TestSharedChargeKeepsTheCapturedCeilingAfterAnOutsideCompletionWins(t *testing.T) {
@@ -333,8 +334,16 @@ func TestSharedChargeKeepsTheCapturedCeilingAfterAnOutsideCompletionWins(t *test
 	if err := <-outside; err != nil {
 		t.Fatalf("outside completion of A: %v", err)
 	}
-	if err := <-abandon; err == nil {
-		t.Fatal("the abandonment of A committed after its outside completion")
+	// The reservation sees the outside outcome and refuses: no reservation, and A completed
+	// with the outside outcome as its evidence.
+	if err := <-abandon; !errors.Is(err, store.ErrRefundOutcomeConflict) {
+		t.Fatalf("abandonment of A after its outside completion: err = %v, want ErrRefundOutcomeConflict", err)
+	}
+	if got := readReservation(t, ctx, db, a, refundA); got.count != 0 {
+		t.Fatalf("A's reservation = %+v, want none", got)
+	}
+	if st := readRefundState(t, ctx, db, a, refundA); st.status != "completed" || st.outside.String != store.OutcomeRefundedOutside || st.qty != 2 {
+		t.Fatalf("A after the outside completion: %+v", st)
 	}
 
 	keyB := "staff-b-" + uuid.NewString()

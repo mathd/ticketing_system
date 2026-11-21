@@ -384,6 +384,9 @@ After success:
 - Staff refund the buyer again through the Back Office order console, under a new key. If the Back
   Office still holds a saved retry for the old key, submitting it answers "An operator recorded this
   refund as abandoned", retires that saved retry, and shows a blank refund form with a fresh key.
+  This also works when another staff member of the organizer holds the page: the order console
+  reads Commerce's staff order detail, and when it confirms the abandonment of that exact key it
+  retires the saved retry, so the next refund carries that staff member's identity and a fresh key.
   The platform never re-submits automatically, and no operator command re-submits. While the
   abandonment is only reserved, a staff retry of the old key still goes to Payments.
 - A bulk cancellation run gets no new cancellation refund for this order, also after a staff

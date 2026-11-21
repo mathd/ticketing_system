@@ -6,6 +6,12 @@
 // fresh key, and the new refund must go through. A generic 409 on a saved retry
 // must keep the saved key (the control order).
 //
+// Staff handoff (R2-1): staff A's refund is ambiguous and saved; staff B of the
+// same organizer submits that saved retry after the abandonment. Commerce
+// compares the actor-bound fingerprint and answers a generic 409, so the page
+// asks commerce's staff order detail, retires the saved retry, and B's
+// replacement goes through under B's identity and a fresh key.
+//
 // Run through ./scripts/browser.sh (make browser) with host Chrome.
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -28,6 +34,7 @@ if (!CATALOG) throw new Error('CATALOG_CONTAINER is unset; run through ./scripts
 const PATH = '/admin/orders';
 const stamp = Date.now();
 const identifier = `refund-abandoned-${stamp}@example.test`;
+const identifierB = `refund-abandoned-b-${stamp}@example.test`;
 const password = 'correct horse battery staple';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -82,13 +89,49 @@ function seedCapturedOperation(o, captured) {
   );
 }
 
+// What the operator command leaves behind (record-refund-outcome ... abandoned):
+// payments holds the captured charge, the old leg still bound, and its marker;
+// commerce holds the abandoned outcome. Seeded by SQL because this spec is about
+// the Back Office; the command itself is covered against real PostgreSQL.
+function seedAbandonment(o, refund) {
+  seedCapturedOperation(o, o.quantity * o.unit);
+  sql(
+    PG,
+    'payments',
+    `INSERT INTO payment_refund_legs
+       (organizer_id, source_idempotency_key, refund_idempotency_key, provider_idempotency_key, amount, currency)
+     VALUES
+       ('${ORGANIZER}', '${o.chargeKey}', '${refund}',
+        '${refundLegKey(ORGANIZER, o.chargeKey, refund)}', ${o.unit}, 'EUR');
+     INSERT INTO payment_refund_leg_abandonments
+       (organizer_id, source_idempotency_key, refund_idempotency_key, provider_ref)
+     VALUES
+       ('${ORGANIZER}', '${o.chargeKey}', '${refund}', 're_browser_failed_${refund.slice(0, 8)}');`,
+  );
+  sql(
+    PG,
+    'commerce',
+    `INSERT INTO refund_outcomes
+       (organizer_id, subject_kind, subject_id, kind, amount, currency, external_ref,
+        operator_name, session_user_name, reason)
+     VALUES
+       ('${ORGANIZER}', 'order_refund', '${refund}', 'abandoned', ${o.unit}, 'EUR',
+        're_browser_failed_${refund.slice(0, 8)}', 'Browser Operator', session_user, 'nobody will refund this attempt');`,
+  );
+}
+
+const staffId = (who) =>
+  sql(PG, 'catalog', `SELECT id FROM staff_accounts WHERE identifier_key=lower('${who}')`);
+
 const refundRows = (order) =>
   sql(PG, 'commerce', `SELECT count(*) FROM order_refunds WHERE order_id='${order}'`);
 
 const { check, finish } = resultRecorder('refund-abandoned browser spec');
 provisionAdmin(CATALOG, identifier, password);
+provisionAdmin(CATALOG, identifierB, password);
 const abandonedOrder = seedPaidOrder('abandoned', 2, 1250);
 const controlOrder = seedPaidOrder('control', 1, 1250);
+const handoffOrder = seedPaidOrder('handoff', 2, 1250);
 const browser = await chromium.launch({ channel: 'chrome' });
 
 try {
@@ -122,34 +165,7 @@ try {
   const abandonedRefund = sql(PG, 'commerce', `SELECT id FROM order_refunds WHERE order_id='${abandonedOrder.order}'`);
   check('the saved refund has a commerce refund id', UUID.test(abandonedRefund), abandonedRefund);
 
-  // What the operator command leaves behind (record-refund-outcome ... abandoned):
-  // payments holds the captured charge, the old leg still bound, and its marker;
-  // commerce holds the abandoned outcome. Seeded by SQL because this spec is about
-  // the Back Office; the command itself is covered against real PostgreSQL.
-  seedCapturedOperation(abandonedOrder, 2 * 1250);
-  sql(
-    PG,
-    'payments',
-    `INSERT INTO payment_refund_legs
-       (organizer_id, source_idempotency_key, refund_idempotency_key, provider_idempotency_key, amount, currency)
-     VALUES
-       ('${ORGANIZER}', '${abandonedOrder.chargeKey}', '${abandonedRefund}',
-        '${refundLegKey(ORGANIZER, abandonedOrder.chargeKey, abandonedRefund)}', 1250, 'EUR');
-     INSERT INTO payment_refund_leg_abandonments
-       (organizer_id, source_idempotency_key, refund_idempotency_key, provider_ref)
-     VALUES
-       ('${ORGANIZER}', '${abandonedOrder.chargeKey}', '${abandonedRefund}', 're_browser_failed_${stamp}');`,
-  );
-  sql(
-    PG,
-    'commerce',
-    `INSERT INTO refund_outcomes
-       (organizer_id, subject_kind, subject_id, kind, amount, currency, external_ref,
-        operator_name, session_user_name, reason)
-     VALUES
-       ('${ORGANIZER}', 'order_refund', '${abandonedRefund}', 'abandoned', 1250, 'EUR',
-        're_browser_failed_${stamp}', 'Browser Operator', session_user, 'nobody will refund this attempt');`,
-  );
+  seedAbandonment(abandonedOrder, abandonedRefund);
 
   // Submit the saved retry: commerce answers 409 refund_abandoned.
   let submitted = await submitForm(page, retryForm().getByRole('button', { name: 'Retry the same refund' }));
@@ -215,6 +231,71 @@ try {
        WHERE organizer_id='${ORGANIZER}' AND source_idempotency_key='${abandonedOrder.chargeKey}'`,
     ) === 'bound,refunded',
   );
+
+  // ---- Staff handoff (R2-1). Staff A saves an unresolved refund.
+  const handoffKey = await saveUnresolvedRefund(handoffOrder, 'handoff');
+  const handoffRefund = sql(PG, 'commerce', `SELECT id FROM order_refunds WHERE order_id='${handoffOrder.order}'`);
+  const staffA = staffId(identifier);
+  const staffB = staffId(identifierB);
+  check('handoff: two distinct staff members', UUID.test(staffA) && UUID.test(staffB) && staffA !== staffB, `${staffA} ${staffB}`);
+
+  // Staff B, in a second session, looks the order up before the abandonment:
+  // A's saved retry is offered, because it is the order's and not A's.
+  const contextB = await browser.newContext({ baseURL: BASE });
+  const pageB = await contextB.newPage();
+  await signIn(pageB, identifierB, password);
+  const freshFormB = () => pageB.locator('form.refund:has(h2:text("Refund this order"))');
+  const retryFormB = () => pageB.locator('form.refund:has(h2:text("Retry this refund"))');
+  await pageB.goto(PATH, { waitUntil: 'domcontentloaded' });
+  await pageB.fill('#order_id', handoffOrder.order);
+  await submitForm(pageB, pageB.getByRole('button', { name: 'Look it up' }));
+  check('handoff: staff B is offered the saved retry', (await retryFormB().count()) === 1);
+  check(
+    'handoff: the saved retry carries staff A\'s key',
+    (await retryFormB().locator('input[name="idempotency_key"]').inputValue()) === handoffKey,
+  );
+
+  // The operator abandons A's refund. Staff B then submits the saved retry.
+  seedAbandonment(handoffOrder, handoffRefund);
+  submitted = await submitForm(pageB, retryFormB().getByRole('button', { name: 'Retry the same refund' }));
+  check(
+    'handoff: staff B\'s retry sends the saved key',
+    new URLSearchParams(submitted.postData() ?? '').get('idempotency_key') === handoffKey,
+  );
+  const handoffStatus = (await pageB.getByRole('status').innerText()).trim();
+  check('handoff: the page says the refund was abandoned', handoffStatus.includes('abandoned'), handoffStatus);
+  check('handoff: the saved retry is retired', (await retryFormB().count()) === 0);
+  check('handoff: a fresh refund form is offered to staff B', (await freshFormB().count()) === 1);
+  const freshKeyB = await freshFormB().locator('input[name="idempotency_key"]').inputValue();
+  check('handoff: the fresh form carries a new key', UUID.test(freshKeyB) && freshKeyB !== handoffKey, freshKeyB);
+  check('handoff: the fresh form is blank: quantity', (await freshFormB().locator('#quantity').inputValue()) === '');
+  check('handoff: the fresh form is blank: reason', (await freshFormB().locator('#reason').inputValue()) === '');
+  check(
+    'handoff: the abandoned refund keeps staff A\'s original request and stays pending',
+    sql(PG, 'commerce', `SELECT actor || '|' || idempotency_key || '|' || status FROM order_refunds WHERE id='${handoffRefund}'`) ===
+      `${staffA}|${handoffKey}|pending`,
+  );
+
+  // Staff B's replacement goes through under B's identity and the fresh key.
+  await freshFormB().locator('#quantity').fill('1');
+  await freshFormB().locator('#reason').fill('browser handoff replacement');
+  submitted = await submitForm(pageB, freshFormB().getByRole('button', { name: 'Refund' }));
+  check(
+    'handoff: the replacement submits the fresh key',
+    new URLSearchParams(submitted.postData() ?? '').get('idempotency_key') === freshKeyB,
+  );
+  const handoffResult = (await pageB.locator('.refund-result').innerText()).trim();
+  check('handoff: the replacement shows commerce\'s refund', handoffResult.includes('Commerce refunded 1 ticket(s)'), handoffResult);
+  check(
+    'handoff: the replacement is staff B\'s, under the fresh key, completed',
+    sql(
+      PG,
+      'commerce',
+      `SELECT actor || '|' || idempotency_key || '|' || status || '|' || quantity::text
+       FROM order_refunds WHERE order_id='${handoffOrder.order}' AND id <> '${handoffRefund}'`,
+    ) === `${staffB}|${freshKeyB}|completed|1`,
+  );
+  await contextB.close();
 
   // ---- The control: a generic 409 on a saved retry keeps the saved key.
   const controlKey = await saveUnresolvedRefund(controlOrder, 'control');

@@ -255,9 +255,10 @@ func lookupRefundOutcome(ctx context.Context, q rowQuerier, org, refundID uuid.U
 	return o, true, nil
 }
 
-// outsideOrderLockSQL locks the refund's order, scoped through its source reservation. It is
-// a named constant so the lock-order test can observe this exact statement waiting.
-const outsideOrderLockSQL = `SELECT o.idempotency_key, r.organizer_id, r.quantity FROM orders o JOIN reservations r ON r.id = o.reservation_id WHERE o.id=$1 FOR UPDATE OF o`
+// outsideOrderLockSQL locks the refund's order, scoped through its source reservation IN SQL:
+// another organizer's order is never locked, not even briefly before a check in Go. It is a
+// named constant so the lock-order test can observe this exact statement waiting.
+const outsideOrderLockSQL = `SELECT o.idempotency_key, r.quantity FROM orders o JOIN reservations r ON r.id = o.reservation_id WHERE o.id=$1 AND r.organizer_id=$2 FOR UPDATE OF o`
 
 // RecordRefundedOutside appends a refunded_outside outcome and completes the refund with it as
 // evidence, in ONE short transaction. The caller has already inspected the refund and obtained
@@ -495,18 +496,14 @@ func lockOutcomeTarget(ctx context.Context, tx *sql.Tx, in RefundOutcomeRequest,
 		return l, err
 	}
 
-	var sourceOrg uuid.UUID
-	err = tx.QueryRowContext(ctx, outsideOrderLockSQL, l.order).Scan(&l.chargeKey, &sourceOrg, &l.sold)
+	// The source reservation is the organizer's, checked again under the lock: the
+	// inspection's answer is not evidence about the row this transaction is about to write.
+	err = tx.QueryRowContext(ctx, outsideOrderLockSQL, l.order, in.OrganizerID).Scan(&l.chargeKey, &l.sold)
 	if errors.Is(err, sql.ErrNoRows) {
 		return l, ErrRefundOutcomeNotFound
 	}
 	if err != nil {
 		return l, err
-	}
-	// The source reservation is the organizer's, checked again under the lock: the
-	// inspection's answer is not evidence about the row this transaction is about to write.
-	if sourceOrg != in.OrganizerID {
-		return l, ErrRefundOutcomeNotFound
 	}
 	if l.order != inspected.OrderID || l.chargeKey != inspected.ChargeKey ||
 		l.amount != inspected.Amount || l.currency != inspected.Currency {

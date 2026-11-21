@@ -604,3 +604,72 @@ func TestFreshCancellationBindRefusesAnOrderWithAnAbandonedRefund(t *testing.T) 
 		t.Fatalf("cancellation refunds = %d err=%v, want only the earlier one", cancels, err)
 	}
 }
+
+// insertForeignRefundOnOrder writes a refund row under ANOTHER organizer on this organizer's
+// order. No supported API creates this shape; the schema permits it (R2-3).
+func insertForeignRefundOnOrder(t *testing.T, ctx context.Context, db *sql.DB, foreign, order uuid.UUID, quantity int32) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO order_refunds(organizer_id,id,order_id,idempotency_key,request_fingerprint,quantity,unit_amount,amount,currency,actor,reason)
+		VALUES($1,$2,$3,$4,'fp',$5,1000,$5*1000,'EUR','ops@example.test','foreign row')`, foreign, id, order, "foreign-"+id.String(), quantity); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// R2-3: a refund row under another organizer on this organizer's order has no say in either
+// decision BindOrderRefund takes from order_refunds. Each subtest reaches one predicate.
+func TestForeignRefundRowsOnTheOrderDecideNothing(t *testing.T) {
+	t.Run("quantity ceiling", func(t *testing.T) {
+		db, ctx := outboxDB(t)
+		c, _ := seedCompleted(t, db, ctx, "charge-"+uuid.NewString(), 2, 1000)
+		insertForeignRefundOnOrder(t, ctx, db, uuid.New(), c.OrderID, 2)
+		if _, err := BindOrderRefund(ctx, db, request(c, "own-both-units", 2)); err != nil {
+			t.Fatalf("a foreign pending refund consumed this order's units: %v", err)
+		}
+	})
+	t.Run("cancellation guard", func(t *testing.T) {
+		db, ctx := outboxDB(t)
+		c, _ := seedCompleted(t, db, ctx, "charge-"+uuid.NewString(), 2, 1000)
+		foreign := uuid.New()
+		insertForeignOutcome(t, ctx, db, foreign, insertForeignRefundOnOrder(t, ctx, db, foreign, c.OrderID, 1), OutcomeAbandoned)
+		if _, err := BindOrderRefund(ctx, db, request(c, CancellationRefundKey(uuid.New(), c.OrderID), 2)); err != nil {
+			t.Fatalf("a foreign abandoned refund refused this order's cancellation bind: %v", err)
+		}
+	})
+}
+
+// R2-1: the staff order detail reports a COMMITTED abandonment per refund, so the Back Office can
+// retire a saved retry of exactly that key. A pending reservation reads false, and so does an
+// outcome row for the same raw refund id under another organizer.
+func TestStaffOrderDetailReportsACommittedAbandonment(t *testing.T) {
+	db, ctx := outboxDB(t)
+	c, _ := seedCompleted(t, db, ctx, "charge-"+uuid.NewString(), 3, 1000)
+	finalized := bindPending(t, ctx, db, c, "detail-abandoned", 1)
+	reserved := bindPending(t, ctx, db, c, "detail-reserved", 1)
+	foreign := bindPending(t, ctx, db, c, "detail-foreign", 1)
+	if _, _, err := recordAbandoned(t, ctx, db, abandonedRequest(c, finalized.ID)); err != nil {
+		t.Fatal(err)
+	}
+	reserve(t, ctx, db, abandonedRequest(c, reserved.ID))
+	insertForeignOutcome(t, ctx, db, uuid.New(), foreign.ID, OutcomeAbandoned)
+
+	d, err := ReadStaffOrderDetail(ctx, db, c.OrganizerID, c.OrderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[uuid.UUID]bool{}
+	for _, f := range d.Refunds {
+		got[f.RefundID] = f.Abandoned
+	}
+	want := map[uuid.UUID]bool{finalized.ID: true, reserved.ID: false, foreign.ID: false}
+	if len(got) != len(want) {
+		t.Fatalf("refunds = %v, want %v", got, want)
+	}
+	for id, w := range want {
+		if got[id] != w {
+			t.Fatalf("refund %s abandoned = %v, want %v (all: %v)", id, got[id], w, got)
+		}
+	}
+}

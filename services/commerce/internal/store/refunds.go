@@ -190,7 +190,7 @@ func BindOrderRefund(ctx context.Context, db *sql.DB, in RefundRequest) (Refund,
 			  JOIN refund_outcomes o
 			    ON o.organizer_id = rf.organizer_id AND o.subject_kind = 'order_refund'
 			   AND o.subject_id = rf.id AND o.kind = 'abandoned'
-			  WHERE rf.order_id=$1)`, in.OrderID).Scan(&abandoned); err != nil {
+			  WHERE rf.order_id=$1 AND rf.organizer_id=$2)`, in.OrderID, in.OrganizerID).Scan(&abandoned); err != nil {
 			return Refund{}, err
 		}
 		if abandoned {
@@ -201,15 +201,16 @@ func BindOrderRefund(ctx context.Context, db *sql.DB, in RefundRequest) (Refund,
 	// `abandoned` operator outcome (TKT-525 S2, ADR-087): payments has proven its provider
 	// refund terminally failed and released its money allowance first, and an operator recorded
 	// that nobody will refund that attempt. An outside completion still counts; so does every
-	// ordinary pending refund.
+	// ordinary pending refund. Both reads of order_refunds take the authenticated organizer in
+	// SQL: a refund row under another organizer has no say in this one's decision.
 	var refundedQty sql.NullInt32
 	if err := tx.QueryRowContext(ctx, `
 		SELECT sum(rf.quantity) FROM order_refunds rf
-		WHERE rf.order_id=$1
+		WHERE rf.order_id=$1 AND rf.organizer_id=$2
 		  AND NOT EXISTS (
 		    SELECT 1 FROM refund_outcomes o
 		    WHERE o.organizer_id = rf.organizer_id AND o.subject_kind = 'order_refund'
-		      AND o.subject_id = rf.id AND o.kind = 'abandoned')`, in.OrderID).Scan(&refundedQty); err != nil {
+		      AND o.subject_id = rf.id AND o.kind = 'abandoned')`, in.OrderID, in.OrganizerID).Scan(&refundedQty); err != nil {
 		return Refund{}, err
 	}
 	if refundedQty.Int32+in.Quantity > soldQty {

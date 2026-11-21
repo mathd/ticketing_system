@@ -140,10 +140,13 @@ type stripeRefund struct {
 // shape of "this PaymentIntent has no refunds", the one answer that licenses submitting a
 // new one. A page that merely decodes without error is not evidence of absence; presence
 // has to be checked, not inferred.
+//
+// Entries are pointers for the same reason (R2-2): a null entry decodes to a zero-value struct
+// without error, and that struct has no stamp, so it would read as somebody else's refund.
 type stripeRefundList struct {
-	Object  string          `json:"object"`
-	Data    *[]stripeRefund `json:"data"`
-	HasMore *bool           `json:"has_more"`
+	Object  string           `json:"object"`
+	Data    *[]*stripeRefund `json:"data"`
+	HasMore *bool            `json:"has_more"`
 }
 
 // complete reports whether the page carries the fields a conclusive answer needs.
@@ -467,13 +470,15 @@ type refundListFailure struct {
 // disagree about what a complete listing is.
 //
 // nil means the listing completed or visit stopped it. Anything else is a failure that proves
-// nothing: a transport failure, a provider error, a malformed or incomplete page, a page that
-// cannot advance the cursor, or a listing that does not terminate.
+// nothing: a transport failure, a provider error, a malformed or incomplete page, an entry with
+// no id or no metadata, a page that cannot advance the cursor or repeats one, or a listing that
+// does not terminate.
 func (s *Stripe) listRefunds(ctx context.Context, providerRef string, visit func(stripeRefund) bool) *refundListFailure {
 	fail := func(res Result, err error) *refundListFailure { return &refundListFailure{res: res, err: err} }
 	q := url.Values{}
 	q.Set("payment_intent", providerRef)
 	q.Set("limit", "100")
+	cursors := map[string]bool{}
 	for page := 0; page < refundListPages; page++ {
 		status, raw, se, err := s.do(ctx, http.MethodGet, "/v1/refunds?"+q.Encode(), "", nil)
 		if err != nil {
@@ -490,8 +495,16 @@ func (s *Stripe) listRefunds(ctx context.Context, providerRef string, visit func
 			return fail(unknown(errors.New("stripe refund list page is missing object/data/has_more")))
 		}
 		data := *list.Data
+		// Every entry must be classifiable before any is visited: an id to name it and a
+		// metadata object to read the stamp from. Stripe sends `metadata: {}` on an unstamped
+		// refund; a null or missing one is not evidence that the refund is unstamped.
 		for _, rf := range data {
-			if visit(rf) {
+			if rf == nil || rf.ID == "" || rf.Metadata == nil {
+				return fail(unknown(errors.New("stripe refund list entry has no id or no metadata")))
+			}
+		}
+		for _, rf := range data {
+			if visit(*rf) {
 				return nil
 			}
 		}
@@ -503,7 +516,14 @@ func (s *Stripe) listRefunds(ctx context.Context, providerRef string, visit func
 			// no further page can be reached: absence is unprovable.
 			return fail(unknown(errors.New("stripe refund list reports more pages but returned none")))
 		}
-		q.Set("starting_after", data[len(data)-1].ID)
+		// A cursor already used cannot reach a new page: the listing would repeat or skip,
+		// and what it did not reach proves nothing.
+		cursor := data[len(data)-1].ID
+		if cursors[cursor] {
+			return fail(unknown(fmt.Errorf("stripe refund list cursor %q did not advance", cursor)))
+		}
+		cursors[cursor] = true
+		q.Set("starting_after", cursor)
 	}
 	return fail(unknown(errors.New("stripe refund list did not terminate")))
 }

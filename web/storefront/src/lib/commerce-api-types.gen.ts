@@ -773,6 +773,8 @@ export interface components {
             refund_id: string;
             /** @enum {string} */
             status: "pending" | "completed";
+            /** @description True when an operator recorded this refund as abandoned (TKT-525, ADR-087) and the abandonment committed. Nothing will ever move money under its idempotency key, so a saved retry of that key can be retired; the refund itself stays pending. A pending abandonment reservation reads false. */
+            abandoned: boolean;
             quantity: number;
             /** @description Minor units. */
             amount: number;

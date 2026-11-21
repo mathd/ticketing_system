@@ -292,7 +292,9 @@ Operator runbook: `docs/development.md` §Journal signing key rotation.
      *Amended (TKT-525 S2, owner decision of 2026-10-12):* after a recorded `abandoned` outcome,
      staff can submit a new refund under a new key through the Back Office. The platform never
      re-submits automatically, and no operator command re-submits. The failed leg stays bound and
-     carries an abandonment marker; dispatch refuses it with 409 before any provider call.
+     carries an abandonment marker; dispatch refuses it with 409 before any provider call. A
+     dispatch admitted before the marker committed can still POST once under the stored key, and
+     its Refunded answer is never recorded (ADR-087 §13).
   Bound: refunds created before this amendment carry no stamp and therefore do not resolve. That is
   the pre-existing behaviour, not a regression — and not a fix.
 - `Status`: retrieve the known provider object. If the process timed out **before** persisting the

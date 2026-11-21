@@ -105,7 +105,11 @@ GET /internal/psp/partial-refund/failure-proof?organizer_id=&idempotency_key=&re
   3. One corroborated stamped refund in `failed` or `canceled` is a proof and returns its `re_`
      reference.
   A pending refund, no stamped refund, an incomplete or malformed listing, an unavailable provider,
-  and a provider with no prover are inconclusive (502).
+  and a provider with no prover are inconclusive (502). Every listed entry must be classifiable: a
+  null entry, or an entry with no id or no `metadata` object, makes the whole listing inconclusive
+  (Stripe sends `metadata: {}` on an unstamped refund). While `has_more` is true, a page whose last
+  id is missing or repeats an earlier cursor is inconclusive too. The rule is in the shared listing
+  loop, so `resolveRefund` does not submit on such a listing either.
 - The fake PSP (offline and smoke stacks) proves only a refund failure that it recorded itself:
   a charge captured with the `fake-refund-fail-once` token fails its first refund terminally and
   keeps that refund in memory. The proof looks that refund up by charge reference and key; the fake
@@ -262,18 +266,39 @@ No database lock spans a provider call (ADR-037 §4 is unchanged).
 This is the only exception to ADR-037 §4. A pending refund with no outcome still consumes both
 ceilings, and so does a `refunded_outside` refund.
 
-### 13. Dispatch refuses an abandoned leg; resolve-first covers the race
+### 13. Dispatch refuses an abandoned leg and never records a Refunded answer for one
 
 In `/internal/psp/partial-refund`, after the existing bind and completed-replay check, Payments reads
 the marker in its own short statement immediately before `psp.Refund`. A marked leg answers the
 existing 409 (`refund leg abandoned`) with no provider call. A read error fails closed (500).
 
-A replay can pass that read just before a marker commits. It then reaches the Stripe adapter, which
-resolves before it submits (ADR-032 §Refund): it lists the PaymentIntent's refunds, finds the stamped
-`failed` refund that the marker was proven against, and answers the terminal 422 without a POST. The
-existing provider idempotency key covers overlapping submissions under the provider's idempotency
-contract. `TestPartialRefundDispatchRefusesAnAbandonedLeg` pins the 409 with no provider call. With
-the marker read removed, the same fixture answers 422 after one listing GET, and still makes no POST.
+The guarantee has two halves:
+
+- **A dispatch that reads the marker after it commits makes zero provider calls.**
+- **A dispatch admitted before the commit can make one POST** under the leg's stored provider key.
+  The Stripe adapter lists before it submits, and nothing spans that listing and the POST, so a
+  marker can commit between them. The POST is the same request as the original: the stored key as
+  both the `Idempotency-Key` header and the `compensation_key` stamp, with the same amount and
+  PaymentIntent. The provider deduplicates it within its key retention (ADR-032 §Refund), and no
+  other key can create this leg's refund.
+
+**A Refunded answer on an abandoned leg is never recorded.** After the provider answers Refunded
+and before any journal append, dispatch reads the marker again. On a marker it appends no fact,
+completes nothing, answers the same 409 and logs both refund references, the marker's and the
+answer's. A succeeded refund on a leg proven failed is a reconciliation alarm; a different reference
+is the stronger one. `CompleteRefundLeg` also refuses a marked leg (`AND NOT EXISTS` on the marker),
+as a backstop for a marker that commits after that second read.
+
+A lease that fenced admission was rejected: it needs a new table and operator-facing refusals, and
+it still relies on provider idempotency, because a frozen process resumes and POSTs under whatever
+lease it holds. **Accepted residual risk:** a process that stalls between the listing and the POST
+for longer than the provider's 24 h key retention could create a new refund under the stored key.
+Reconciliation finds it from the stamp.
+
+`TestPartialRefundDispatchRefusesAnAbandonedLeg` pins the 409 with no provider call.
+`TestPartialRefundReplaySendsTheStoredKeyAsHeaderAndStamp` pins the identical replay request.
+`TestPartialRefundDispatchRecordsNothingWhenTheMarkerCommitsDuringTheProviderCall` commits the marker
+inside the provider call and pins no fact, no completion and the 409.
 
 ### 14. Recovery, and the cost of starting an abandonment
 
@@ -309,7 +334,10 @@ projection and the reversal state, which the abandonment did not change:
 If the abandonment commits between the runner's lookup and the Commerce bind, the shared refund unit
 refuses (`refunds.ErrRefundAbandoned`) before any Payments call, and the runner applies the same
 classification. If it commits after the bind, Payments' marker has committed first and dispatch
-answers 409.
+answers its generic 409. The runner then reads its own refund again, scoped to the organizer, and
+when the abandonment has committed it applies the same classification with no further Payments call.
+A staff replacement can complete before the runner handles that 409, so the zero-quantity verdicts
+apply there too. Any other Payments refusal keeps `refund_refused`.
 
 **A fresh cancellation bind on an order with an abandoned refund is refused.** A runner requests the
 sold quantity minus the completed quantity, and a later staff refund does not say which abandoned
@@ -336,6 +364,16 @@ still settle the refund and leave the reservation inert. A mismatched fingerprin
 code only on a 409. `unresolvedRefund` (`order-console.ts`) then settles the saved retry, and the page
 clears only the saved retry with the same organizer, order and key, and renders a blank refund form
 with a fresh key. A generic refusal and a different saved key keep the existing retry behaviour.
+
+The saved retry belongs to the order, not to the staff member who submitted it, and it keeps the
+original request: Commerce fingerprints the key over the actor too. So another staff member's retry of
+that key is a generic 409, not `refund_abandoned`. For this case the staff order detail
+(`GET /internal/orders/{id}`, scoped by the session's organizer assertion) reports `abandoned` per
+refund: true only for a committed `abandoned` outcome, never for a pending reservation. Whenever the
+page holds a saved retry, it reads that detail and retires the retry only when the detail names the
+same organizer and order and an abandoned refund under the same key. Any other answer, including a
+failed read, keeps the retry. The next form has a fresh key, and the replacement carries the current
+session's identity.
 
 ## Consequences
 

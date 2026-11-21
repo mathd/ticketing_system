@@ -44,7 +44,7 @@ const PERFORMANCE_ID = '70000000-0000-4000-8000-000000000001';
 const TICKET_TYPE_ID = '80000000-0000-4000-8000-000000000001';
 const CHANNEL_ID = '90000000-0000-4000-8000-000000000001';
 const REFUND_ID = 'a0000000-0000-4000-8000-000000000001';
-import { getOrderState, refundOrder } from '../src/lib/commerce';
+import { confirmsAbandonedRefund, getOrderState, refundOrder } from '../src/lib/commerce';
 import {
   getStaffAvailability,
   InventoryApiError,
@@ -815,6 +815,59 @@ describe('the order console reads (TKT-193)', () => {
     expect(serialized).not.toContain('SENTINEL-QR-URL-VALUE');
     expect(serialized).not.toContain('qr_payload');
     expect(serialized).not.toContain('qr_url');
+  });
+});
+
+// TKT-525 R2-1. The staff order detail settles a saved retry that another staff
+// member cannot replay: true ONLY for a readable 200 naming this order, this
+// organizer and an abandoned refund under exactly this key. Everything else keeps
+// the saved retry.
+describe('the committed-abandonment read (TKT-525)', () => {
+  const ORDER = 'abcdef01-2345-4678-89ab-cdef01234567';
+  const KEY = 'a0000000-0000-4000-8000-000000000001';
+  const ask = { orderId: ORDER, organizerId: TEST_ORGANIZER_ID, idempotencyKey: KEY, assertion: 'session-assertion' };
+  function detail(overrides: Record<string, unknown> = {}, refund: Record<string, unknown> = {}) {
+    return {
+      order_id: ORDER,
+      organizer_id: TEST_ORGANIZER_ID,
+      status: 'completed',
+      refunds: [
+        { refund_id: 'r-other', idempotency_key: 'another-key', abandoned: false },
+        { refund_id: 'r-1', idempotency_key: KEY, abandoned: true, ...refund },
+      ],
+      ...overrides,
+    };
+  }
+
+  it('confirms an abandoned refund under exactly this key, through the staff read', async () => {
+    const calls = spyFetch(detail(), 200);
+    expect(await confirmsAbandonedRefund(ask)).toBe(true);
+    expect(calls[0].url).toBe(`http://localhost:8082/internal/orders/${ORDER}`);
+    expect(calls[0].method).toBe('GET');
+    expect(calls[0].headers['X-Commerce-Staff-Write-Token']).toBe('commerce-test-credential');
+    expect(calls[0].headers['X-Catalog-Organizer-Assertion']).toBe('session-assertion');
+  });
+
+  it.each([
+    ['the key is not abandoned', detail({}, { abandoned: false }), 200],
+    ['the abandoned flag is not a boolean', detail({}, { abandoned: 'true' }), 200],
+    ['the abandoned flag is absent', detail({}, { abandoned: undefined }), 200],
+    ['only another key is abandoned', detail({}, { idempotency_key: 'another-key-2' }), 200],
+    ['another order answered', detail({ order_id: 'deadbeef-1234-4567-89ab-cdef01234567' }), 200],
+    ['another organizer answered', detail({ organizer_id: '00000000-0000-0000-0000-000000000002' }), 200],
+    ['the refunds are missing', detail({ refunds: undefined }), 200],
+    ['commerce answers 404', { error: 'not found' }, 404],
+    ['commerce answers 500', detail(), 500],
+  ])('keeps the saved retry when %s', async (_name, body, status) => {
+    spyFetch(body, status);
+    expect(await confirmsAbandonedRefund(ask)).toBe(false);
+  });
+
+  it('keeps the saved retry when commerce cannot be reached', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('fetch failed');
+    }));
+    expect(await confirmsAbandonedRefund(ask)).toBe(false);
   });
 });
 

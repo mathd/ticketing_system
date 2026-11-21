@@ -213,6 +213,10 @@ func lookupRefundLegTx(ctx context.Context, q rowQuerier, org uuid.UUID, sourceK
 // second. Enforced here, the two cases are distinguished by construction — a new completion
 // must supply it, and a historical row is simply never rewritten.
 //
+// A leg with an abandonment marker is never completed (TKT-525, ADR-087 §13): the dispatch
+// handler checks the marker after the provider answers, and this predicate is the backstop
+// for a marker that commits after that check. Such a leg answers ErrRefundLegNotCompleted.
+//
 // ErrRefundLegNotCompleted when the UPDATE matches nothing. The previous version returned
 // only the driver error, so a no-op — the row already refunded, or gone — was
 // indistinguishable from a completion that landed. Silence there means the caller has
@@ -225,7 +229,10 @@ func (j *Journal) CompleteRefundLeg(ctx context.Context, org uuid.UUID, sourceKe
 	res, err := j.db.ExecContext(ctx, `
 		UPDATE payment_refund_legs SET status='refunded',provider_ref=NULLIF($4,''),fact_id=$5,completed_at=now(),
 		                              confirmed_amount=$6,confirmed_currency=$7
-		WHERE organizer_id=$1 AND source_idempotency_key=$2 AND refund_idempotency_key=$3 AND status='bound'`,
+		WHERE organizer_id=$1 AND source_idempotency_key=$2 AND refund_idempotency_key=$3 AND status='bound'
+		  AND NOT EXISTS (
+		    SELECT 1 FROM payment_refund_leg_abandonments m
+		    WHERE m.organizer_id=$1 AND m.source_idempotency_key=$2 AND m.refund_idempotency_key=$3)`,
 		org, sourceKey, refundKey, providerRef, factID, confirmed.Amount, confirmed.Currency)
 	if err != nil {
 		return err
