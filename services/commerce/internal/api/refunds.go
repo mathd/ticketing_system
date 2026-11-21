@@ -115,6 +115,13 @@ func (s *Server) refundOrder(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		// An operator recorded this refund as abandoned (TKT-525 S2, D12). The specific
+		// code is what lets the Back Office retire its saved retry for this key and offer a
+		// fresh form; every other 409 stays generic, so a saved retry survives it.
+		if errors.Is(err, refunds.ErrRefundAbandoned) {
+			write(w, http.StatusConflict, map[string]string{"error": "refund abandoned", "code": "refund_abandoned"})
+			return
+		}
 		code, message := refundProblem(err)
 		if code == http.StatusInternalServerError {
 			slog.Default().ErrorContext(r.Context(), "refund order", "err", err)

@@ -31,6 +31,7 @@ async function renderPage(
   path: string,
   request: Request,
   params: Record<string, string> = {},
+  staff: typeof principal = principal,
 ): Promise<Response> {
   const { experimental_AstroContainer } = await import('astro/container');
   const container = await experimental_AstroContainer.create({ astroConfig: { base: '/admin' } });
@@ -38,7 +39,7 @@ async function renderPage(
   return container.renderToResponse(mod.default, {
     request,
     params,
-    locals: { staff: principal },
+    locals: { staff },
     routeType: 'page',
     partial: false,
   });
@@ -187,6 +188,211 @@ describe('the order page gates unresolved refunds before dispatch', () => {
     expect(unresolvedRefunds.find(ORGANIZER, ORDER)).toMatchObject({
       idempotencyKey: REFUND_KEY,
     });
+  }, 30_000);
+});
+
+// TKT-525 S2 (D12). The saved retry's refund was recorded abandoned by an
+// operator. Submitting the retry gets commerce's 409 `refund_abandoned`; the page
+// retires THAT saved key and renders a blank refund form with a fresh key. A
+// generic 409 keeps the saved retry, exactly as before.
+describe('the order page retires a saved retry only when commerce says it was abandoned', () => {
+  async function submitSavedRetry(answer: Response) {
+    const { unresolvedRefunds } = await import('../src/lib/unresolved-refunds');
+    unresolvedRefunds.note(ORGANIZER, {
+      orderId: ORDER,
+      quantity: 2,
+      reason: 'original request',
+      idempotencyKey: REFUND_KEY,
+    });
+    const writes: { url: string; key: string | null }[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === 'POST') {
+        writes.push({ url, key: new Headers(init.headers).get('Idempotency-Key') });
+        return answer;
+      }
+      if (url.includes(`/api/commerce/orders/${ORDER}`)) {
+        return json({ order_id: ORDER, status: 'completed' });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    }));
+    const response = await renderPage(
+      '../src/pages/orders.astro',
+      post('/admin/orders', {
+        _action: 'refund',
+        order_id: ORDER,
+        quantity: '2',
+        reason: 'original request',
+        idempotency_key: REFUND_KEY,
+      }),
+    );
+    return { html: await response.text(), writes, unresolvedRefunds };
+  }
+
+  it('renders a fresh blank form after refund_abandoned', async () => {
+    const { html, writes, unresolvedRefunds } = await submitSavedRetry(
+      json({ error: 'refund abandoned', code: 'refund_abandoned' }, 409),
+    );
+    expect(writes).toEqual([{ url: expect.stringContaining(`/internal/orders/${ORDER}/refunds`), key: REFUND_KEY }]);
+    expect(unresolvedRefunds.find(ORGANIZER, ORDER)).toBeUndefined();
+    expect(html).not.toContain('Retry the same refund');
+    expect(html).not.toContain(`value="${REFUND_KEY}"`);
+    const keys = [...html.matchAll(/name="idempotency_key" value="([0-9a-f-]{36})"/g)].map((m) => m[1]);
+    expect(keys.length).toBeGreaterThan(0);
+    expect(keys).not.toContain(REFUND_KEY);
+    expect(html).not.toContain('name="quantity" value="2"');
+    expect(html).not.toContain('original request');
+    expect(html).toContain('abandoned');
+  }, 30_000);
+
+  it('keeps the saved retry after a generic 409', async () => {
+    const { html, unresolvedRefunds } = await submitSavedRetry(json({ error: 'refund unresolved' }, 409));
+    expect(unresolvedRefunds.find(ORGANIZER, ORDER)).toMatchObject({ idempotencyKey: REFUND_KEY });
+    expect(html).toContain('Retry the same refund');
+    expect(html).toContain(`name="idempotency_key" value="${REFUND_KEY}"`);
+  }, 30_000);
+});
+
+// TKT-525 R2-1. Staff A's refund was ambiguous, so the process saved A's retry.
+// An operator then recorded that refund as abandoned. Staff B of the same
+// organizer submits the saved retry: commerce compares the actor-bound
+// fingerprint and answers a generic 409, never `refund_abandoned`. The page asks
+// commerce's staff order detail, retires the saved retry only when it confirms
+// the abandonment of this exact organizer, order and key, and offers B a blank
+// form with a fresh key. The retry it sent kept A's original terms.
+describe('another staff member retires a saved retry that an operator abandoned', () => {
+  const STAFF_B = '60000000-0000-4000-8000-000000000002';
+  const staffB = {
+    ...principal,
+    staffId: STAFF_B,
+    organizerAssertion: `v2.catalog-org/test.${STAFF_B}.${ORGANIZER}.99999999999.${'B'.repeat(86)}`,
+  };
+
+  function staffDetail(abandoned: boolean, organizer = ORGANIZER, orderId = ORDER) {
+    return json({
+      order_id: orderId,
+      organizer_id: organizer,
+      status: 'completed',
+      refunds: [{ refund_id: 'b0000000-0000-4000-8000-000000000001', idempotency_key: REFUND_KEY, abandoned }],
+    });
+  }
+
+  async function asStaffB(fields: Record<string, string>, detail: () => Response, savedOrderId = ORDER) {
+    const { unresolvedRefunds } = await import('../src/lib/unresolved-refunds');
+    unresolvedRefunds.note(ORGANIZER, {
+      orderId: savedOrderId,
+      quantity: 2,
+      reason: 'original request',
+      idempotencyKey: REFUND_KEY,
+    });
+    const writes: { key: string | null; body: unknown; assertion: string | null }[] = [];
+    const reads: (string | null)[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const headers = new Headers(init?.headers);
+      if (init?.method === 'POST') {
+        writes.push({
+          key: headers.get('Idempotency-Key'),
+          body: JSON.parse(String(init.body)),
+          assertion: headers.get('X-Catalog-Organizer-Assertion'),
+        });
+        return json({ error: 'refund idempotency key reused with a different request' }, 409);
+      }
+      const order = savedOrderId.toLowerCase();
+      if (url.toLowerCase().endsWith(`/internal/orders/${order}`)) {
+        reads.push(headers.get('X-Catalog-Organizer-Assertion'));
+        return detail();
+      }
+      if (url.toLowerCase().includes(`/api/commerce/orders/${order}`)) {
+        return json({ order_id: order, status: 'completed' });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    }));
+    const response = await renderPage('../src/pages/orders.astro', post('/admin/orders', fields), {}, staffB);
+    return { html: await response.text(), writes, reads, unresolvedRefunds };
+  }
+
+  const savedRetry = {
+    _action: 'refund',
+    order_id: ORDER,
+    quantity: '2',
+    reason: 'original request',
+    idempotency_key: REFUND_KEY,
+  };
+
+  function freshKeys(html: string) {
+    return [...html.matchAll(/name="idempotency_key" value="([0-9a-f-]{36})"/g)].map((m) => m[1]);
+  }
+
+  it('retires it after the retry is refused and offers a blank form with a fresh key', async () => {
+    const { html, writes, reads, unresolvedRefunds } = await asStaffB(savedRetry, () => staffDetail(true));
+    // The retry carried A's original terms and B's session identity.
+    expect(writes).toEqual([{
+      key: REFUND_KEY,
+      body: { quantity: 2, actor: STAFF_B, reason: 'original request' },
+      assertion: staffB.organizerAssertion,
+    }]);
+    expect(reads).toEqual([staffB.organizerAssertion]);
+    expect(unresolvedRefunds.find(ORGANIZER, ORDER)).toBeUndefined();
+    expect(html).not.toContain('Retry the same refund');
+    expect(html).toContain('An operator recorded this refund as abandoned. If the buyer is still owed, submit a new refund below.');
+    expect(html).not.toContain('Nothing was sent');
+    const keys = freshKeys(html);
+    expect(keys.length).toBeGreaterThan(0);
+    expect(keys).not.toContain(REFUND_KEY);
+    expect(html).not.toContain('name="quantity" value="2"');
+    expect(html).not.toContain('value="original request"');
+  }, 30_000);
+
+  it('retires it on a plain lookup, before any write', async () => {
+    const { html, writes, unresolvedRefunds } = await asStaffB(
+      { _action: 'lookup', order_id: ORDER, ticket_ref: '' },
+      () => staffDetail(true),
+    );
+    expect(writes).toEqual([]);
+    expect(unresolvedRefunds.find(ORGANIZER, ORDER)).toBeUndefined();
+    expect(html).not.toContain('Retry the same refund');
+    expect(freshKeys(html)).not.toContain(REFUND_KEY);
+  }, 30_000);
+
+  // R3-2. Staff A looked the order up by its uppercase UUID, so the saved retry
+  // and its form carry that spelling. Commerce's staff read answers the same
+  // order in canonical lowercase. The order is the same, so the retry retires.
+  it('retires it when the saved order id is uppercase and commerce answers lowercase', async () => {
+    const lower = '9abcdef0-0000-4000-8000-0000000000ab';
+    const upper = lower.toUpperCase();
+    const { html, writes, reads, unresolvedRefunds } = await asStaffB(
+      { ...savedRetry, order_id: upper },
+      () => staffDetail(true, ORGANIZER, lower),
+      upper,
+    );
+    expect(writes).toHaveLength(1);
+    expect(reads).toEqual([staffB.organizerAssertion]);
+    expect(unresolvedRefunds.find(ORGANIZER, upper)).toBeUndefined();
+    expect(html).not.toContain('Retry the same refund');
+    expect(html).toContain('An operator recorded this refund as abandoned. If the buyer is still owed, submit a new refund below.');
+    expect(html).not.toContain('Nothing was sent');
+    const keys = freshKeys(html);
+    expect(keys.length).toBeGreaterThan(0);
+    expect(keys).not.toContain(REFUND_KEY);
+  }, 30_000);
+
+  it.each([
+    ['the refund is not abandoned', () => staffDetail(false)],
+    ['the read names another organizer', () => staffDetail(true, '00000000-0000-4000-8000-000000000009')],
+    // D35: a commerce build older than the `abandoned` flag answers without it.
+    ['the read has no abandoned flag', () => json({
+      order_id: ORDER,
+      organizer_id: ORGANIZER,
+      status: 'completed',
+      refunds: [{ refund_id: 'b0000000-0000-4000-8000-000000000001', idempotency_key: REFUND_KEY }],
+    })],
+    ['the read is unavailable', () => json({ error: 'down' }, 500)],
+  ])('keeps it when %s', async (_name, detail) => {
+    const { html, unresolvedRefunds } = await asStaffB(savedRetry, detail);
+    expect(unresolvedRefunds.find(ORGANIZER, ORDER)).toMatchObject({ idempotencyKey: REFUND_KEY, reason: 'original request' });
+    expect(html).toContain('Retry the same refund');
+    expect(html).toContain(`name="idempotency_key" value="${REFUND_KEY}"`);
   }, 30_000);
 });
 

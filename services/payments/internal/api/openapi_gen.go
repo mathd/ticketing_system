@@ -317,6 +317,22 @@ type ProviderRefundFailedCode string
 // ProviderRefundFailedError defines model for ProviderRefundFailed.Error.
 type ProviderRefundFailedError string
 
+// RefundLegAbandon defines model for RefundLegAbandon.
+type RefundLegAbandon struct {
+	Amount         int64              `json:"amount"`
+	Currency       string             `json:"currency"`
+	IdempotencyKey string             `json:"idempotency_key"`
+	OrganizerId    openapi_types.UUID `json:"organizer_id"`
+	RefundKey      openapi_types.UUID `json:"refund_key"`
+}
+
+// RefundLegFailureProof defines model for RefundLegFailureProof.
+type RefundLegFailureProof struct {
+	Amount      int64  `json:"amount"`
+	Currency    string `json:"currency"`
+	ProviderRef string `json:"provider_ref"`
+}
+
 // RefundLegState defines model for RefundLegState.
 type RefundLegState struct {
 	Amount            int64   `json:"amount"`
@@ -399,6 +415,13 @@ type GetOrderSettlementParams struct {
 	OrganizerId openapi_types.UUID `form:"organizer_id" json:"organizer_id"`
 }
 
+// PspPartialRefundFailureProofParams defines parameters for PspPartialRefundFailureProof.
+type PspPartialRefundFailureProofParams struct {
+	OrganizerId    openapi_types.UUID `form:"organizer_id" json:"organizer_id"`
+	IdempotencyKey string             `form:"idempotency_key" json:"idempotency_key"`
+	RefundKey      openapi_types.UUID `form:"refund_key" json:"refund_key"`
+}
+
 // PspStatusParams defines parameters for PspStatus.
 type PspStatusParams struct {
 	OrganizerId    openapi_types.UUID `form:"organizer_id" json:"organizer_id"`
@@ -420,6 +443,9 @@ type AppendFactJSONRequestBody = Fact
 
 // PspPartialRefundJSONRequestBody defines body for PspPartialRefund for application/json ContentType.
 type PspPartialRefundJSONRequestBody = PSPPartialRefund
+
+// PspPartialRefundAbandonJSONRequestBody defines body for PspPartialRefundAbandon for application/json ContentType.
+type PspPartialRefundAbandonJSONRequestBody = RefundLegAbandon
 
 // PspRefundJSONRequestBody defines body for PspRefund for application/json ContentType.
 type PspRefundJSONRequestBody = PSPCompensation

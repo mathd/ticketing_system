@@ -66,7 +66,7 @@ func (s *Server) staffOrderDetail(w http.ResponseWriter, r *http.Request) {
 			"refund_id": f.RefundID, "status": f.Status, "quantity": f.Quantity,
 			"amount": f.Amount, "currency": f.Currency,
 			"idempotency_key": f.IdempotencyKey, "actor": f.Actor,
-			"created_at": f.CreatedAt,
+			"created_at": f.CreatedAt, "abandoned": f.Abandoned,
 		}
 		// Omitted rather than null while pending: the schema makes it optional, and the
 		// table's CHECK ties its presence to the status, so an absent value here and a

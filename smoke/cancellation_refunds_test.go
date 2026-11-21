@@ -56,6 +56,13 @@ type cancellationReport struct {
 // buyOne completes one purchase on the slot and returns its order id.
 func buyOne(t *testing.T, slot, tt, key string, quantity int) string {
 	t.Helper()
+	return buyOneWithToken(t, slot, tt, key, quantity, "fake-ok")
+}
+
+// buyOneWithToken is buyOne paying with the given fake PSP token (TKT-525 uses
+// fake-refund-fail-once).
+func buyOneWithToken(t *testing.T, slot, tt, key string, quantity int, paymentToken string) string {
+	t.Helper()
 	code, body := postWithKey(t, gatewayURL+"/api/commerce/reservations", "res-"+key,
 		map[string]any{"organizer_id": organizerID, "ticket_type_id": tt, "quantity": quantity})
 	if code != http.StatusCreated {
@@ -67,7 +74,7 @@ func buyOne(t *testing.T, slot, tt, key string, quantity int) string {
 	}
 	code, body = postWithKey(t, gatewayURL+"/api/commerce/orders", "ord-"+key,
 		map[string]any{"reservation_id": reservation["reservation_id"], "name": "Cancelled Buyer",
-			"email": "cancel-" + key + "@example.test", "payment_token": "fake-ok"})
+			"email": "cancel-" + key + "@example.test", "payment_token": paymentToken})
 	if code != http.StatusOK {
 		t.Fatalf("checkout %s: %d %s", key, code, body)
 	}

@@ -36,6 +36,7 @@ type countingPSP struct {
 	authorizes int
 	amount     int64
 	key        string
+	keys       []string // every call's provider key, in order
 	// confirmAmount/confirmCurrency override what this stub reports having returned. Zero
 	// values mean "echo the request", which is the agreement path (TKT-257).
 	//
@@ -53,6 +54,7 @@ func (c *countingPSP) Refund(_ context.Context, _, idempotencyKey string, amount
 	defer c.mu.Unlock()
 	c.calls++
 	c.amount, c.key = amount, idempotencyKey
+	c.keys = append(c.keys, idempotencyKey)
 	if c.refundErr != nil {
 		return psp.Result{Outcome: psp.Unknown, ProviderRef: "re_terminal"}, c.refundErr
 	}
@@ -194,15 +196,35 @@ func TestTwoPartialRefundLegsAgainstOneCharge(t *testing.T) {
 	}
 }
 
+// Same-key pin 2 (TKT-525 COS 6). The terminal failure is the declared 422, and repeating the
+// original request answers it again, reaches the adapter twice under the provider key stored on
+// the ONE bound leg, and appends no refund journal entry. The wire half — the same key as both
+// the Idempotency-Key header and the metadata stamp — is
+// TestPartialRefundReplaySendsTheStoredKeyAsHeaderAndStamp; the Stripe adapter half — a stamped
+// failed refund resolves with one listing and no POST — is
+// TestStripeRefundResolutionFailsClosedOnAFailedRefund in the psp package.
 func TestPartialRefundTerminalFailureIsDeclared422(t *testing.T) {
 	org, sourceKey := uuid.New(), "leg-terminal"
 	h, provider := refundServer(t, org, sourceKey, 2500)
 	provider.refundErr = &psp.RefundFailedError{ProviderRef: "re_terminal"}
 	db, ctx := refundDB(t)
 	body := `{"organizer_id":"` + org.String() + `","idempotency_key":"` + sourceKey + `","refund_key":"refund-terminal","amount":1250,"currency":"EUR"}`
-	res := postRefundLeg(t, h, body)
-	if res.Code != http.StatusUnprocessableEntity || res.Body.String() != `{"code":"provider_refund_failed","error":"provider refund failed","provider_ref":"re_terminal"}`+"\n" {
-		t.Fatalf("status=%d body=%s, want exact provider terminal 422", res.Code, res.Body.String())
+	for attempt := 1; attempt <= 2; attempt++ {
+		res := postRefundLeg(t, h, body)
+		if res.Code != http.StatusUnprocessableEntity || res.Body.String() != `{"code":"provider_refund_failed","error":"provider refund failed","provider_ref":"re_terminal"}`+"\n" {
+			t.Fatalf("attempt %d: status=%d body=%s, want exact provider terminal 422", attempt, res.Code, res.Body.String())
+		}
+	}
+	var legs int
+	var storedKey string
+	if err := db.QueryRowContext(ctx, `SELECT count(*), min(provider_idempotency_key) FROM payment_refund_legs WHERE organizer_id=$1`, org).Scan(&legs, &storedKey); err != nil {
+		t.Fatal(err)
+	}
+	if legs != 1 {
+		t.Fatalf("bound legs = %d, want 1", legs)
+	}
+	if len(provider.keys) != 2 || provider.keys[0] != storedKey || provider.keys[1] != storedKey {
+		t.Fatalf("adapter keys = %v, want two calls under the stored leg key %q", provider.keys, storedKey)
 	}
 	assertLegStillBound(t, db, ctx, org)
 }

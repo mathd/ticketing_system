@@ -6,7 +6,9 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,13 +27,20 @@ var (
 	ErrOrderNotRefundable = errors.New("only a completed order can be refunded")
 	// ErrRefundExceedsOrder reports that this refund would take the cumulative refunded
 	// quantity past what was sold. PENDING refunds count — an unresolved refund may yet
-	// settle, and releasing its allowance is how an order gets over-refunded.
+	// settle, and releasing its allowance is how an order gets over-refunded. The one
+	// exception is a refund with a recorded `abandoned` outcome (TKT-525 S2, ADR-087 §12).
 	ErrRefundExceedsOrder = errors.New("refund would exceed the order quantity")
 	// ErrRefundConflict reports the same idempotency key used with a different request.
 	ErrRefundConflict = errors.New("refund idempotency key reused with a different request")
 	// ErrRefundNoMoney reports an order with nothing to refund. No provider issues a
 	// zero-amount refund, and pretending one happened would fabricate a money fact.
 	ErrRefundNoMoney = errors.New("order has no captured money to refund")
+	// ErrOrderHasAbandonedRefund refuses a FRESH cancellation bind (a new key in the reserved
+	// `cancel:` namespace) on an order with any recorded `abandoned` outcome, including after
+	// staff completed a replacement (TKT-525, ADR-040 §3, ADR-087). The runner cannot tell which
+	// abandoned units a staff refund replaced, so a further refund of the order is a staff
+	// decision.
+	ErrOrderHasAbandonedRefund = errors.New("an operator abandoned a refund of this order; a further refund needs a staff decision")
 )
 
 // RefundRequest is one staff refund instruction.
@@ -58,6 +67,10 @@ type Refund struct {
 	// refund whose money moved but whose tickets are still valid is a real state, and
 	// it has to be visible rather than rounded up to "done".
 	TicketsVoided bool
+	// Abandoned reports a recorded `abandoned` operator outcome for this refund, in its own
+	// organizer (TKT-525 S2, ADR-087). The refund stays pending and is never driven again: the
+	// shared refund service refuses it before any payments call, and the bulk runner skips it.
+	Abandoned bool
 	// CapacityReturned reports the second obligation (TKT-161). Independent of
 	// TicketsVoided in storage, but NOT in execution: the return is attempted only once
 	// voiding has happened, because freeing the seat while the ticket still admits is the
@@ -165,8 +178,40 @@ func BindOrderRefund(ctx context.Context, db *sql.DB, in RefundRequest) (Refund,
 	if unit <= 0 {
 		return Refund{}, ErrRefundNoMoney
 	}
+	// Under the order lock, and before the ceiling, so an order with an abandoned refund and a
+	// pending staff replacement answers this terminal refusal rather than a retried ceiling
+	// failure. FinishAbandonment holds the same order lock, so this sees an abandonment entirely
+	// or not at all. order_refunds comes first in FROM (0027's lock invariant). A staff key never
+	// carries the prefix: the staff endpoint rejects it.
+	if strings.HasPrefix(in.IdempotencyKey, CancellationRefundKeyPrefix) {
+		var abandoned bool
+		if err := tx.QueryRowContext(ctx, `
+			SELECT EXISTS (
+			  SELECT 1 FROM order_refunds rf
+			  JOIN refund_outcomes o
+			    ON o.organizer_id = rf.organizer_id AND o.subject_kind = 'order_refund'
+			   AND o.subject_id = rf.id AND o.kind = 'abandoned'
+			  WHERE rf.order_id=$1 AND rf.organizer_id=$2)`, in.OrderID, in.OrganizerID).Scan(&abandoned); err != nil {
+			return Refund{}, err
+		}
+		if abandoned {
+			return Refund{}, ErrOrderHasAbandonedRefund
+		}
+	}
+	// Every refund of the order counts, pending ones included, EXCEPT one with a matching
+	// `abandoned` operator outcome (TKT-525 S2, ADR-087): payments has proven its provider
+	// refund terminally failed and released its money allowance first, and an operator recorded
+	// that nobody will refund that attempt. An outside completion still counts; so does every
+	// ordinary pending refund. Both reads of order_refunds take the authenticated organizer in
+	// SQL: a refund row under another organizer has no say in this one's decision.
 	var refundedQty sql.NullInt32
-	if err := tx.QueryRowContext(ctx, `SELECT sum(quantity) FROM order_refunds WHERE order_id=$1`, in.OrderID).Scan(&refundedQty); err != nil {
+	if err := tx.QueryRowContext(ctx, `
+		SELECT sum(rf.quantity) FROM order_refunds rf
+		WHERE rf.order_id=$1 AND rf.organizer_id=$2
+		  AND NOT EXISTS (
+		    SELECT 1 FROM refund_outcomes o
+		    WHERE o.organizer_id = rf.organizer_id AND o.subject_kind = 'order_refund'
+		      AND o.subject_id = rf.id AND o.kind = 'abandoned')`, in.OrderID, in.OrganizerID).Scan(&refundedQty); err != nil {
 		return Refund{}, err
 	}
 	if refundedQty.Int32+in.Quantity > soldQty {
@@ -217,10 +262,13 @@ func lookupRefund(ctx context.Context, q rowQuerier, org, id uuid.UUID) (storedR
 	var createdAt time.Time
 	var voidedAt, returnedAt sql.NullTime
 	err := q.QueryRowContext(ctx, `
-		SELECT id,order_id,request_fingerprint,quantity,unit_amount,amount,currency,status,payment_fact_id,created_at,tickets_voided_at,capacity_returned_at
+		SELECT id,order_id,request_fingerprint,quantity,unit_amount,amount,currency,status,payment_fact_id,created_at,tickets_voided_at,capacity_returned_at,
+		       EXISTS (SELECT 1 FROM refund_outcomes o
+		               WHERE o.organizer_id=$1 AND o.subject_kind='order_refund' AND o.subject_id=$2 AND o.kind='abandoned')
 		FROM order_refunds WHERE organizer_id=$1 AND id=$2`, org, id).
 		Scan(&s.refund.ID, &s.refund.OrderID, &s.fingerprint, &s.refund.Quantity, &s.refund.UnitAmount,
-			&s.refund.Amount, &s.refund.Currency, &s.refund.Status, &factID, &createdAt, &voidedAt, &returnedAt)
+			&s.refund.Amount, &s.refund.Currency, &s.refund.Status, &factID, &createdAt, &voidedAt, &returnedAt,
+			&s.refund.Abandoned)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storedRefund{}, false, nil
 	}
@@ -366,16 +414,40 @@ func CompleteOrderRefund(ctx context.Context, db *sql.DB, org, refundID, payment
 		WHERE organizer_id=$1 AND id=$2 AND status='pending'`, org, refundID, paymentFactID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE orders
-		SET refunded_quantity = refunded_quantity + $2,
-		    refunded_amount   = refunded_amount + $3,
-		    refund_status     = CASE WHEN refunded_quantity + $2 >= $4 THEN 'full' ELSE 'partial' END,
-		    updated_at        = now()
-		WHERE id=$1`, order, quantity, amount, sold); err != nil {
+	if err := advanceOrderRefundProjection(ctx, tx, org, order, quantity, amount, sold); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// advanceOrderRefundProjection adds one completed refund to its order's projection. It is the
+// ONE projection arithmetic, shared by CompleteOrderRefund and the operator's outside
+// completion (TKT-525), so the two completion sources cannot drift. The caller holds the order
+// row lock.
+//
+// The UPDATE is scoped to the organizer through the order's source reservation IN SQL (R4-3),
+// and it must change exactly one row: a scope miss is an error, so the caller's transaction
+// rolls back and the completion does not commit.
+func advanceOrderRefundProjection(ctx context.Context, tx *sql.Tx, org, order uuid.UUID, quantity int32, amount int64, sold int32) error {
+	res, err := tx.ExecContext(ctx, `
+		UPDATE orders o
+		SET refunded_quantity = o.refunded_quantity + $2,
+		    refunded_amount   = o.refunded_amount + $3,
+		    refund_status     = CASE WHEN o.refunded_quantity + $2 >= $4 THEN 'full' ELSE 'partial' END,
+		    updated_at        = now()
+		FROM reservations r
+		WHERE o.id=$1 AND r.id=o.reservation_id AND r.organizer_id=$5`, order, quantity, amount, sold, org)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("advance order refund projection: order %s is not in organizer scope (%d rows)", order, n)
+	}
+	return nil
 }
 
 // MarkRefundTicketsVoided records that a refund's tickets have been voided. Guarded on

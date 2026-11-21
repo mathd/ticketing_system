@@ -60,12 +60,14 @@ func main() {
 
 // subcommands keeps operator commands in the path main executes. The parked-order and
 // wedged-exchange commands are the supported way to resume work that automated recovery
-// has stopped claiming (TKT-146 and TKT-255).
+// has stopped claiming (TKT-146 and TKT-255). record-refund-outcome records an operator's
+// outcome for a failed post-purchase refund (TKT-525).
 type commandCallbacks struct {
 	migrate                                                      func() error
 	healthcheck                                                  func() int
 	enrolReseller, revokeReseller, listResellers                 func([]string) error
 	listParked, unparkOrder, listWedgedExchanges, unwindExchange func([]string) error
+	recordRefundOutcome                                          func([]string) error
 }
 
 func productionCommandCallbacks() commandCallbacks {
@@ -74,6 +76,7 @@ func productionCommandCallbacks() commandCallbacks {
 		enrolReseller: enrolReseller, revokeReseller: revokeReseller, listResellers: listResellers,
 		listParked: listParked, unparkOrder: unparkOrder,
 		listWedgedExchanges: listWedgedExchanges, unwindExchange: unwindExchange,
+		recordRefundOutcome: recordRefundOutcome,
 	}
 }
 
@@ -92,6 +95,7 @@ func commandRegistry(callbacks commandCallbacks) cmdline.Registry {
 		"unpark-order":          cmdline.WithArgs(callbacks.unparkOrder),
 		"list-wedged-exchanges": cmdline.WithArgs(callbacks.listWedgedExchanges),
 		"unwind-exchange":       cmdline.WithArgs(callbacks.unwindExchange),
+		"record-refund-outcome": cmdline.WithArgs(callbacks.recordRefundOutcome),
 	}
 }
 

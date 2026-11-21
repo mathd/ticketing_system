@@ -152,6 +152,11 @@ export function unresolvedRefund(
 ): RefundInput | null {
   // Commerce answered with a refund — for a replay, the ORIGINAL one. Settled.
   if (outcome.ok) return null;
+  // Commerce says an operator recorded THIS key's refund as abandoned (TKT-525
+  // S2). Nothing will ever move under it, so it is settled. The caller clears
+  // only the saved retry with this exact organizer, order and key, and the page
+  // then offers a blank form with a fresh key for a deliberate new refund.
+  if (outcome.kind === 'abandoned') return null;
   // Once a key is unresolved it stays THE key: whatever the latest submission
   // carried, the one still hanging over the order is the first one.
   const key = wasRetryOf ?? request.idempotencyKey;

@@ -70,7 +70,15 @@ This is the load-bearing decision, and it is not obvious.
 (`SELECT sum(quantity) FROM order_refunds WHERE order_id=$1`, no status filter — deliberate, per
 ADR-037). The order's `refunded_quantity` projection moves only in `CompleteOrderRefund`. So a run
 that dies between the two leaves a `pending` row that **consumes the ceiling but is invisible to the
-projection**.
+projection**. *Amended (TKT-525,
+[ADR-087](ADR-087-operator-outcomes-for-failed-post-purchase-refunds.md) §12):* except a pending row
+with a recorded `abandoned` operator outcome, which no longer consumes the ceiling. A run that finds
+its own refund abandoned skips it with no Payments call (ADR-087 §15). A run also gets no FRESH bind
+(a new `cancel:` key) on an order where any refund, staff or bulk, has an `abandoned` outcome, even
+after staff completed a replacement: the run cannot tell which abandoned units a staff refund
+replaced. At positive remaining quantity the verdict is `refund_refused`; at zero the existing
+reversal precedence gives `already_refunded` or `reversal_outstanding`. Staff own any further refund
+through the Back Office.
 
 With a run-scoped key, a second run would read the projection, compute the full remaining quantity,
 bind a *second* refund, and trip `ErrRefundExceedsOrder` — reporting that order failed forever while
