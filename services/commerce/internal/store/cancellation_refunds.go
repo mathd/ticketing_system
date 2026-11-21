@@ -69,10 +69,12 @@ type CancellationWork struct {
 	// first resolved its quantity. Read back on every attempt so a resumed one attributes
 	// the outcome the same way the first one would have.
 	PriorRun bool
-	// Attempts is the number of attempts ALREADY CHARGED, i.e. not counting the one this
-	// claim is about to make. Since TKT-300 the charge happens after a drive, not at claim
-	// time, so a caller bounding retries must compare against Attempts+1 — the count that
-	// will hold once this attempt is charged.
+	// Attempts is the count of charged attempts as observed at claim. Since TKT-300 a claim
+	// charges nothing, so the count does not include the pass this claim is about to make,
+	// and a caller bounding retries must compare against Attempts+1 — the count that will
+	// hold once this pass is charged. Whether this pass is charged is the caller's
+	// decision: the runner charges a failed pass whether or not the refund unit ran
+	// (TKT-521).
 	Attempts int
 }
 
@@ -485,17 +487,18 @@ func FinalizeCancellationOrder(ctx context.Context, db *sql.DB, w CancellationWo
 // work is reclaimable immediately rather than after the lease expires. Context cancellation
 // is an interruption, never a business outcome.
 //
-// `charge` says whether this claim did real money-path work before it was interrupted, and
-// it is the INVERSE of the old `refundAttempt` flag (TKT-300). Attempts used to be charged
-// at claim time and given back here when the row had not been driven; they are now charged
-// only when something was driven, so the same distinction is expressed by charging rather
-// than by refunding. The distinction itself is unchanged and still matters in both
-// directions: a claim released without the refund unit ever being called must cost nothing,
-// or a rolling restart would spend a row's budget on work that never happened and its first
-// real ambiguous failure would arrive already exhausted; and a claim released AFTER the
-// refund unit ran must cost its attempt, or a cancellation window recurring at exactly that
-// point would hold the row below the cap forever, so the run would never complete and its
-// report never become readable.
+// `charge` is the caller's decision, and this function applies it: true adds one attempt,
+// false leaves the count as it is. It is the INVERSE of the old `refundAttempt` flag
+// (TKT-300): attempts used to be charged at claim time and given back here; a claim now
+// charges nothing, so the caller says when a hand-back costs an attempt. The runner's
+// rules are in its `record` and `finalize`. A hand-back for a cancellation that RunOnce or
+// `record` observes before the refund unit is called costs nothing, or a rolling restart
+// would spend a row's budget on work that never happened and its first real ambiguous
+// failure would arrive already exhausted. A `record` hand-back AFTER the refund unit ran
+// costs its attempt, or a cancellation window recurring at exactly that point would hold
+// the row below the cap forever, so the run would never complete and its report never
+// become readable. A `finalize` hand-back of a failed outcome costs one attempt whether or
+// not the refund unit ran (TKT-521).
 func AbandonCancellationClaim(ctx context.Context, db *sql.DB, w CancellationWork, charge bool) error {
 	_, err := db.ExecContext(ctx, `
 		UPDATE cancellation_refund_orders
@@ -506,7 +509,9 @@ func AbandonCancellationClaim(ctx context.Context, db *sql.DB, w CancellationWor
 	return err
 }
 
-// ChargeCancellationAttempt records one driven attempt and leaves everything else alone.
+// ChargeCancellationAttempt records one attempt for a retryable failed pass and leaves
+// everything else alone. The pass may have failed before the refund unit ran; it is charged
+// all the same, and the lease stays (TKT-521).
 //
 // It exists because a retryable failure must be charged WITHOUT releasing its claim: the
 // retained lease is the backoff (see the runner's `record`), so the charge cannot ride

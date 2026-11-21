@@ -63,6 +63,15 @@ type fakeStore struct {
 	// proves a row really WAS claimed twice in a pass before it trusts a drive count: a skip
 	// that is never offered a duplicate proves nothing.
 	claimIDs map[uuid.UUID][]uuid.UUID
+	// lookupRefundErr, when set, runs at the start of LookupRefund with that call's
+	// arguments. A non-nil result is returned as a commerce database error before the
+	// fake's own lookup. It expresses a pre-drive read failure (TKT-521). A hook that
+	// cancels the caller here puts a cancellation after RunOnce's check and before
+	// `record`'s check. Nil by default.
+	lookupRefundErr func(ctx context.Context, org, refundID uuid.UUID) error
+	// fixQuantityErr, when set, is returned by FixQuantity before it writes `fixed` or
+	// `prior`. It expresses a pre-drive write failure (TKT-521). Nil by default.
+	fixQuantityErr error
 }
 
 // lapseLease expires ONE row's lease, which is a slow batch outliving the lease an earlier
@@ -136,7 +145,12 @@ func (f *fakeStore) OrderState(_ context.Context, _, order, _ uuid.UUID) (store.
 // database rejects it, the finalize fails, and the run never completes) and a repeat run
 // reporting `refunded` instead of `already_refunded`. A fake that cannot express a state
 // cannot test it.
-func (f *fakeStore) LookupRefund(_ context.Context, org, refundID uuid.UUID) (store.Refund, bool, error) {
+func (f *fakeStore) LookupRefund(ctx context.Context, org, refundID uuid.UUID) (store.Refund, bool, error) {
+	if f.lookupRefundErr != nil {
+		if err := f.lookupRefundErr(ctx, org, refundID); err != nil {
+			return store.Refund{}, false, err
+		}
+	}
 	for order, o := range f.orders {
 		if !o.refunded {
 			continue
@@ -158,6 +172,9 @@ func (f *fakeStore) slotOf(order uuid.UUID) uuid.UUID {
 }
 
 func (f *fakeStore) FixQuantity(_ context.Context, w store.CancellationWork, q int32, priorRun bool) error {
+	if f.fixQuantityErr != nil {
+		return f.fixQuantityErr
+	}
 	f.fixed[w.OrderID] = q
 	f.prior[w.OrderID] = priorRun
 	return nil
@@ -176,8 +193,8 @@ func (f *fakeStore) Finalize(_ context.Context, w store.CancellationWork, out st
 	}
 	f.final[w.OrderID] = out
 	delete(f.leased, w.OrderID)
-	// Mirrors the store: a verdict that ended a RETRYABLE attempt is charged; a definite
-	// refusal is terminal on its first attempt and never consumes the budget.
+	// Mirrors the store: it applies the caller's charge flag. The runner passes true for
+	// every verdict, so a definite refusal ends with one recorded attempt.
 	if charge {
 		f.attempts[w.OrderID]++
 	}
@@ -193,7 +210,8 @@ func (f *fakeStore) Abandon(ctx context.Context, w store.CancellationWork, charg
 	}
 	f.abandon[w.OrderID]++
 	delete(f.leased, w.OrderID)
-	// Mirrors the store: only a DRIVEN claim costs an attempt.
+	// Mirrors the store: it applies the caller's charge flag. The runner decides the flag;
+	// see `record` and `finalize`.
 	if charge {
 		f.attempts[w.OrderID]++
 	}
@@ -793,9 +811,14 @@ func TestCeilingMovingUnderTheRunnerClearsTheFixedQuantity(t *testing.T) {
 	}
 }
 
-// Only a DRIVEN claim costs an attempt. Since TKT-300 the charge follows the drive rather
-// than the claim, so this is an omission rather than the refund it used to be — but the
-// distinction it protects is unchanged and still matters in both directions. A claim
+// On a hand-back from the cancellation checks in RunOnce and `record`, only a DRIVEN claim
+// costs an attempt. This zero-cost rule does not cover the other paths: a retryable failure
+// that is not interrupted costs one driven or not (TKT-521;
+// TestPreDriveRetryableFailureConsumesAttemptBudget), and `finalize` charges its hand-back
+// of a failed outcome whether or not the refund unit ran. Since TKT-300 the hand-back
+// charge follows the drive rather than the claim, so this is an omission rather than the
+// refund it used to be — but the distinction it protects is unchanged and still matters in
+// both directions. A claim
 // released without the refund unit ever running must cost nothing, or a shutdown between
 // claim and work leaves a row arriving at its first real ambiguous failure with budget
 // spent on work that never happened. And a claim released AFTER the refund unit ran must
@@ -1516,5 +1539,182 @@ func TestTwoRunsLedgerRowsForOneOrderAreEachDrivenInOnePass(t *testing.T) {
 	}
 	if f.orders[order].moved != 1 {
 		t.Fatalf("money moved %d times, want 1", f.orders[order].moved)
+	}
+}
+
+// ---- TKT-521: the attempt budget counts failed passes, not drives ----
+//
+// Owner decision (b), 2026-10-12: a retryable failure BEFORE the refund unit runs costs an
+// attempt, the same as a driven one. The claim query has no attempts predicate, so without
+// this charge a persistent commerce database failure on one row recurs after every lease
+// and the row never reaches a verdict. An interruption that RunOnce or `record` observes
+// before the drive is not the row's own failure, so its hand-back costs nothing.
+
+// COS-3. A retryable pre-drive failure charges one attempt per pass and keeps the lease as
+// backoff. At the cap it ends `failed/internal`, with no drive. The row is fresh, so in
+// this fixture no money moved. The row starts with no fixed quantity: on a resumed row a
+// lookup error does not return a failure, so it would not reach the charge.
+//
+// Mutation that must make this RED: in `record`'s retry branch, call `chargeDriven` only
+// when `drove` is true. Both cases then show zero attempts on pass 1 and no verdict at the
+// cap.
+func TestPreDriveRetryableFailureConsumesAttemptBudget(t *testing.T) {
+	cases := []struct {
+		name   string
+		reason string
+		fault  func(t *testing.T, f *fakeStore, w store.CancellationWork)
+	}{
+		{
+			name:   "LookupRefund fails on a row with no fixed quantity",
+			reason: "read existing cancellation refund",
+			fault: func(t *testing.T, f *fakeStore, w store.CancellationWork) {
+				want := store.RefundID(w.OrganizerID, store.CancellationRefundKey(w.SlotID, w.OrderID))
+				f.lookupRefundErr = func(_ context.Context, org, refundID uuid.UUID) error {
+					if org != w.OrganizerID || refundID != want {
+						t.Errorf("LookupRefund(%s, %s), want the fixture's organizer %s and refund %s",
+							org, refundID, w.OrganizerID, want)
+					}
+					return errors.New("commerce database: connection reset")
+				}
+			},
+		},
+		{
+			name:   "FixQuantity fails after a lookup miss and an order-state read",
+			reason: "persist refund quantity",
+			fault: func(_ *testing.T, f *fakeStore, _ store.CancellationWork) {
+				f.fixQuantityErr = errors.New("commerce database: connection reset")
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeStore()
+			order := uuid.New()
+			f.orders[order] = &fakeOrder{state: completedOrder(1, 1000)}
+			w := work(order)
+			f.work = append(f.work, w)
+			tc.fault(t, f, w)
+			r := newFakeRefunder(f)
+			runner := runnerFor(f, r)
+
+			for p := 1; p <= maxAttempts; p++ {
+				if p > 1 {
+					// Time passes between passes only: the lease is the backoff.
+					f.expireLeases()
+				}
+				runner.RunOnce(context.Background())
+
+				// Errorf, not Fatalf: under the mutation this keeps going, so the missing
+				// verdict at the cap is reported too.
+				if got := f.attempts[order]; got != p {
+					t.Errorf("pass %d: attempts = %d, want %d: a retryable failure before the drive "+
+						"is a failed pass and costs one attempt", p, got, p)
+				}
+				if got := len(r.keys[order]); got != 0 {
+					t.Fatalf("pass %d: the refund unit was called %d times, want 0", p, got)
+				}
+				if got := f.orders[order].moved; got != 0 {
+					t.Fatalf("pass %d: money moved %d times, want 0", p, got)
+				}
+				if _, ok := f.fixed[order]; ok {
+					t.Fatalf("pass %d: a quantity was fixed at %d; the fixture must stay on the fresh-row path",
+						p, f.fixed[order])
+				}
+				if p < maxAttempts {
+					if got, terminal := f.final[order]; terminal {
+						t.Fatalf("pass %d: the row is terminal (%+v) with budget left", p, got)
+					}
+					if !f.leased[order] {
+						t.Fatalf("pass %d: the row lost its lease; a retryable failure keeps it as backoff", p)
+					}
+					if got := f.abandon[order]; got != 0 {
+						t.Fatalf("pass %d: the row was handed back %d times, want 0", p, got)
+					}
+				}
+			}
+
+			got, terminal := f.final[order]
+			if !terminal {
+				t.Fatalf("no verdict after %d passes (attempts = %d): the row never reaches the cap, "+
+					"and its run never completes", maxAttempts, f.attempts[order])
+			}
+			if len(f.final) != 1 {
+				t.Fatalf("%d rows resolved, want 1", len(f.final))
+			}
+			if got.Outcome != "failed" || got.FailureCode != "internal" || got.FailureReason != tc.reason {
+				t.Fatalf("verdict = %+v, want failed/internal with reason %q", got, tc.reason)
+			}
+			if f.leased[order] {
+				t.Fatal("the terminal row is still leased")
+			}
+			if got := f.attempts[order]; got != maxAttempts {
+				t.Fatalf("attempts at the verdict = %d, want %d", got, maxAttempts)
+			}
+		})
+	}
+}
+
+// COS-5. A cancellation during pre-drive work reaches `record`'s own hand-back with
+// drove=false: the row goes back to the queue once, with no verdict and no attempt. The
+// cancellation lands inside LookupRefund, after RunOnce has checked the context for this
+// row and before `record` checks it. The batch-boundary hand-back in RunOnce is
+// TestOnlyAnUndrivenClaimGetsItsAttemptBack, and the driven hand-back in `record` is
+// TestADrivenAttemptIsChargedOnAContextThatOutlivesTheCaller.
+//
+// Mutation that must make this RED: at `record`'s hand-back, replace `r.abandon(w, drove)`
+// with `r.abandon(w, true)`. The row is still handed back, but with one attempt.
+func TestInterruptedPreDriveClaimIsHandedBackWithoutCharge(t *testing.T) {
+	f := newFakeStore()
+	order := uuid.New()
+	f.orders[order] = &fakeOrder{state: completedOrder(1, 1000)}
+	w := work(order)
+	f.work = append(f.work, w)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	want := store.RefundID(w.OrganizerID, store.CancellationRefundKey(w.SlotID, order))
+	lookups := 0
+	f.lookupRefundErr = func(callCtx context.Context, org, refundID uuid.UUID) error {
+		lookups++
+		if callCtx.Err() != nil {
+			t.Errorf("LookupRefund ran on a dead context: the cancellation must land after RunOnce's check")
+		}
+		if org != w.OrganizerID || refundID != want {
+			t.Errorf("LookupRefund(%s, %s), want the fixture's organizer %s and refund %s",
+				org, refundID, w.OrganizerID, want)
+		}
+		cancel()
+		return context.Canceled
+	}
+	r := newFakeRefunder(f)
+
+	resolved := runnerFor(f, r).RunOnce(ctx)
+
+	// Wiring first: without these, the assertions below describe a pass that never reached
+	// `record`'s check.
+	if f.claims != 1 || lookups != 1 {
+		t.Fatalf("claims = %d, lookups = %d, want 1 and 1", f.claims, lookups)
+	}
+	if ctx.Err() == nil {
+		t.Fatal("the caller context was never cancelled")
+	}
+	if got := len(r.keys[order]); got != 0 {
+		t.Fatalf("the refund unit was called %d times, want 0", got)
+	}
+	if got := f.orders[order].moved; got != 0 {
+		t.Fatalf("money moved %d times, want 0", got)
+	}
+	if got := f.abandon[order]; got != 1 {
+		t.Fatalf("the row was handed back %d times, want 1: an interruption releases the claim at once", got)
+	}
+	if f.leased[order] {
+		t.Fatal("the row is still leased after the hand-back")
+	}
+	if len(f.final) != 0 || resolved != 0 {
+		t.Fatalf("resolved rows = %d (RunOnce reported %d), want 0: an interruption is not a verdict",
+			len(f.final), resolved)
+	}
+	if got := f.attempts[order]; got != 0 {
+		t.Fatalf("attempts = %d after an undriven interruption, want 0: a shutdown before the drive "+
+			"is not the row's own failure", got)
 	}
 }
