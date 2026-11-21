@@ -371,10 +371,22 @@ docker compose exec commerce /app abandon-exchange <organizer-id> <exchange-id> 
 ```
 
 The command checks its arguments and its configuration before it opens the database or calls a
-service. It needs `DATABASE_URL`, `ACCESS_URL`, `PAYMENTS_URL`, `INVENTORY_URL` and
-`INTERNAL_SERVICE_TOKEN`, and uses `PAYMENTS_INTERNAL_TOKEN` for Payments (falling back to
-`INTERNAL_SERVICE_TOKEN`). The `commerce` container has all of them. The operator name is 1–200 and
-the reason 1–500 characters after trimming.
+service. It needs all of these, and the `commerce` container has them:
+
+- `DATABASE_URL`, not empty. An empty value would select the shell's PostgreSQL defaults.
+- `ACCESS_URL`, `PAYMENTS_URL` and `INVENTORY_URL`, each an absolute `http` or `https` base URL with
+  a host and no query or fragment.
+- `INTERNAL_SERVICE_TOKEN` for Access and inventory.
+- `PAYMENTS_INTERNAL_TOKEN` for Payments. It must be set and must differ from
+  `INTERNAL_SERVICE_TOKEN`. There is no fallback to the shared token.
+
+The operator name is 1–200 and the reason 1–500 characters after trimming.
+
+The command first prints `abandon-exchange trace_id=<id>` on stderr. Every service request log
+stamps that trace id on this run's calls, so you can find them. The run can take up to 28 min 40 s
+when every dependency is slow: up to 160 calls of 10 s each (three inspections of up to 51
+replacement refund legs) and 2 minutes of database work. A run stopped at that deadline keeps its
+recorded progress; run the same command again.
 
 What the command does, in this order:
 
@@ -438,7 +450,7 @@ organizer=… exchange=… source_order=… replacement_order=… target_hold=�
 | `REFUSED: exchange … is not a candidate` | The exchange is not settled, Access switched its tickets, its rows are inconsistent, or its gross journal facts disagree with it. A started abandonment whose rows became inconsistent is refused the same way before any further step. Nothing changed. | Not settled: use the [wedged exchange unwind](#wedged-exchange-operator-unwind). Switched: the [exchange obligation sweep](#exchange-obligation-sweep) owns it. Inconsistent rows or facts: treat as an incident. |
 | `REFUSED: Access does not prove an admitted source with an unissued replacement` | Access reports the source not admitted or not fully issued, or reports replacement tickets. Nothing changed. | Replacement tickets mean that the switch happened and its Commerce callback is late. Follow the failed-event procedure in [ticket lifecycle](./ticket-lifecycle.md). A source that is not admitted is not this procedure's case. |
 | `REFUSED: payments evidence for exchange … needs reconciliation first` | The delta charge or the downgrade refund does not match the exchange, a refund of the replacement completed, or Payments holds a leg for a pending refund of the replacement. | Reconcile by hand. Money can have moved on the replacement through the TKT-586 checkout-key alias. Do not abandon until it is understood. |
-| `INCOMPLETE: exchange … was not abandoned` | A dependency was unavailable, gave an answer that proves nothing (a redirect, or a `404` that is not Payments' own "not found" answer), or refused one request. Every recorded step stays. | Clear the cause and run the **same** command again. |
+| `INCOMPLETE: exchange … was not abandoned` | A dependency was unavailable, gave an answer that proves nothing (a redirect, a `404` that is not Payments' own "not found" answer, an answer that names a field twice, or an Access admission with no issued ticket), or refused one request. Every recorded step stays. | Clear the cause and run the **same** command again. |
 
 ### The provider refused the delta refund (TKT-588)
 

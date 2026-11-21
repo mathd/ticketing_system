@@ -64,14 +64,18 @@ var (
 
 // Service refunds one order at a time.
 type Service struct {
-	db                                   *sql.DB
-	call                                 Caller
+	db   *sql.DB
+	call Caller
+	// admission reads Access's admission summary for the replacement guard. It is a separate
+	// caller because it must send the internal token whatever the URL and never follow a
+	// redirect (accessadmission.NewCaller, TKT-498 R2-2); `call` does neither.
+	admission                            accessadmission.Caller
 	paymentsURL, accessURL, inventoryURL string
 }
 
-func New(db *sql.DB, call Caller, payments, access, inventory string) *Service {
+func New(db *sql.DB, call Caller, admission accessadmission.Caller, payments, access, inventory string) *Service {
 	return &Service{
-		db: db, call: call,
+		db: db, call: call, admission: admission,
 		paymentsURL:  strings.TrimSuffix(payments, "/"),
 		accessURL:    strings.TrimSuffix(access, "/"),
 		inventoryURL: strings.TrimSuffix(inventory, "/"),
@@ -364,7 +368,7 @@ func (s *Service) requireIssuedReplacement(ctx context.Context, refund commerces
 	if !refund.ExchangeReplacement || refund.ReplacementSwitched {
 		return nil
 	}
-	admission, err := accessadmission.Read(ctx, accessadmission.Caller(s.call), s.accessURL, refund.OrderID, refund.OrganizerID)
+	admission, err := accessadmission.Read(ctx, s.admission, s.accessURL, refund.OrderID, refund.OrganizerID)
 	if err != nil {
 		return fmt.Errorf("%w (%v)", ErrReplacementNotIssued, err)
 	}

@@ -132,7 +132,14 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		// Re-driving settlement is idempotent. It is normally a locked read, and it also
 		// repairs a settled row whose outbox obligation is absent without relying on rollout
 		// history to make that state impossible.
-		if err := commercestore.CompleteExchangeSettlement(r.Context(), s.db, existing.OrganizerID, existing.ID, existing.ReplacementOrderID); err != nil {
+		err := commercestore.CompleteExchangeSettlement(r.Context(), s.db, existing.OrganizerID, existing.ID, existing.ReplacementOrderID)
+		if errors.Is(err, commercestore.ErrExchangeAbandoned) {
+			// The abandonment finished after the lookup above (RA2-2): answer it as terminal.
+			existing.Abandoned = true
+			writeExchange(w, existing, true)
+			return
+		}
+		if err != nil {
 			slog.Default().ErrorContext(r.Context(), "repair settled exchange on replay", "exchange_id", existing.ID, "err", err)
 			write(w, 500, map[string]string{"error": "persist exchange"})
 			return
@@ -367,7 +374,7 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 // abandonment and the replacement refund dispatch guard share (TKT-498). The rule and the
 // status mapping below are this check's own.
 func (s *Server) checkSourceAdmission(w http.ResponseWriter, r *http.Request, order, organizer uuid.UUID, quantity int32) bool {
-	admission, err := accessadmission.Read(r.Context(), s.call, s.accessURL, order, organizer)
+	admission, err := accessadmission.Read(r.Context(), s.accessAdmission, s.accessURL, order, organizer)
 	if err != nil {
 		write(w, http.StatusBadGateway, map[string]string{"error": "access admission unavailable"})
 		return false

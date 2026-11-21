@@ -389,7 +389,7 @@ func TestStaffOperationsRefuseEachPredicate(t *testing.T) {
 				db, connections := dbProbe(t)
 				s := tc.server(t)
 				s.db = db
-				s.refunds = refunds.New(db, s.call, s.paymentsURL, s.accessURL, s.inventoryURL)
+				s.refunds = refunds.New(db, s.call, s.accessAdmission, s.paymentsURL, s.accessURL, s.inventoryURL)
 				res := httptest.NewRecorder()
 				s.Router(nil, true).ServeHTTP(res, staffRequest(op, tc.headers(t)))
 				if res.Code != http.StatusNotFound || strings.TrimSpace(res.Body.String()) != `{"error":"not found"}` {

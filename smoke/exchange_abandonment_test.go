@@ -33,6 +33,7 @@ import (
 	"net/http"
 	"net/url"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -399,13 +400,11 @@ func serviceLogCount(t *testing.T, ctx context.Context, service string, fragment
 	return n
 }
 
-// remoteCalls is every call the abandonment can make, counted from the services' request
-// logs. Access and inventory are counted on paths that name this exchange's orders and hold.
-// Payments paths carry no exchange identity, so they are counted service-wide.
+// remoteCalls is the Access and inventory calls the abandonment can make, counted from the
+// services' request logs on paths that name this exchange's orders and hold. Payments paths
+// carry no exchange identity: commandPaymentsCalls counts them by the command's trace instead.
 type remoteCalls struct {
 	sourceAdmission, replacementAdmission, targetReturn, sourceReturn int
-	paymentsFacts, paymentsRefunds                                    int
-	paymentsOperations, paymentsLegs                                  int
 }
 
 func countRemoteCalls(t *testing.T, ctx context.Context, x racedExchange) remoteCalls {
@@ -416,10 +415,36 @@ func countRemoteCalls(t *testing.T, ctx context.Context, x racedExchange) remote
 		replacementAdmission: serviceLogCount(t, ctx, "access", `"method":"GET"`, path("/internal/orders/"+x.replacementOrder.String()+"/admission")),
 		targetReturn:         serviceLogCount(t, ctx, "inventory", `"method":"POST"`, path("/internal/holds/"+x.targetHold.String()+"/refund-capacity")),
 		sourceReturn:         serviceLogCount(t, ctx, "inventory", `"method":"POST"`, path("/internal/holds/"+x.sourceHold.String()+"/refund-capacity")),
-		paymentsFacts:        serviceLogCount(t, ctx, "payments", `"method":"POST"`, path("/internal/facts")),
-		paymentsRefunds:      serviceLogCount(t, ctx, "payments", `"method":"POST"`, path("/internal/psp/partial-refund")),
-		paymentsOperations:   serviceLogCount(t, ctx, "payments", `"method":"GET"`, path("/internal/operations")),
-		paymentsLegs:         serviceLogCount(t, ctx, "payments", `"method":"GET"`, path("/internal/refund-legs")),
+	}
+}
+
+// paymentsCalls is one command run's payments requests, by route.
+type paymentsCalls struct {
+	facts, refunds, operations, legs int
+}
+
+// commandTrace reads the trace id the abandon-exchange command prints on stderr (RA2-5).
+func commandTrace(t *testing.T, stderr string) string {
+	t.Helper()
+	m := regexp.MustCompile(`abandon-exchange trace_id=([0-9a-f]{32})`).FindStringSubmatch(stderr)
+	if m == nil {
+		t.Fatalf("abandon-exchange printed no trace id\nstderr=%s", stderr)
+	}
+	return m[1]
+}
+
+// commandPaymentsCalls counts the payments request-log lines that carry one command run's
+// trace_id (RA2-5). The command sends its trace on every call and payments stamps it, so
+// background Commerce traffic, which has other traces, cannot change these counts.
+func commandPaymentsCalls(t *testing.T, ctx context.Context, traceID string) paymentsCalls {
+	t.Helper()
+	trace := `"trace_id":"` + traceID + `"`
+	path := func(p string) string { return `"path":"` + p + `"` }
+	return paymentsCalls{
+		facts:      serviceLogCount(t, ctx, "payments", trace, `"method":"POST"`, path("/internal/facts")),
+		refunds:    serviceLogCount(t, ctx, "payments", trace, `"method":"POST"`, path("/internal/psp/partial-refund")),
+		operations: serviceLogCount(t, ctx, "payments", trace, `"method":"GET"`, path("/internal/operations")),
+		legs:       serviceLogCount(t, ctx, "payments", trace, `"method":"GET"`, path("/internal/refund-legs")),
 	}
 }
 
@@ -542,22 +567,29 @@ func abandonAndAssert(t *testing.T, ctx context.Context, x racedExchange) {
 		}
 	}
 	callsAfter := countRemoteCalls(t, ctx, x)
-	// Positive controls for COS4's zero-call count: the logs see this command's calls.
-	if callsAfter.sourceAdmission-callsBefore.sourceAdmission != 1 || callsAfter.replacementAdmission-callsBefore.replacementAdmission != 1 ||
-		callsAfter.paymentsFacts <= callsBefore.paymentsFacts {
-		t.Fatalf("the first run's Access and journal calls are not visible in the request logs: before %+v after %+v", callsBefore, callsAfter)
-	}
-	// Positive controls for the payments evidence reads, so the replay check below can see one:
-	// an upgrade reads its capture and its abandonment leg, a downgrade its original refund leg.
-	switch {
-	case spec.delta() > 0:
-		if callsAfter.paymentsOperations <= callsBefore.paymentsOperations || callsAfter.paymentsLegs <= callsBefore.paymentsLegs {
-			t.Fatalf("the upgrade's operation and refund-leg reads are not visible in the request logs: before %+v after %+v", callsBefore, callsAfter)
+	firstTrace := commandTrace(t, stderr)
+	// Positive controls for COS4's zero-call count: the logs see this command's calls. The
+	// payments counts are this run's own (its trace), so they are exact; the log lines are
+	// collected asynchronously, hence the retry.
+	var first paymentsCalls
+	retry(t, 15*time.Second, func() error {
+		first = commandPaymentsCalls(t, ctx, firstTrace)
+		want := paymentsCalls{facts: 1}
+		switch {
+		case spec.delta() > 0:
+			// The capture read, the abandonment leg read and the delta refund.
+			want.operations, want.legs, want.refunds = 1, 1, 1
+		case spec.delta() < 0:
+			// The settlement's downgrade leg read.
+			want.legs = 1
 		}
-	case spec.delta() < 0:
-		if callsAfter.paymentsLegs <= callsBefore.paymentsLegs {
-			t.Fatalf("the downgrade's refund-leg read is not visible in the request logs: before %+v after %+v", callsBefore, callsAfter)
+		if first != want {
+			return fmt.Errorf("the first run's payments calls (trace %s) = %+v, want %+v", firstTrace, first, want)
 		}
+		return nil
+	})
+	if callsAfter.sourceAdmission-callsBefore.sourceAdmission != 1 || callsAfter.replacementAdmission-callsBefore.replacementAdmission != 1 {
+		t.Fatalf("the first run's Access calls are not visible in the request logs: before %+v after %+v", callsBefore, callsAfter)
 	}
 	if n := callsAfter.targetReturn - callsBefore.targetReturn; n != 1 {
 		t.Fatalf("inventory received %d capacity return(s) for the target hold, want 1", n)
@@ -578,6 +610,24 @@ func abandonAndAssert(t *testing.T, ctx context.Context, x racedExchange) {
 	callsReplay := countRemoteCalls(t, ctx, x)
 	if callsReplay != callsAfter {
 		t.Fatalf("the replay made remote calls: before %+v after %+v", callsAfter, callsReplay)
+	}
+	// The replay's payments calls, by its own trace, stay zero on every route. Watched for a few
+	// seconds, because a log line can arrive after the command returns.
+	replayTrace := commandTrace(t, againErr)
+	if replayTrace == firstTrace {
+		t.Fatalf("the replay reused the first run's trace %s", firstTrace)
+	}
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
+		replay := commandPaymentsCalls(t, ctx, replayTrace)
+		if replay.operations != 0 {
+			t.Fatalf("the replay (trace %s) made %d payments operation read(s), want 0", replayTrace, replay.operations)
+		}
+		if replay.legs != 0 {
+			t.Fatalf("the replay (trace %s) made %d payments refund-leg read(s), want 0", replayTrace, replay.legs)
+		}
+		if replay.facts != 0 || replay.refunds != 0 {
+			t.Fatalf("the replay (trace %s) made payments writes: %+v", replayTrace, replay)
+		}
 	}
 	if replayState := readDurableState(t, ctx, x); replayState != after {
 		t.Fatalf("the replay changed durable state:\nbefore %+v\nafter  %+v", after, replayState)
@@ -732,9 +782,8 @@ func abandonAndAssert(t *testing.T, ctx context.Context, x racedExchange) {
 			x.org, x.abandonmentID().String()).Scan(&legs); err != nil {
 			t.Fatal(err)
 		}
-		if legs != 0 || callsAfter.paymentsRefunds != callsBefore.paymentsRefunds {
-			t.Fatalf("a non-upgrade abandonment dispatched refunds: %d leg(s), %d partial-refund call(s)",
-				legs, callsAfter.paymentsRefunds-callsBefore.paymentsRefunds)
+		if legs != 0 || first.refunds != 0 {
+			t.Fatalf("a non-upgrade abandonment dispatched refunds: %d leg(s), %d partial-refund call(s)", legs, first.refunds)
 		}
 		if code, body := internalJSON(t, http.MethodGet, fmt.Sprintf("%s/internal/operations?organizer_id=%s&idempotency_key=exchange-charge:%s",
 			paymentsURL, organizerID, x.exchange), "", nil); code != http.StatusNotFound {
@@ -768,26 +817,10 @@ func abandonAndAssert(t *testing.T, ctx context.Context, x racedExchange) {
 	}
 	assertNoReplacementIssued(t, after, x, "after the abandonment")
 
-	// The terminal row leaves the listing; the exchange replay reports the terminal state (D24).
+	// The terminal row leaves the listing. The exchange replay's `abandoned` answer (D24) is
+	// proven in services/commerce/internal/api/exchange_abandoned_replay_smoke_test.go.
 	if listedCandidate(t, x) {
 		t.Fatalf("the abandoned exchange %s is still listed", x.exchange)
-	}
-	request := map[string]any{"organizer_id": organizerID, "target_ticket_type_id": x.targetType,
-		"actor": "tkt498@example.test", "reason": "race with a scan"}
-	if spec.needsPaymentInstrument {
-		request["payment_token"] = "fake-ok"
-	}
-	code, body := internalJSON(t, http.MethodPost, fmt.Sprintf("%s/internal/orders/%s/exchanges", commerceURL, x.sourceOrder), x.exchangeKey, request)
-	var replayed struct {
-		Status             string    `json:"status"`
-		Replay             bool      `json:"replay"`
-		ExchangeID         uuid.UUID `json:"exchange_id"`
-		ReplacementOrderID uuid.UUID `json:"replacement_order_id"`
-		DeltaAmount        int64     `json:"delta_amount"`
-	}
-	if code != http.StatusOK || json.Unmarshal(body, &replayed) != nil || replayed.Status != "abandoned" || !replayed.Replay ||
-		replayed.ExchangeID != x.exchange || replayed.ReplacementOrderID != x.replacementOrder || replayed.DeltaAmount != spec.delta() {
-		t.Fatalf("exchange replay after the abandonment = %d %s, want 200 abandoned as a replay with the original exchange and delta", code, body)
 	}
 }
 

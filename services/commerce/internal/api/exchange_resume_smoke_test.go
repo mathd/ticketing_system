@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"ticketing/services/commerce/internal/accessadmission"
 	"ticketing/services/commerce/internal/exchangeunwind"
 	commercestore "ticketing/services/commerce/internal/store"
 )
@@ -713,6 +714,8 @@ func TestExchangeRefusesWhenAdmissionReadIsUnavailable(t *testing.T) {
 			}
 			if tc.transportErr {
 				s.server.client = &http.Client{Transport: admissionFailureTransport{base: http.DefaultTransport}}
+				// The admission read has its own caller (TKT-498, R2-2), built from the client.
+				s.server.accessAdmission = accessadmission.NewCaller(s.server.client, s.server.token)
 			}
 
 			code, _ := s.exchange(t, f, "admission-unavailable-1")

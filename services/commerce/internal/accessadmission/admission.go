@@ -10,23 +10,64 @@
 //
 // The reader decides only whether Access gave a well-formed answer. It never turns a failure
 // to ask into a verdict: every answer that is not a well-formed 200 is ErrUnavailable.
+//
+// Every caller reads through NewCaller (R2-2, RA2-1): it sends the shared internal token that
+// its constructor names and never follows a redirect. A transport that picks the credential
+// from the URL, or follows a 3xx, can send the internal credential to the redirect target and
+// take that target's answer as evidence.
 package accessadmission
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 
 	"github.com/google/uuid"
+
+	"ticketing/shared/httpx"
 )
 
 // Caller performs one service-to-service HTTP call. It is the shape of the Commerce server's
 // `call` method and of refunds.Caller, so each caller passes its own transport and token.
 type Caller func(ctx context.Context, method, url, key string, in any, internal bool) (int, []byte, error)
+
+// maxAnswerBytes bounds one admission answer, which is two short fields.
+const maxAnswerBytes = 64 << 10
+
+// NewCaller returns the Access caller for admission reads. It always sends internalToken as
+// X-Internal-Token, whatever the URL, and it returns a 3xx answer as it is, so Read reports it
+// as ErrUnavailable and the redirect target receives no request. The rule applies to a copy of
+// client on each call, so the client's other users keep their own redirect policy. A nil client
+// makes every read unavailable.
+func NewCaller(client *http.Client, internalToken string) Caller {
+	return func(ctx context.Context, method, url, _ string, in any, _ bool) (int, []byte, error) {
+		if client == nil {
+			return 0, nil, errors.New("no HTTP client is configured")
+		}
+		if in != nil {
+			return 0, nil, errors.New("an admission read sends no body")
+		}
+		noRedirect := *client
+		noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		req, err := http.NewRequestWithContext(ctx, method, url, nil)
+		if err != nil {
+			return 0, nil, err
+		}
+		req.Header.Set("X-Internal-Token", internalToken)
+		resp, err := noRedirect.Do(req)
+		if err != nil {
+			return 0, nil, err
+		}
+		defer func() { _ = resp.Body.Close() }()
+		raw, err := httpx.ReadResponseBody(resp.Body, maxAnswerBytes)
+		return resp.StatusCode, raw, err
+	}
+}
 
 // Admission is Access's summary: whether any of the order's tickets was admitted, and how many
 // tickets Access issued for the order in the organizer.
@@ -59,8 +100,14 @@ func Read(ctx context.Context, call Caller, accessURL string, order, organizer u
 }
 
 // decode accepts exactly one object with both declared fields, each of its declared type, no
-// unknown field, no trailing content, and an issued count in 0-50.
+// unknown field, no duplicate member name, no trailing content, an issued count in 0-50, and no
+// admission without an issued ticket.
 func decode(body []byte) (Admission, error) {
+	// encoding/json keeps the last of duplicate names, so a body that names a field twice could
+	// decode to either value. jsontext rejects duplicate names, escaped spellings included (R2-3).
+	if !jsontext.Value(body).IsValid() {
+		return Admission{}, fmt.Errorf("%w: not one JSON value with unique member names", ErrUnavailable)
+	}
 	var answer struct {
 		Admitted    *bool  `json:"admitted"`
 		IssuedCount *int32 `json:"issued_count"`
@@ -79,6 +126,12 @@ func decode(body []byte) (Admission, error) {
 	}
 	if *answer.IssuedCount < 0 || *answer.IssuedCount > maxIssuedCount {
 		return Admission{}, fmt.Errorf("%w: issued_count %d is out of range", ErrUnavailable, *answer.IssuedCount)
+	}
+	// Access reports an admission only for one of the order's issued tickets
+	// (services/access/internal/store/admission.go). An admission with no issued ticket
+	// contradicts itself, and must not read as "zero tickets" (R2-3).
+	if *answer.Admitted && *answer.IssuedCount == 0 {
+		return Admission{}, fmt.Errorf("%w: admitted with no issued ticket", ErrUnavailable)
 	}
 	return Admission{Admitted: *answer.Admitted, IssuedCount: *answer.IssuedCount}, nil
 }

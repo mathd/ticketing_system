@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"ticketing/services/commerce/internal/accessadmission"
 	"ticketing/services/commerce/internal/store"
 )
 
@@ -265,6 +267,73 @@ func TestReturnCapacityPostsTheReceiptAndDecodesStrictly(t *testing.T) {
 	}
 }
 
+// R2-3, RA2-4. Every evidence object that can establish absence, failure or success refuses a
+// duplicate member name. encoding/json keeps the last value, so each body below would decode to a
+// valid answer: its last value is the one the method accepts.
+func TestEveryEvidenceObjectRefusesADuplicateMemberName(t *testing.T) {
+	org, fact, hold := uuid.New(), uuid.New(), uuid.New()
+	refund := RefundRequest{OrganizerID: org, ChargeKey: "exchange-charge:x", RefundKey: "rk", Amount: 1000, Currency: "EUR"}
+	abandoned := store.ExchangeAbandonedFact{ID: uuid.New(), OrganizerID: org, Amount: 1, Currency: "EUR", OccurredAt: time.Now()}
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		call   func(HTTP) error
+	}{
+		{"admission", 200, `{"admitted":false,"issued_count":2,"issued_count":0}`, func(h HTTP) error {
+			_, err := h.Admission(context.Background(), org, uuid.New())
+			if errors.Is(err, accessadmission.ErrUnavailable) {
+				return fmt.Errorf("%w: %v", ErrUnavailable, err)
+			}
+			return err
+		}},
+		{"operation absence", 404, `{"error":"not found","error":"operation not found"}`, func(h HTTP) error {
+			got, err := h.ChargeOperation(context.Background(), org, "k")
+			if err == nil && !got.Found {
+				return errors.New("read as absence")
+			}
+			return err
+		}},
+		{"operation", 200, `{"resolved":false,"resolved":true,"captured_amount":1000,"currency":"EUR"}`, func(h HTTP) error {
+			_, err := h.ChargeOperation(context.Background(), org, "k")
+			return err
+		}},
+		{"refund-leg absence", 404, `{"error":"x","error":"refund leg not found"}`, func(h HTTP) error {
+			got, err := h.RefundLeg(context.Background(), org, "a", "b")
+			if err == nil && !got.Found {
+				return errors.New("read as absence")
+			}
+			return err
+		}},
+		{"refund leg", 200, `{"completed":false,"completed":true,"amount":700,"currency":"EUR"}`, func(h HTTP) error {
+			_, err := h.RefundLeg(context.Background(), org, "a", "b")
+			return err
+		}},
+		{"typed provider failure", 422, `{"error":"x","code":"other","code":"provider_refund_failed","provider_ref":"re_1"}`, func(h HTTP) error {
+			_, err := h.PartialRefund(context.Background(), refund)
+			return err
+		}},
+		{"partial refund", 200, `{"status":"pending","status":"refunded","fact_id":"` + fact.String() + `","amount":1000,"currency":"EUR","replay":false}`, func(h HTTP) error {
+			_, err := h.PartialRefund(context.Background(), refund)
+			return err
+		}},
+		{"journal acknowledgment", 200, `{"sequence":0,"sequence":1,"hash":"ab","replay":false}`, func(h HTTP) error {
+			return h.AppendFact(context.Background(), abandoned)
+		}},
+		{"capacity return", 200, `{"hold_id":"` + hold.String() + `","quantity":2,"unreturned_quantity":2,"unreturned_quantity":0,"replay":false}`, func(h HTTP) error {
+			_, err := h.ReturnCapacity(context.Background(), org, hold, uuid.New(), 2)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := wire(t, tc.status, tc.body)
+			if err := tc.call(h); !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrProviderRefundFailed) {
+				t.Fatalf("err = %v, want ErrUnavailable", err)
+			}
+		})
+	}
+}
+
 // R1-4. Each dependency call names its own credential. The configured URLs share a prefix with
 // the payments URL, so a credential chosen from the URL would send the payments token to Access
 // and inventory.
@@ -339,5 +408,50 @@ func TestARedirectIsUnresolvedAndIsNotFollowed(t *testing.T) {
 	}
 	if n := reached.Load(); n != 0 {
 		t.Fatalf("the redirect target received %d request(s), want 0", n)
+	}
+}
+
+// RA2-5. A client built WithTrace sends the command's one W3C traceparent on all six calls, so
+// each service's request log stamps the command's trace_id. A client without it sends none.
+func TestWithTraceSendsTheCommandTraceOnEveryCall(t *testing.T) {
+	const trace, span = "4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7"
+	seen := map[string]string{}
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen[r.URL.Path] = r.Header.Get("traceparent")
+		mu.Unlock()
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	call := func(h HTTP) {
+		ctx, org := context.Background(), uuid.New()
+		_, _ = h.Admission(ctx, org, uuid.New())
+		_, _ = h.ReturnCapacity(ctx, org, uuid.New(), uuid.New(), 1)
+		_, _ = h.ChargeOperation(ctx, org, "k")
+		_, _ = h.RefundLeg(ctx, org, "a", "b")
+		_, _ = h.PartialRefund(ctx, RefundRequest{OrganizerID: org, ChargeKey: "k", RefundKey: "r", Amount: 1, Currency: "EUR"})
+		_ = h.AppendFact(ctx, store.ExchangeAbandonedFact{ID: uuid.New(), OrganizerID: org})
+	}
+	h := NewHTTP(srv.URL+"/access", srv.URL+"/payments", srv.URL+"/inventory", "internal-token", "payments-token", 5*time.Second)
+	call(h.WithTrace(trace, span))
+	mu.Lock()
+	if len(seen) != 6 {
+		t.Fatalf("requests = %v, want six", seen)
+	}
+	for path, got := range seen {
+		if want := "00-" + trace + "-" + span + "-01"; got != want {
+			t.Errorf("%s sent traceparent %q, want %q", path, got, want)
+		}
+	}
+	seen = map[string]string{}
+	mu.Unlock()
+	call(h)
+	mu.Lock()
+	defer mu.Unlock()
+	for path, got := range seen {
+		if got != "" {
+			t.Errorf("without WithTrace, %s sent traceparent %q", path, got)
+		}
 	}
 }

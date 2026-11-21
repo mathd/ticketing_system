@@ -73,6 +73,7 @@ type fixture struct {
 	SourceTotal, SourceGross                   int64
 	TargetTotal, TargetGross, Delta            int64
 	SourceKey, ReplacementKey                  string
+	Quantity                                   int32
 }
 
 func (f fixture) receipt() uuid.UUID         { return store.ExchangeAbandonmentRefundID(f.Org, f.Exchange) }
@@ -85,10 +86,17 @@ func (f fixture) attribution() store.AbandonmentAttribution {
 
 func seed(t *testing.T, db *sql.DB, ctx context.Context, targetUnit int64) fixture {
 	t.Helper()
+	return seedQuantity(t, db, ctx, targetUnit, quantity)
+}
+
+// seedQuantity is seed with another order quantity.
+func seedQuantity(t *testing.T, db *sql.DB, ctx context.Context, targetUnit int64, quantity int32) fixture {
+	t.Helper()
 	f := fixture{
 		Org: uuid.New(), Exchange: uuid.New(),
 		SourceOrder: uuid.New(), SourceReservation: uuid.New(), SourceHold: uuid.New(),
 		ReplacementOrder: uuid.New(), ReplacementReservation: uuid.New(), TargetHold: uuid.New(), Buyer: uuid.New(),
+		Quantity: quantity,
 	}
 	f.SourceTotal = sourceUnit * int64(quantity)
 	f.SourceGross = f.SourceTotal + retainedFee
@@ -205,7 +213,7 @@ func newWorld(t *testing.T, f fixture) *world {
 	w := &world{
 		t: t, f: f,
 		admission: map[uuid.UUID]accessadmission.Admission{
-			f.SourceOrder:      {Admitted: true, IssuedCount: quantity},
+			f.SourceOrder:      {Admitted: true, IssuedCount: f.Quantity},
 			f.ReplacementOrder: {Admitted: false, IssuedCount: 0},
 		},
 		accessErr:       map[uuid.UUID]error{},
@@ -421,9 +429,9 @@ func (w *world) ReturnCapacity(_ context.Context, org, hold, receipt uuid.UUID, 
 	w.returnCalls++
 	n := w.returnCalls
 	w.note("inventory:return")
-	if org != w.f.Org || hold != w.f.TargetHold || receipt != w.f.receipt() || q != quantity {
+	if org != w.f.Org || hold != w.f.TargetHold || receipt != w.f.receipt() || q != w.f.Quantity {
 		w.t.Errorf("capacity return (%s, hold %s, receipt %s, %d), want (%s, target hold %s, receipt %s, %d)",
-			org, hold, receipt, q, w.f.Org, w.f.TargetHold, w.f.receipt(), quantity)
+			org, hold, receipt, q, w.f.Org, w.f.TargetHold, w.f.receipt(), w.f.Quantity)
 	}
 	if w.returnBefore != nil {
 		if err := w.returnBefore(n); err != nil {

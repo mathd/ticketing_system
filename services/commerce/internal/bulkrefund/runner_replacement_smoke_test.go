@@ -136,7 +136,7 @@ func TestBulkRefundOfAnUnissuedReplacementNeverReachesPayments(t *testing.T) {
 	f := seedSettledReplacement(t, ctx, db)
 	cancelTargetSlot(t, ctx, db, f)
 	transport := &replacementTransport{issued: 0}
-	refunder := refunds.New(db, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")
+	refunder := refunds.New(db, transport.call, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")
 	New(DBStore{DB: db}, refunder, time.Minute, 10, time.Minute).RunOnce(ctx)
 
 	if calls := transport.matching("POST http://payments.test"); len(calls) != 0 {
@@ -174,6 +174,47 @@ func TestBulkRefundOfAnUnissuedReplacementNeverReachesPayments(t *testing.T) {
 	}
 }
 
+// R2-1. The longest path one order can drive: an issued replacement whose switch Commerce has
+// not recorded asks Access first, then makes the four calls of an ordinary refund. Its count is
+// what MaxCallsPerOrder, and so the claim lease, must cover.
+func TestTheLongestBulkRefundPathFitsTheCallBudget(t *testing.T) {
+	db, ctx := runnerDB(t)
+	f := seedSettledReplacement(t, ctx, db)
+	cancelTargetSlot(t, ctx, db, f)
+	transport := &replacementTransport{issued: 2}
+	refunder := refunds.New(db, transport.call, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")
+	New(DBStore{DB: db}, refunder, time.Minute, 10, time.Minute).RunOnce(ctx)
+
+	var got []string
+	for _, c := range transport.matching("") {
+		method, rest, _ := strings.Cut(c, " ")
+		u, _, _ := strings.Cut(rest, " ")
+		u, _, _ = strings.Cut(u, "?")
+		got = append(got, method+" "+u)
+	}
+	want := []string{
+		"GET http://access.test/internal/orders/" + f.replacementOrder.String() + "/admission",
+		"POST http://payments.test/internal/psp/partial-refund",
+		"POST http://payments.test/internal/facts",
+		"POST http://access.test/internal/orders/" + f.replacementOrder.String() + "/refunds",
+		"POST http://inventory.test/internal/holds/",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("the order made %d call(s), want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if !strings.HasPrefix(got[i], want[i]) {
+			t.Fatalf("call %d = %q, want %q; calls: %v", i+1, got[i], want[i], got)
+		}
+	}
+	if len(got) > MaxCallsPerOrder {
+		t.Fatalf("the longest path made %d calls, but MaxCallsPerOrder = %d: the lease does not cover its own pass", len(got), MaxCallsPerOrder)
+	}
+	if outcome, code, _ := replacementVerdict(t, ctx, db, f); outcome != "refunded" || code != "" {
+		t.Fatalf("verdict = %q/%q, want refunded", outcome, code)
+	}
+}
+
 // After the exchange's abandonment reserves, the bulk bind of the replacement is refused with
 // the existing `not_refundable` classification (D18), and nothing is sent downstream.
 func TestBulkRefundOfAReplacementAfterTheAbandonmentReservationIsNotRefundable(t *testing.T) {
@@ -192,7 +233,7 @@ func TestBulkRefundOfAReplacementAfterTheAbandonmentReservationIsNotRefundable(t
 	}
 	cancelTargetSlot(t, ctx, db, f)
 	transport := &replacementTransport{issued: 2}
-	refunder := refunds.New(db, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")
+	refunder := refunds.New(db, transport.call, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")
 	New(DBStore{DB: db}, refunder, time.Minute, 10, time.Minute).RunOnce(ctx)
 
 	if calls := transport.matching(""); len(calls) != 0 {
@@ -218,7 +259,7 @@ func TestBulkRefundOfARecordedSwitchDispatchesWithoutAccess(t *testing.T) {
 	}
 	cancelTargetSlot(t, ctx, db, f)
 	transport := &replacementTransport{issued: 0}
-	refunder := refunds.New(db, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")
+	refunder := refunds.New(db, transport.call, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")
 	New(DBStore{DB: db}, refunder, time.Minute, 10, time.Minute).RunOnce(ctx)
 
 	if calls := transport.matching("GET http://access.test/internal/orders/" + f.replacementOrder.String() + "/admission"); len(calls) != 0 {
@@ -268,7 +309,7 @@ func TestBulkVoidOfACompedReplacementAfterTheAbandonmentReservationIsRefused(t *
 			}
 			cancelTargetSlot(t, ctx, db, f)
 			transport := &replacementTransport{issued: 0}
-			refunder := refunds.New(db, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")
+			refunder := refunds.New(db, transport.call, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")
 			New(DBStore{DB: db}, refunder, time.Minute, 10, time.Minute).RunOnce(ctx)
 
 			if calls := transport.matching(""); len(calls) != 0 {

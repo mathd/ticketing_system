@@ -252,7 +252,7 @@ func TestBulkRunSkipsAnAbandonedRefundWithoutCallingPayments(t *testing.T) {
 				startRun(t, ctx, db, o, branch.fixed)
 
 				transport := &recordingTransport{}
-				refunder := &countingRefunder{Service: refunds.New(db, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")}
+				refunder := &countingRefunder{Service: refunds.New(db, transport.call, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")}
 				New(DBStore{DB: db}, refunder, time.Minute, 10, time.Minute).RunOnce(ctx)
 
 				if n := transport.payments(); n != 0 {
@@ -296,7 +296,7 @@ func TestBulkRunClassifiesAnAbandonmentThatLandsAfterItsLookup(t *testing.T) {
 			s.abandon = func() { recordAbandonedOutcome(t, ctx, db, o) }
 
 			transport := &recordingTransport{}
-			refunder := &countingRefunder{Service: refunds.New(db, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")}
+			refunder := &countingRefunder{Service: refunds.New(db, transport.call, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")}
 			New(s, refunder, time.Minute, 10, time.Minute).RunOnce(ctx)
 
 			if n := transport.payments(); n != 0 {
@@ -355,7 +355,7 @@ func TestBulkRunClassifiesAPaymentsRefusalAfterAnAbandonment(t *testing.T) {
 			startRun(t, ctx, db, o, false)
 			transport := &refusingTransport{}
 			transport.during = func() { c.during(t, ctx, db, o) }
-			refunder := &countingRefunder{Service: refunds.New(db, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")}
+			refunder := &countingRefunder{Service: refunds.New(db, transport.call, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")}
 			New(DBStore{DB: db}, refunder, time.Minute, 10, time.Minute).RunOnce(ctx)
 
 			if n := transport.payments(); n != 1 {
@@ -433,7 +433,7 @@ func TestBulkRunRetriesWhenTheReadAfterAPaymentsRefusalFails(t *testing.T) {
 					st.arm()
 				}
 			}
-			refunder := &countingRefunder{Service: refunds.New(db, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")}
+			refunder := &countingRefunder{Service: refunds.New(db, transport.call, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")}
 			runner := New(st, refunder, time.Minute, 10, time.Minute)
 
 			runner.RunOnce(ctx)
@@ -559,7 +559,7 @@ func TestBulkRunRefusesAFreshBindOnAnOrderWithAnAbandonedStaffRefund(t *testing.
 			startRun(t, ctx, db, o, false)
 
 			transport := &recordingTransport{}
-			refunder := &countingRefunder{Service: refunds.New(db, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")}
+			refunder := &countingRefunder{Service: refunds.New(db, transport.call, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")}
 			New(DBStore{DB: db}, refunder, time.Minute, 10, time.Minute).RunOnce(ctx)
 
 			if n := transport.payments(); n != 0 {
@@ -596,7 +596,7 @@ func TestBulkRunRefusesAStaffAbandonmentThatLandsBeforeItsBind(t *testing.T) {
 	s.abandon = func() { abandonRefund(t, ctx, db, o.org, staff) }
 
 	transport := &recordingTransport{}
-	refunder := &countingRefunder{Service: refunds.New(db, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")}
+	refunder := &countingRefunder{Service: refunds.New(db, transport.call, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")}
 	New(s, refunder, time.Minute, 10, time.Minute).RunOnce(ctx)
 
 	if n := transport.payments(); n != 0 {

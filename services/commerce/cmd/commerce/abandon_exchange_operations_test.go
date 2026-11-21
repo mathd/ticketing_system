@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -34,11 +36,7 @@ func recordingDependency(t *testing.T) (url string, calls func() int64) {
 func TestAbandonExchangeRefusesBadArgumentsBeforeAnyDependency(t *testing.T) {
 	dials := listenForDials(t)
 	dep, calls := recordingDependency(t)
-	t.Setenv("ACCESS_URL", dep)
-	t.Setenv("PAYMENTS_URL", dep)
-	t.Setenv("INVENTORY_URL", dep)
-	t.Setenv("INTERNAL_SERVICE_TOKEN", "internal-token")
-	t.Setenv("PAYMENTS_INTERNAL_TOKEN", "payments-token")
+	validAbandonSettings(t, dep)
 	org, exchange := uuid.NewString(), uuid.NewString()
 	for _, tc := range []struct {
 		name string
@@ -72,51 +70,112 @@ func TestAbandonExchangeRefusesBadArgumentsBeforeAnyDependency(t *testing.T) {
 	}
 }
 
-// Each required setting is checked before the database: a command that cannot finish must not
-// start a reservation it cannot drive.
-func TestAbandonExchangeRefusesMissingSettingsBeforeAnyDependency(t *testing.T) {
-	dials := listenForDials(t)
-	dep, calls := recordingDependency(t)
-	args := []string{uuid.NewString(), uuid.NewString(), "Ada Operator", "source admitted"}
-	for _, missing := range []string{"ACCESS_URL", "PAYMENTS_URL", "INVENTORY_URL", "INTERNAL_SERVICE_TOKEN"} {
-		t.Run(missing, func(t *testing.T) {
-			for _, name := range []string{"ACCESS_URL", "PAYMENTS_URL", "INVENTORY_URL"} {
-				t.Setenv(name, dep)
-			}
-			t.Setenv("INTERNAL_SERVICE_TOKEN", "internal-token")
-			t.Setenv(missing, "")
-			err := abandonExchange(args)
-			if err == nil || !strings.Contains(err.Error(), missing) {
-				t.Fatalf("with %s unset: err = %v, want it named", missing, err)
-			}
-		})
-	}
-	if n := dials(); n != 0 {
-		t.Errorf("a missing setting reached the database %d time(s)", n)
-	}
-	if n := calls(); n != 0 {
-		t.Errorf("a missing setting reached a service %d time(s)", n)
-	}
-}
+const (
+	abandonInternalToken = "internal-service-token-for-abandon-tests-0123456789"
+	abandonPaymentsToken = "payments-internal-token-for-abandon-tests-0123456789"
+)
 
-// A valid invocation does open the database: the two tests above are falsifiable only if the
-// counter can see a connection.
-func TestAbandonExchangeWithValidArgumentsReachesTheDatabase(t *testing.T) {
-	dials := listenForDials(t)
-	dep, _ := recordingDependency(t)
+// validAbandonSettings sets every setting the command needs, with the database at the dial
+// counter. It also points libpq's PG* defaults at the counter, so a command that opened the
+// database with an empty DATABASE_URL would be counted.
+func validAbandonSettings(t *testing.T, dep string) {
+	t.Helper()
 	for _, name := range []string{"ACCESS_URL", "PAYMENTS_URL", "INVENTORY_URL"} {
 		t.Setenv(name, dep)
 	}
-	t.Setenv("INTERNAL_SERVICE_TOKEN", "internal-token")
+	t.Setenv("INTERNAL_SERVICE_TOKEN", abandonInternalToken)
+	t.Setenv("PAYMENTS_INTERNAL_TOKEN", abandonPaymentsToken)
+	u, err := url.Parse(os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PGHOST", u.Hostname())
+	t.Setenv("PGPORT", u.Port())
+	t.Setenv("PGUSER", "u")
+	t.Setenv("PGDATABASE", "db")
+	t.Setenv("PGSSLMODE", "disable")
+	t.Setenv("PGCONNECT_TIMEOUT", "2")
+}
+
+// settled reads the dial counter once it has stopped moving: the listener counts on its own
+// goroutine, so a dial can land just after the command returns.
+func settled(count func() int) int {
+	n := count()
+	for {
+		time.Sleep(30 * time.Millisecond)
+		if m := count(); m != n {
+			n = m
+			continue
+		}
+		return n
+	}
+}
+
+// Each setting is checked before the database, one at a time: a command that cannot finish
+// must not start a reservation it cannot drive (R2-4, RA2-3). Every case changes one setting of
+// an otherwise valid configuration.
+func TestAbandonExchangeRefusesEachUnusableSettingBeforeAnyDependency(t *testing.T) {
+	dials := listenForDials(t)
+	dep, calls := recordingDependency(t)
+	args := []string{uuid.NewString(), uuid.NewString(), "Ada Operator", "source admitted"}
+	for _, tc := range []struct {
+		name, env, value, want string
+	}{
+		{"ACCESS_URL unset", "ACCESS_URL", "", "ACCESS_URL"},
+		{"PAYMENTS_URL unset", "PAYMENTS_URL", "", "PAYMENTS_URL"},
+		{"INVENTORY_URL unset", "INVENTORY_URL", "", "INVENTORY_URL"},
+		{"ACCESS_URL without a scheme", "ACCESS_URL", "access:8080", "ACCESS_URL"},
+		{"ACCESS_URL relative", "ACCESS_URL", "/access", "ACCESS_URL"},
+		{"PAYMENTS_URL not http", "PAYMENTS_URL", "ftp://payments:8080", "PAYMENTS_URL"},
+		{"INVENTORY_URL without a host", "INVENTORY_URL", "http://", "INVENTORY_URL"},
+		{"INVENTORY_URL with a query", "INVENTORY_URL", "http://inventory:8080/?x=1", "INVENTORY_URL"},
+		{"INVENTORY_URL with an empty query", "INVENTORY_URL", "http://inventory:8080/?", "INVENTORY_URL"},
+		{"ACCESS_URL with a fragment", "ACCESS_URL", "http://access:8080/#x", "ACCESS_URL"},
+		{"INTERNAL_SERVICE_TOKEN unset", "INTERNAL_SERVICE_TOKEN", "", "INTERNAL_SERVICE_TOKEN"},
+		{"PAYMENTS_INTERNAL_TOKEN unset", "PAYMENTS_INTERNAL_TOKEN", "", "PAYMENTS_INTERNAL_TOKEN"},
+		{"PAYMENTS_INTERNAL_TOKEN equal to the shared token", "PAYMENTS_INTERNAL_TOKEN", abandonInternalToken, "must not equal"},
+		{"DATABASE_URL unset", "DATABASE_URL", "", "DATABASE_URL"},
+		{"DATABASE_URL blank", "DATABASE_URL", "  ", "DATABASE_URL"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			validAbandonSettings(t, dep)
+			t.Setenv(tc.env, tc.value)
+			before, beforeCalls := settled(dials), calls()
+			err := abandonExchange(args)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("with %s=%q: err = %v, want it to name %q", tc.env, tc.value, err, tc.want)
+			}
+			if n := settled(dials) - before; n != 0 {
+				t.Errorf("with %s=%q the command reached the database %d time(s)", tc.env, tc.value, n)
+			}
+			if n := calls() - beforeCalls; n != 0 {
+				t.Errorf("with %s=%q the command reached a service %d time(s)", tc.env, tc.value, n)
+			}
+		})
+	}
+}
+
+// A valid invocation does open the database: the test above is falsifiable only if the counter
+// can see a connection.
+func TestAbandonExchangeWithValidArgumentsReachesTheDatabase(t *testing.T) {
+	dials := listenForDials(t)
+	dep, _ := recordingDependency(t)
+	validAbandonSettings(t, dep)
 	if err := abandonExchange([]string{uuid.NewString(), uuid.NewString(), " Ada Operator ", " source admitted "}); err == nil {
 		t.Fatal("the command succeeded against a database that refuses every connection")
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for dials() == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if dials() == 0 {
+	if settled(dials) == 0 {
 		t.Fatal("a valid invocation never reached the database")
+	}
+}
+
+// R2-5. The command deadline covers the longest command at the per-call timeout: 160 remote
+// calls of 10 s (two Access reads, the delta read, three inspections of up to 51 leg reads, and
+// the abandonment leg read, refund, capacity return and journal append) plus 2 minutes of
+// database work. The value is written out so that a change to it is a visible decision.
+func TestAbandonExchangeDeadlineCoversTheLongestCommand(t *testing.T) {
+	if got, want := abandonDeadline(), 160*10*time.Second+2*time.Minute; got != want {
+		t.Fatalf("abandonDeadline() = %v, want %v", got, want)
 	}
 }
 

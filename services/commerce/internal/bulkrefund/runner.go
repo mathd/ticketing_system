@@ -62,9 +62,11 @@ type Refunder interface {
 	Void(ctx context.Context, in store.VoidRequest) (refunds.VoidResult, error)
 }
 
-// MaxCallsPerOrder covers the longest refund path: payments, the refund fact,
-// ticket voiding, and the capacity return. Comped-order voids use only the last two.
-const MaxCallsPerOrder = 4
+// MaxCallsPerOrder covers the longest refund path: the Access admission read of an exchange
+// replacement whose switch Commerce has not recorded (TKT-498, D22), payments, the refund fact,
+// ticket voiding, and the capacity return. Other orders skip the admission read; comped-order
+// voids use only the last two. ADR-040 "Amended by TKT-498" records the resulting lease.
+const MaxCallsPerOrder = 5
 
 // LeaseFor sizes a sequential batch from the refund service client's timeout.
 func LeaseFor(batch int, callTimeout time.Duration) (time.Duration, error) {

@@ -65,8 +65,8 @@ func assertTerminal(t *testing.T, db *sql.DB, ctx context.Context, w *world) row
 	if !ok || entries != 1 {
 		t.Fatalf("payments journal holds %d entries, want the one compensating fact %s", entries, f.factID())
 	}
-	if receipts != quantity {
-		t.Fatalf("inventory holds receipt %s for %d, want the full target quantity %d", f.receipt(), receipts, quantity)
+	if receipts != f.Quantity {
+		t.Fatalf("inventory holds receipt %s for %d, want the full target quantity %d", f.receipt(), receipts, f.Quantity)
 	}
 	if !journalled.OccurredAt.Equal(r.ReturnedAt.Time) {
 		t.Fatalf("fact occurred_at %s, want the recorded target return %s", journalled.OccurredAt, r.ReturnedAt.Time)
@@ -480,6 +480,10 @@ func TestInventoryAnswersThatDoNotReturnTheWholeTargetLeaveItPending(t *testing.
 // ---------------------------------------------------------------------------------------------
 // The journal (D7, D13).
 
+// A refused or unavailable journal leaves the returned target pending, and the same command
+// resumes from the recorded target return once the journal accepts the fact. The
+// interruption after a successful but lost append stays in
+// TestAnInterruptedAbandonmentResumesFromItsRecordedProgress.
 func TestJournalRefusalsLeaveTheReturnedTargetPending(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -505,6 +509,30 @@ func TestJournalRefusalsLeaveTheReturnedTargetPending(t *testing.T) {
 			w.mu.Unlock()
 			if journalled != 0 || abandonedFacts(t, db, ctx, w.f) != 0 {
 				t.Fatalf("journal holds %d, local facts %d; want none", journalled, abandonedFacts(t, db, ctx, w.f))
+			}
+
+			// The same command once the journal accepts the fact resumes from the recorded target
+			// return: no new proof, refund or return, and the recorded instants stay.
+			w.mu.Lock()
+			w.appendBefore = nil
+			w.mu.Unlock()
+			w.resetCalls()
+			if res := mustAbandon(t, db, ctx, w); res.Replay {
+				t.Fatal("a resumed run reported replay=true")
+			}
+			for _, name := range []string{"access:source", "payments:refund", "inventory:return"} {
+				if n := w.count(name); n != 0 {
+					t.Fatalf("the resumed run repeated %s %d time(s): %v", name, n, w.calls)
+				}
+			}
+			done := assertTerminal(t, db, ctx, w)
+			if !done.StartedAt.Time.Equal(r.StartedAt.Time) || !done.ReturnedAt.Time.Equal(r.ReturnedAt.Time) {
+				t.Fatalf("the resumed run moved the reservation or target-return time: %+v -> %+v", r, done)
+			}
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			if w.movements != 1 || len(w.legs) != 1 || done.RefundFact.UUID != w.legs[w.f.receipt().String()].factID {
+				t.Fatalf("payments moved %d refund(s) over %d leg(s); row fact %v", w.movements, len(w.legs), done.RefundFact)
 			}
 		})
 	}
@@ -670,14 +698,6 @@ func TestAnInterruptedAbandonmentResumesFromItsRecordedProgress(t *testing.T) {
 				}
 			},
 			[]string{"access:source", "payments:downgrade-leg"}},
-		{"after Commerce recorded the target return", upgradeUnit,
-			func(w *world) { w.appendBefore = once(ErrUnavailable) },
-			func(t *testing.T, r row) {
-				if !r.ReturnedAt.Valid || r.AbandonedAt.Valid {
-					t.Fatalf("row = %+v, want the target returned and no terminal marker", r)
-				}
-			},
-			[]string{"access:source", "payments:refund", "inventory:return"}},
 		{"after the journal appended, before the terminal Commerce commit", upgradeUnit,
 			func(w *world) { w.appendAfter = once(ErrUnavailable) },
 			func(t *testing.T, r row) {
@@ -836,18 +856,89 @@ func TestReplacementRefundsDecideTheReservation(t *testing.T) {
 	})
 }
 
-// legsOverHTTP is the world with one change: the replacement's refund-leg read goes through the
-// real HTTP client to a payments server that answers `answer`.
-type legsOverHTTP struct {
-	*world
-	client HTTP
+// R2-5. A full valid refund set fits the command deadline. The replacement holds 50 units; 48
+// pending quantity-one refunds exist, and one more is bound during each of the first two
+// inspections, so the command inspects three times (48, 49 and 50 leg reads) and then completes.
+// With every remote call at its full timeout, the run still fits CommandDeadline.
+func TestAFullValidRefundSetFitsTheCommandDeadline(t *testing.T) {
+	db, ctx := abandonDB(t)
+	f := seedQuantity(t, db, ctx, upgradeUnit, 50)
+	for i := 0; i < 48; i++ {
+		bindReplacementRefund(t, db, ctx, f, "pending-"+strconv.Itoa(i))
+	}
+	w := newWorld(t, f)
+	reads := 0
+	w.onReplacementLeg = func(string) {
+		reads++
+		switch reads {
+		case 48, 48 + 49:
+			bindReplacementRefund(t, db, ctx, f, "late-"+strconv.Itoa(reads))
+		}
+	}
+	mustAbandon(t, db, ctx, w)
+	assertTerminal(t, db, ctx, w)
+	if reads != 48+49+50 {
+		t.Fatalf("replacement leg reads = %d, want 147 over three inspections", reads)
+	}
+	total := w.total()
+	if total != 2+1+147+4 {
+		t.Fatalf("the command made %d remote calls, want 154: %v", total, w.calls)
+	}
+	const perCall = 10 * time.Second
+	if worst := time.Duration(total)*perCall + DatabaseAllowance; worst > CommandDeadline(perCall) {
+		t.Fatalf("%d calls at %v each plus %v of database work = %v, over the %v deadline",
+			total, perCall, DatabaseAllowance, worst, CommandDeadline(perCall))
+	}
 }
 
-func (p legsOverHTTP) RefundLeg(ctx context.Context, org uuid.UUID, source, refund string) (LegEvidence, error) {
-	if source == p.f.ReplacementKey {
+// wireOver is the world with one change: the call that `route` names goes through the real HTTP
+// client to a server, so the client's decoder judges a literal wire answer. An empty route
+// sends every call to the world.
+type wireOver struct {
+	*world
+	client HTTP
+	route  *string
+}
+
+func (p wireOver) Admission(ctx context.Context, org, order uuid.UUID) (accessadmission.Admission, error) {
+	if *p.route == "replacement-admission" && order == p.f.ReplacementOrder {
+		return p.client.Admission(ctx, org, order)
+	}
+	return p.world.Admission(ctx, org, order)
+}
+
+func (p wireOver) ChargeOperation(ctx context.Context, org uuid.UUID, key string) (ChargeEvidence, error) {
+	if *p.route == "charge" {
+		return p.client.ChargeOperation(ctx, org, key)
+	}
+	return p.world.ChargeOperation(ctx, org, key)
+}
+
+func (p wireOver) RefundLeg(ctx context.Context, org uuid.UUID, source, refund string) (LegEvidence, error) {
+	if *p.route == "replacement-leg" && source == p.f.ReplacementKey {
 		return p.client.RefundLeg(ctx, org, source, refund)
 	}
 	return p.world.RefundLeg(ctx, org, source, refund)
+}
+
+func (p wireOver) PartialRefund(ctx context.Context, r RefundRequest) (RefundAnswer, error) {
+	if *p.route == "partial-refund" {
+		return p.client.PartialRefund(ctx, r)
+	}
+	return p.world.PartialRefund(ctx, r)
+}
+
+// wireService builds the service over wireOver, with every routed call answered by `status` and
+// `body`.
+func wireService(t *testing.T, db *sql.DB, w *world, route *string, status int, body string) *Service {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(status)
+		_, _ = rw.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	over := wireOver{world: w, client: NewHTTP(srv.URL, srv.URL, srv.URL, "internal", "payments", 5*time.Second), route: route}
+	return New(db, over, over, w)
 }
 
 // RA1-4. With the same pending replacement refund, only payments' own leg-absence answer lets
@@ -865,17 +956,9 @@ func TestOnlyPaymentsLegAbsenceAnswerAdmitsAPendingReplacementRefund(t *testing.
 			db, ctx := abandonDB(t)
 			f := seed(t, db, ctx, upgradeUnit)
 			bindReplacementRefund(t, db, ctx, f, "pending")
-			srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-				if r.URL.Path != "/internal/refund-legs" || r.URL.Query().Get("source_idempotency_key") != f.ReplacementKey {
-					t.Errorf("unexpected payments request %s %s", r.Method, r.URL)
-				}
-				rw.WriteHeader(http.StatusNotFound)
-				_, _ = rw.Write([]byte(tc.body))
-			}))
-			t.Cleanup(srv.Close)
 			w := newWorld(t, f)
-			svc := New(db, w, legsOverHTTP{world: w, client: NewHTTP("", srv.URL, "", "internal", "payments", 5*time.Second)}, w)
-			_, err := svc.Abandon(ctx, f.Org, f.Exchange, f.attribution())
+			route := "replacement-leg"
+			_, err := wireService(t, db, w, &route, http.StatusNotFound, tc.body).Abandon(ctx, f.Org, f.Exchange, f.attribution())
 			if tc.reserves {
 				if err != nil {
 					t.Fatalf("abandon: %v", err)
@@ -891,6 +974,75 @@ func TestOnlyPaymentsLegAbsenceAnswerAdmitsAPendingReplacementRefund(t *testing.
 			}
 		})
 	}
+}
+
+// R2-3. Each answer that would establish zero replacement tickets, the delta capture or a
+// replacement leg's absence is decoded strictly through the real client. A contradictory or
+// duplicated answer stops the command for a retry before the reservation and before any money
+// or capacity call. Each refusal has a control that differs only in the refused property.
+func TestContradictoryEvidenceStopsBeforeTheReservation(t *testing.T) {
+	delta := strconv.FormatInt(int64(quantity)*(upgradeUnit-sourceUnit), 10)
+	for _, tc := range []struct {
+		name, route string
+		status      int
+		body        string
+		pendingLeg  bool
+		reserves    bool
+	}{
+		{"replacement admission control", "replacement-admission", 200, `{"admitted":false,"issued_count":0}`, false, true},
+		{"replacement admitted with no issued ticket", "replacement-admission", 200, `{"admitted":true,"issued_count":0}`, false, false},
+		{"replacement admission with a duplicate field", "replacement-admission", 200, `{"admitted":false,"issued_count":1,"issued_count":0}`, false, false},
+		{"delta capture control", "charge", 200, `{"resolved":true,"captured_amount":` + delta + `,"currency":"EUR"}`, false, true},
+		{"delta capture with a duplicate field", "charge", 200, `{"resolved":true,"captured_amount":1,"captured_amount":` + delta + `,"currency":"EUR"}`, false, false},
+		{"leg absence with a duplicate field", "replacement-leg", 404, `{"error":"route","error":"refund leg not found"}`, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, ctx := abandonDB(t)
+			f := seed(t, db, ctx, upgradeUnit)
+			if tc.pendingLeg {
+				bindReplacementRefund(t, db, ctx, f, "pending")
+			}
+			w := newWorld(t, f)
+			route := tc.route
+			_, err := wireService(t, db, w, &route, tc.status, tc.body).Abandon(ctx, f.Org, f.Exchange, f.attribution())
+			if tc.reserves {
+				if err != nil {
+					t.Fatalf("abandon: %v", err)
+				}
+				assertTerminal(t, db, ctx, w)
+				return
+			}
+			if !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("err = %v, want ErrUnavailable", err)
+			}
+			if readRow(t, db, ctx, f).StartedAt.Valid || w.count("payments:refund") != 0 ||
+				w.count("inventory:return") != 0 || w.count("payments:fact") != 0 {
+				t.Fatalf("contradictory evidence reserved or wrote something: calls %v", w.calls)
+			}
+		})
+	}
+}
+
+// RA2-4. A 422 whose provider-failure fields are duplicated is not the typed failure: the refund
+// failure reference stays empty, and the same command run again completes the abandonment.
+func TestAnAmbiguousProviderFailureStaysRetryable(t *testing.T) {
+	db, ctx := abandonDB(t)
+	f := seed(t, db, ctx, upgradeUnit)
+	w := newWorld(t, f)
+	route := "partial-refund"
+	svc := wireService(t, db, w, &route, http.StatusUnprocessableEntity,
+		`{"error":"x","code":"other","code":"provider_refund_failed","provider_ref":"re_ambiguous"}`)
+	if _, err := svc.Abandon(ctx, f.Org, f.Exchange, f.attribution()); !errors.Is(err, ErrUnavailable) || errors.Is(err, store.ErrAbandonmentRefundFailed) {
+		t.Fatalf("err = %v, want ErrUnavailable", err)
+	}
+	if r := readRow(t, db, ctx, f); !r.StartedAt.Valid || r.FailedRef.Valid || r.RefundFact.Valid {
+		t.Fatalf("row = %+v, want started with no refund failure reference and no refund", r)
+	}
+	route = ""
+	if _, err := svc.Abandon(ctx, f.Org, f.Exchange, f.attribution()); err != nil {
+		t.Fatalf("the same command after an ambiguous 422: %v", err)
+	}
+	assertTerminal(t, db, ctx, w)
 }
 
 // R1-5. A started abandonment is judged against the candidate definition again before it resumes

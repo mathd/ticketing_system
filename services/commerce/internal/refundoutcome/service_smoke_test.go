@@ -392,7 +392,7 @@ func TestOutsideCompletionIsReversedAndABulkRerunReportsAlreadyRefunded(t *testi
 	pending := bindStaffRefund(t, ctx, db, other, "ordinary-pending", 1)
 
 	caller := &recordingCaller{watchOrder: s.order}
-	svcRefunds := refunds.New(db, caller.call, "http://payments.test", "http://access.test", "http://inventory.test")
+	svcRefunds := refunds.New(db, caller.call, caller.call, "http://payments.test", "http://access.test", "http://inventory.test")
 	bulkKeyRefund := store.RefundID(org, store.CancellationRefundKey(slot, s.order))
 
 	// The first bulk run: the provider fails the refund terminally.

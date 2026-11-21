@@ -58,6 +58,9 @@ var (
 	// FX inside an order (PRD; TKT-10 owns multi-currency), so this is a refusal rather
 	// than a conversion.
 	ErrExchangeCurrencyMismatch = errors.New("exchange target currency differs from the source order")
+	// ErrExchangeAbandoned reports that CompleteExchangeSettlement found a terminal abandonment
+	// under the row lock (TKT-498, RA2-2). It wrote nothing: the switch is no longer owed.
+	ErrExchangeAbandoned = errors.New("the exchange was abandoned; its switch is no longer owed")
 )
 
 // ExchangeRequest is one staff exchange instruction.
@@ -524,12 +527,12 @@ func CompleteExchangeSettlement(ctx context.Context, db *sql.DB, org, exchangeID
 	// same exchange would otherwise both see `settled_at IS NULL`, both build an envelope
 	// from their own clock, and race on the outbox primary key with different bytes under
 	// one deterministic id.
-	var settledAt sql.NullTime
+	var settledAt, abandonedAt sql.NullTime
 	var alreadyReplacement uuid.NullUUID
 	err = tx.QueryRowContext(ctx, `
-		SELECT settled_at, replacement_order_id FROM order_exchanges
+		SELECT settled_at, replacement_order_id, abandoned_at FROM order_exchanges
 		WHERE organizer_id=$1 AND id=$2 AND basis_at IS NOT NULL FOR UPDATE`, org, exchangeID).
-		Scan(&settledAt, &alreadyReplacement)
+		Scan(&settledAt, &alreadyReplacement, &abandonedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// No row, or no basis yet — and since TKT-255 those are no longer the same
@@ -562,6 +565,12 @@ func CompleteExchangeSettlement(ctx context.Context, db *sql.DB, org, exchangeID
 			return nil
 		}
 		return err
+	}
+	if abandonedAt.Valid {
+		// A terminal abandonment (TKT-498, D24, RA2-2). The caller's snapshot can predate it:
+		// FinishExchangeAbandonment takes this same row lock, so this read is the one that
+		// decides. The switch will never happen, so no switch obligation is repaired.
+		return fmt.Errorf("%w: %s", ErrExchangeAbandoned, exchangeID)
 	}
 	if settledAt.Valid {
 		// Already settled. The event is still owed if a crash landed between the two

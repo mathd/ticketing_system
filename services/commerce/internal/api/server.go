@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	apispec "ticketing/services/commerce/api"
+	"ticketing/services/commerce/internal/accessadmission"
 	commerceevents "ticketing/services/commerce/internal/events"
 	"ticketing/services/commerce/internal/exchanges"
 	"ticketing/services/commerce/internal/exchangeunwind"
@@ -79,6 +80,8 @@ type Server struct {
 	exchanges *exchanges.Service
 	// moneyEvidence asks payments whether a basis resume's money leg is absent.
 	moneyEvidence MoneyEvidence
+	// accessAdmission is the credentialed, no-redirect caller of Access's admission read.
+	accessAdmission accessadmission.Caller
 	// limiters bound the public, credential-free customer surface (TKT-224,
 	// ADR-051). In-process and per-replica — see shared/go/ratelimit's package doc
 	// for exactly what that does and does not bound.
@@ -151,7 +154,11 @@ func New(config ServerConfig) *Server {
 		moneyEvidence:   config.MoneyEvidence,
 	}
 	s.organizerAssertions = config.OrganizerAssertions
-	s.refunds = refunds.New(config.DB, s.call, s.paymentsURL, s.accessURL, s.inventoryURL)
+	// Both Access admission reads (the exchange's pre-money check and the replacement refund
+	// guard) use one caller that names the internal token and never follows a redirect
+	// (TKT-498, R2-2, RA2-1). `call` would pick the token from the URL prefix and follow 3xx.
+	s.accessAdmission = accessadmission.NewCaller(config.Client, config.InternalToken)
+	s.refunds = refunds.New(config.DB, s.call, s.accessAdmission, s.paymentsURL, s.accessURL, s.inventoryURL)
 	s.exchanges = exchanges.New(config.DB, exchanges.Caller(s.call), s.inventoryURL)
 	s.limiters = newCustomerLimiters(nil)
 	return s

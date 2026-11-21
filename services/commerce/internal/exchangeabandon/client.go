@@ -4,15 +4,16 @@ package exchangeabandon
 // its partial refund and its journal append, and inventory's capacity return.
 //
 // The client decodes; the service judges. Every answer is decoded strictly: exactly one JSON
-// object of the declared shape, no unknown field, no trailing content. An answer that does not
-// decode is ErrUnavailable, never a verdict. A 404 is absence only when it is the endpoint's own
-// "not found" object, and a redirect is never followed. The HTTP mechanics follow exchangeunwind
-// and refundoutcome, whose rules came from review there.
+// object of the declared shape, no unknown field, no duplicate member name, no trailing content.
+// An answer that does not decode is ErrUnavailable, never a verdict. A 404 is absence only when
+// it is the endpoint's own "not found" object, and a redirect is never followed. The HTTP
+// mechanics follow exchangeunwind and refundoutcome, whose rules came from review there.
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
@@ -49,6 +50,33 @@ func NewHTTP(accessURL, paymentsURL, inventoryURL, internalToken, paymentsToken 
 		InternalToken: internalToken,
 		PaymentsToken: paymentsToken,
 	}
+}
+
+// WithTrace returns a copy of h whose every request carries one W3C traceparent with traceID
+// and spanID (32 and 16 lowercase hex digits). The services extract it, so each request-log line
+// of the command carries the command's trace_id: an operator, and the running-stack test, can
+// tell this command's calls from every other caller's (RA2-5). The Access admission caller
+// copies the client, so it sends the same header.
+func (h HTTP) WithTrace(traceID, spanID string) HTTP {
+	client := *h.Client
+	base := client.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	client.Transport = traceTransport{traceparent: "00-" + traceID + "-" + spanID + "-01", base: base}
+	h.Client = &client
+	return h
+}
+
+type traceTransport struct {
+	traceparent string
+	base        http.RoundTripper
+}
+
+func (t traceTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("traceparent", t.traceparent)
+	return t.base.RoundTrip(r)
 }
 
 // send performs one request with the credential its caller names.
@@ -94,12 +122,6 @@ func (h HTTP) internal(ctx context.Context, method, u string, in any) (int, []by
 	return h.send(ctx, method, u, h.InternalToken, in)
 }
 
-// accessCaller has the accessadmission.Caller shape, so that the admission read is the same code
-// the pre-money check runs. It always sends the internal token.
-func (h HTTP) accessCaller(ctx context.Context, method, u, _ string, in any, _ bool) (int, []byte, error) {
-	return h.internal(ctx, method, u, in)
-}
-
 // absent reports payments' own 404 for a missing record: exactly the JSON object
 // {"error": message} that the endpoint writes. A 404 from a missing route, a proxy, or an
 // answer of any other shape is not evidence that the record is absent.
@@ -110,9 +132,14 @@ func absent(raw []byte, message string) bool {
 	return decodeStrict(raw, &body) == nil && body.Error != nil && *body.Error == message
 }
 
-// decodeStrict accepts exactly one object of out's shape with no unknown field and no
-// trailing content.
+// decodeStrict accepts exactly one object of out's shape with no unknown field, no duplicate
+// member name and no trailing content. It decodes every evidence object here: the 404 absence
+// bodies, the typed 422, and the refund, fact and capacity answers (R2-3, RA2-4). encoding/json
+// keeps the last of duplicate names, so jsontext, which rejects them, checks the body first.
 func decodeStrict(raw []byte, out any) error {
+	if !jsontext.Value(raw).IsValid() {
+		return fmt.Errorf("%w: not one JSON value with unique member names", ErrUnavailable)
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(out); err != nil {
@@ -136,9 +163,10 @@ func errorText(raw []byte) string {
 	return e.Error
 }
 
-// Admission reads Access's admission summary of one order through the shared strict reader.
+// Admission reads Access's admission summary of one order through the shared strict reader and
+// the same credentialed, no-redirect caller that the Commerce server's two admission reads use.
 func (h HTTP) Admission(ctx context.Context, org, order uuid.UUID) (accessadmission.Admission, error) {
-	return accessadmission.Read(ctx, h.accessCaller, h.AccessURL, order, org)
+	return accessadmission.Read(ctx, accessadmission.NewCaller(h.Client, h.InternalToken), h.AccessURL, order, org)
 }
 
 // ChargeOperation reads `GET /internal/operations` for one charge key. Payments' own

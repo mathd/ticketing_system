@@ -10,10 +10,13 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -106,10 +109,13 @@ func signedAmount(v int64) string {
 
 const abandonExchangeUsage = `usage: commerce abandon-exchange <organizer-id> <exchange-id> "<operator-name>" "<reason>"`
 
-// abandonOperatorTimeout bounds the whole command: two Access reads, the payments evidence and
-// refund-leg reads, at most one refund, one capacity return, one journal append, and the short
-// Commerce transactions between them. Each HTTP call has its own paymentsEvidenceTimeout.
-const abandonOperatorTimeout = 2 * time.Minute
+// abandonDeadline bounds the whole command (R2-5, supersedes D21's 2 minutes). It is the
+// service's longest command, exchangeabandon.MaxRemoteCalls, at the per-call timeout
+// paymentsEvidenceTimeout, plus exchangeabandon.DatabaseAllowance: 28 min 40 s. A run that
+// stops at the deadline keeps its recorded progress, and the same command resumes it.
+func abandonDeadline() time.Duration {
+	return exchangeabandon.CommandDeadline(paymentsEvidenceTimeout)
+}
 
 // abandonExchange abandons one settled exchange whose source Access admitted (TKT-498).
 //
@@ -138,31 +144,56 @@ func abandonExchange(args []string) error {
 	if err != nil {
 		return err
 	}
-	accessURL := strings.TrimSuffix(os.Getenv("ACCESS_URL"), "/")
-	paymentsURL := strings.TrimSuffix(os.Getenv("PAYMENTS_URL"), "/")
-	inventoryURL := strings.TrimSuffix(os.Getenv("INVENTORY_URL"), "/")
-	if accessURL == "" || paymentsURL == "" || inventoryURL == "" {
-		return errors.New("ACCESS_URL, PAYMENTS_URL and INVENTORY_URL are required: the abandonment proves admission in " +
-			"Access, moves money and journals through payments, and returns capacity to inventory")
+	// The abandonment proves admission in Access, moves money and journals through payments,
+	// and returns capacity to inventory. A setting it cannot use would let it reserve, and
+	// perhaps refund, before it finds that out (RA2-3).
+	accessURL, err := serviceBaseURL("ACCESS_URL")
+	if err != nil {
+		return err
 	}
-	internalToken := os.Getenv("INTERNAL_SERVICE_TOKEN")
-	if internalToken == "" {
-		return errors.New("INTERNAL_SERVICE_TOKEN is required to reach Access and inventory")
+	paymentsURL, err := serviceBaseURL("PAYMENTS_URL")
+	if err != nil {
+		return err
 	}
-	paymentsToken := os.Getenv(runtimecfg.PaymentsTokenEnv)
-	if paymentsToken == "" {
-		paymentsToken = internalToken
+	inventoryURL, err := serviceBaseURL("INVENTORY_URL")
+	if err != nil {
+		return err
+	}
+	internalToken, err := runtimecfg.InternalTokenFromEnv()
+	if err != nil {
+		return err
+	}
+	// The dedicated credential, never the shared one (R2-4, supersedes D21's fallback):
+	// payments refuses the shared token, and an even exchange with no pending refund would
+	// return the target before the journal append found that out.
+	paymentsToken, err := runtimecfg.PaymentsTokenFromEnv()
+	if err != nil {
+		return err
+	}
+	// pgx reads an empty connection string as "use the PG* environment defaults", which can
+	// select another database (RA2-3).
+	dsn := strings.TrimSpace(os.Getenv("DATABASE_URL"))
+	if dsn == "" {
+		return errors.New("DATABASE_URL is required: an empty value would select the shell's PostgreSQL defaults")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), abandonOperatorTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), abandonDeadline())
 	defer cancel()
-	db, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
 	}
 	defer func() { _ = db.Close() }()
 
-	client := exchangeabandon.NewHTTP(accessURL, paymentsURL, inventoryURL, internalToken, paymentsToken, paymentsEvidenceTimeout)
+	// One trace per run (RA2-5): every service's request log stamps it, so this run's calls
+	// can be found and counted apart from every other caller's.
+	traceID, spanID, err := newCommandTrace()
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "abandon-exchange trace_id=%s\n", traceID)
+	client := exchangeabandon.NewHTTP(accessURL, paymentsURL, inventoryURL, internalToken, paymentsToken, paymentsEvidenceTimeout).
+		WithTrace(traceID, spanID)
 	res, err := exchangeabandon.New(db, client, client, client).Abandon(ctx, org, exchangeID, attribution)
 	if err != nil {
 		reportAbandonRefusal(os.Stderr, exchangeID, res.Exchange, err)
@@ -174,6 +205,30 @@ func abandonExchange(args []string) error {
 			"The record above is the original, with its original times.\n", exchangeID)
 	}
 	return nil
+}
+
+// newCommandTrace returns a random W3C trace id and parent span id, as lowercase hex.
+func newCommandTrace() (traceID, spanID string, err error) {
+	var raw [24]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", "", fmt.Errorf("command trace id: %w", err)
+	}
+	return hex.EncodeToString(raw[:16]), hex.EncodeToString(raw[16:]), nil
+}
+
+// serviceBaseURL reads one dependency's base URL. It accepts only an absolute http or https URL
+// with a host and no query or fragment, because each call appends its path to it.
+func serviceBaseURL(name string) (string, error) {
+	raw := strings.TrimSuffix(os.Getenv(name), "/")
+	if raw == "" {
+		return "", fmt.Errorf("%s is required", name)
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" ||
+		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return "", fmt.Errorf("%s must be an absolute http or https base URL with a host and no query or fragment", name)
+	}
+	return raw, nil
 }
 
 func errOrNil(err error) error {

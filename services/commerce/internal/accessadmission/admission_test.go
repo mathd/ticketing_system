@@ -78,6 +78,13 @@ func TestReadRefusesEveryAnswerThatIsNotAWellFormed200(t *testing.T) {
 		{"unknown field", http.StatusOK, `{"admitted":false,"issued_count":2,"voided":true}`, nil},
 		{"trailing value", http.StatusOK, valid + `{}`, nil},
 		{"trailing garbage", http.StatusOK, valid + `x`, nil},
+		// R2-3. Access reports an admission only for an issued ticket, so this is a contradiction,
+		// not "zero tickets".
+		{"admitted with no issued ticket", http.StatusOK, `{"admitted":true,"issued_count":0}`, nil},
+		// R2-3. encoding/json keeps the last of duplicate names; each case's last value is valid.
+		{"duplicate admitted", http.StatusOK, `{"admitted":true,"admitted":false,"issued_count":2}`, nil},
+		{"duplicate issued_count", http.StatusOK, `{"admitted":false,"issued_count":0,"issued_count":2}`, nil},
+		{"duplicate name spelled with an escape", http.StatusOK, `{"admitted":false,"issued_count":0,"issued_\u0063ount":2}`, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls []recordedCall

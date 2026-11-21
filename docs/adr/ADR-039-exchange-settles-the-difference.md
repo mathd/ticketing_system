@@ -130,6 +130,14 @@ nothing, because Access can have switched while its Commerce callback lags. The 
 The proof assumes honest Access writers and a consistent database history (ADR-021). Access's wire
 contract is unchanged.
 
+**What counts as an Access answer.** Every Commerce admission read uses one Access caller: the
+exchange's pre-money check, the replacement refund dispatch check below, and both abandonment reads.
+That caller sends the shared internal token, which each call site names, and never follows a
+redirect. A redirect is an unresolved answer, and the redirect target receives no request. An answer
+with a duplicate member name, or with `admitted: true` and `issued_count: 0`, proves nothing: Access
+reports an admission only for one of the order's issued tickets. The pre-money check answers such a
+reply with its existing `502`.
+
 **Three branches, by the sign of the stored delta.** Every branch keeps the exchange, both orders and
 the two original gross facts, and returns the whole target claim to inventory under one receipt
 derived from the organizer and the exchange. The source's admitted tickets and its capacity stay.
@@ -205,7 +213,9 @@ and a same-organizer checkout that used the literal key `exchange:<id>` holds a 
 replacement's key. This prerequisite exists because of that alias; reconsider it when TKT-586 removes
 the alias. The abandonment refuses a completed replacement refund or one for which Payments holds a
 leg. Only Payments' own leg-absence answer counts as no leg; any other 404 stops the command for a
-retry. A pending replacement refund with that answer does not stop the abandonment, and stays
+retry. Every Payments, Access and inventory answer the command decodes refuses a duplicate member
+name. So a 404 or a typed `422 provider_refund_failed` that names a field twice is not evidence: it
+records nothing and the same command can retry. A pending replacement refund with that answer does not stop the abandonment, and stays
 pending afterwards.
 
 **Replacement voids.** A zero-gross replacement is reversed by a void, not a refund. Once the
@@ -215,7 +225,10 @@ the void's ticket obligation could never be discharged. An existing void row sta
 
 **The exchange replay.** A replay of the original exchange request after a terminal abandonment
 answers `200` with status `abandoned` and the original exchange and money values, and does not repair
-the switch outbox. A started abandonment that is not terminal still answers `switch_pending`.
+the switch outbox. A started abandonment that is not terminal still answers `switch_pending`. The
+replay decides under the exchange row lock that the terminal transaction also takes. A replay that
+read the exchange before the terminal commit therefore still answers `abandoned` and writes no
+outbox row.
 
 **Attribution, and the adversary (ADR-021).** The command records the trimmed typed operator name,
 the reason, and the PostgreSQL `session_user`. Only the first name and reason pair can resume or

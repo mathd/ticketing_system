@@ -33,6 +33,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -131,8 +132,36 @@ func (e *ProviderRefundFailedError) Error() string {
 func (e *ProviderRefundFailedError) Unwrap() error { return ErrProviderRefundFailed }
 
 // maxInspections bounds the inspect-and-reserve loop. A replacement refund set that keeps
-// changing under it is an incident, not a race to win.
+// changing under it is an incident, not a race to win. After the third changed set the command
+// stops with store.ErrReplacementRefundSetChanged and nothing reserved; the same command run
+// again starts the inspection from the first refund. An earlier absence answer is not reused:
+// payments can bind a leg between two runs (R2-5).
 const maxInspections = 3
+
+// The command's remote-call budget (R2-5). The CLI sizes its deadline from it.
+const (
+	// maxReplacementQuantity is the order quantity bound of the checkout and exchange contracts
+	// (openapi `quantity` 1-50). Each pending replacement refund takes at least one unit, and
+	// the refund binder counts pending refunds against the replacement's quantity.
+	maxReplacementQuantity = 50
+	// maxLegReadsPerInspection is one leg read per pending refund, plus the one read that finds
+	// a leg and stops the command.
+	maxLegReadsPerInspection = maxReplacementQuantity + 1
+	// MaxRemoteCalls is the longest command, a fresh upgrade: two Access reads, the delta
+	// capture read, maxInspections inspections, then the abandonment leg read, the partial
+	// refund, the capacity return and the journal append.
+	MaxRemoteCalls = 2 + 1 + maxInspections*maxLegReadsPerInspection + 4
+	// DatabaseAllowance is the time for the command's Commerce transactions: at most twelve
+	// short ones (load, gross-fact check, a list and a reservation per inspection, two progress
+	// records, the reload and the terminal write). It was the whole command's budget before.
+	DatabaseAllowance = 2 * time.Minute
+)
+
+// CommandDeadline is the time one command run needs when each remote call takes its full
+// per-call timeout: MaxRemoteCalls of perCall, plus DatabaseAllowance.
+func CommandDeadline(perCall time.Duration) time.Duration {
+	return time.Duration(MaxRemoteCalls)*perCall + DatabaseAllowance
+}
 
 // Service is the operator path. It holds no lease and runs on no timer.
 type Service struct {
