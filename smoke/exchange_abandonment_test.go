@@ -125,6 +125,30 @@ func accessFailures(t *testing.T, ctx context.Context) jetstream.Consumer {
 	return c
 }
 
+// awaitIssuerPast waits until Access's `access-ticket-issuer` durable has an ack floor at or past
+// stream sequence seq: every message up to it was acknowledged or terminated.
+func awaitIssuerPast(t *testing.T, ctx context.Context, js jetstream.JetStream, seq uint64, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	var last uint64
+	for time.Now().Before(deadline) {
+		c, err := js.Consumer(ctx, "PLATFORM", "access-ticket-issuer")
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := c.Info(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		last = info.AckFloor.Stream
+		if last >= seq {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("access-ticket-issuer ack floor = %d after %s, want >= %d (the replayed event)", last, within, seq)
+}
+
 // awaitExchangeRefusal waits for Access's `exchange_refused` record of one event. Records of
 // other events are acknowledged and skipped.
 func awaitExchangeRefusal(t *testing.T, c jetstream.Consumer, eventID uuid.UUID, within time.Duration) {
@@ -782,7 +806,6 @@ func TestAbandonARacedUpgrade(t *testing.T) {
 	if subject != orderExchangedSubject {
 		t.Fatalf("frozen event subject = %q", subject)
 	}
-	failures := accessFailures(t, ctx)
 	nc, err := nats.Connect(natsURL)
 	if err != nil {
 		t.Fatal(err)
@@ -793,11 +816,16 @@ func TestAbandonARacedUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A new message id, so the broker's duplicate window does not drop the redelivery.
-	if _, err := js.Publish(ctx, orderExchangedSubject, []byte(envelope),
-		jetstream.WithMsgID("tkt498-replay-"+uuid.NewString())); err != nil {
+	ack, err := js.Publish(ctx, orderExchangedSubject, []byte(envelope),
+		jetstream.WithMsgID("tkt498-replay-"+uuid.NewString()))
+	if err != nil {
 		t.Fatal(err)
 	}
-	awaitExchangeRefusal(t, failures, x.eventID(), 30*time.Second)
+	// Access's refusal record for this replay is NOT observable: Access publishes it under the
+	// event id as message id, so the broker's duplicate window drops the second record of the
+	// same event. Wait instead until Access's own durable has acknowledged (or terminated)
+	// every message up to the replay, so Access has judged it.
+	awaitIssuerPast(t, ctx, js, ack.Sequence, 60*time.Second)
 	assertNoReplacementIssued(t, readDurableState(t, ctx, x), x, "after the frozen event was replayed")
 }
 

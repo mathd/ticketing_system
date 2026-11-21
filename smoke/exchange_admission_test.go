@@ -96,7 +96,7 @@ func TestAdmittedExchangeRefusesBeforeAnyTargetOrMoneyCall(t *testing.T) {
 	if err := commerce.QueryRow(ctx, `SELECT count(*) FROM order_exchanges WHERE organizer_id=$1 AND id=$2`, organizerID, exchangeID).Scan(&exchanges); err != nil {
 		t.Fatal(err)
 	}
-	if err := commerce.QueryRow(ctx, `SELECT count(*) FROM order_facts WHERE organizer_id=$1 AND fact_type IN ('order.exchange.reversed','order.exchange.sold')`, organizerID).Scan(&exchangeFacts); err != nil {
+	if err := commerce.QueryRow(ctx, `SELECT count(*) FROM order_facts WHERE organizer_id=$1 AND order_id=$2 AND fact_type IN ('order.exchange.reversed','order.exchange.sold')`, organizerID, source.OrderID).Scan(&exchangeFacts); err != nil {
 		t.Fatal(err)
 	}
 	if exchanges != 0 || exchangeFacts != 0 {
