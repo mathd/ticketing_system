@@ -420,11 +420,12 @@ func enumerated(t *testing.T, db *sql.DB, ctx context.Context, org, slot uuid.UU
 	}
 }
 
-// TKT-300, COS-2 and COS-3. The attempt charge moved from the claim to after the drive,
-// and these pin the five outcomes separately, because an assertion that only says "the
-// row was refused" cannot tell them apart. Each case passes the others' preconditions so
-// no one of them is proved by an earlier short-circuit.
-func TestCancellationAttemptsAreChargedForDrivenWorkOnly(t *testing.T) {
+// TKT-300, TKT-521, COS-2 and COS-3. A claim charges nothing; each store write applies
+// the caller's charge flag, and the runner charges per failed pass, driven or not (see its
+// `record` and `finalize`). These pin the outcomes separately, because an assertion that
+// only says "the row was refused" cannot tell them apart. Each case passes the others'
+// preconditions so no one of them is proved by an earlier short-circuit.
+func TestCancellationAttemptsAreChargedPerFailedPass(t *testing.T) {
 	attemptsOf := func(t *testing.T, db *sql.DB, ctx context.Context, w CancellationWork) int {
 		t.Helper()
 		var n int

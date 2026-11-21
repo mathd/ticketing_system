@@ -193,8 +193,8 @@ func (f *fakeStore) Finalize(_ context.Context, w store.CancellationWork, out st
 	}
 	f.final[w.OrderID] = out
 	delete(f.leased, w.OrderID)
-	// Mirrors the store: a verdict that ended a RETRYABLE attempt is charged; a definite
-	// refusal is terminal on its first attempt and never consumes the budget.
+	// Mirrors the store: it applies the caller's charge flag. The runner passes true for
+	// every verdict, so a definite refusal ends with one recorded attempt.
 	if charge {
 		f.attempts[w.OrderID]++
 	}
@@ -210,7 +210,8 @@ func (f *fakeStore) Abandon(ctx context.Context, w store.CancellationWork, charg
 	}
 	f.abandon[w.OrderID]++
 	delete(f.leased, w.OrderID)
-	// Mirrors the store: only a DRIVEN claim costs an attempt.
+	// Mirrors the store: it applies the caller's charge flag. The runner decides the flag;
+	// see `record` and `finalize`.
 	if charge {
 		f.attempts[w.OrderID]++
 	}
@@ -810,12 +811,14 @@ func TestCeilingMovingUnderTheRunnerClearsTheFixedQuantity(t *testing.T) {
 	}
 }
 
-// On a cancellation hand-back, only a DRIVEN claim costs an attempt. A retryable failure
+// On a hand-back from the cancellation checks in RunOnce and `record`, only a DRIVEN claim
+// costs an attempt. This zero-cost rule does not cover the other paths: a retryable failure
 // that is not interrupted costs one driven or not (TKT-521;
-// TestPreDriveRetryableFailureConsumesAttemptBudget). Since TKT-300 the hand-back charge
-// follows the drive rather than the claim, so this is an omission rather than the refund
-// it used to be — but the distinction it protects is unchanged and still matters in both
-// directions. A claim
+// TestPreDriveRetryableFailureConsumesAttemptBudget), and `finalize` charges its hand-back
+// of a failed outcome whether or not the refund unit ran. Since TKT-300 the hand-back
+// charge follows the drive rather than the claim, so this is an omission rather than the
+// refund it used to be — but the distinction it protects is unchanged and still matters in
+// both directions. A claim
 // released without the refund unit ever running must cost nothing, or a shutdown between
 // claim and work leaves a row arriving at its first real ambiguous failure with budget
 // spent on work that never happened. And a claim released AFTER the refund unit ran must
@@ -1544,13 +1547,13 @@ func TestTwoRunsLedgerRowsForOneOrderAreEachDrivenInOnePass(t *testing.T) {
 // Owner decision (b), 2026-10-12: a retryable failure BEFORE the refund unit runs costs an
 // attempt, the same as a driven one. The claim query has no attempts predicate, so without
 // this charge a persistent commerce database failure on one row recurs after every lease
-// and the row never reaches a verdict. An interruption before the drive is not the row's
-// own failure, so its hand-back costs nothing.
+// and the row never reaches a verdict. An interruption that RunOnce or `record` observes
+// before the drive is not the row's own failure, so its hand-back costs nothing.
 
 // COS-3. A retryable pre-drive failure charges one attempt per pass and keeps the lease as
-// backoff. At the cap it ends `failed/internal`, with no drive and no money moved. The row
-// starts with no fixed quantity: on a resumed row a lookup error does not return a
-// failure, so it would not reach the charge.
+// backoff. At the cap it ends `failed/internal`, with no drive. The row is fresh, so in
+// this fixture no money moved. The row starts with no fixed quantity: on a resumed row a
+// lookup error does not return a failure, so it would not reach the charge.
 //
 // Mutation that must make this RED: in `record`'s retry branch, call `chargeDriven` only
 // when `drove` is true. Both cases then show zero attempts on pass 1 and no verdict at the

@@ -138,8 +138,10 @@ back and charges one attempt regardless of whether the refund unit ran.
 Bulk refund also charges failed undriven passes beyond checkout recovery's failed-drive rule
 ([ADR-016](./ADR-016-checkout-recovery-state-machine.md)) because the bulk refund claim query has no
 attempts predicate and a persistent pre-drive failure would otherwise recur after every lease. The
-charge gives such a row a terminal, reported `failed/internal` verdict with no money moved, and §3 makes
-a new run safe. The `attempts` column comment in migration 0012 ("Charged per claim") is older than this
+charge gives such a row a terminal, reported `failed/internal` verdict, and §3 makes a new run safe. The
+pass that fails makes no refund or void call. The verdict does not establish whether an earlier pass
+returned money: an earlier pass can have refunded and left a reversal outstanding before a later pass
+failed before its drive. The `attempts` column comment in migration 0012 ("Charged per claim") is older than this
 rule and stays as applied; this section governs.
 
 Before TKT-300 this paragraph said attempts were charged at **claim** time and refunded when a claim

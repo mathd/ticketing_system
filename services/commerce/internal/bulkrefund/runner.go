@@ -36,9 +36,10 @@ type Store interface {
 	LookupRefund(ctx context.Context, org, refundID uuid.UUID) (store.Refund, bool, error)
 	FixQuantity(ctx context.Context, w store.CancellationWork, quantity int32, priorRun bool) error
 	ClearQuantity(ctx context.Context, w store.CancellationWork) error
-	// `charge` says whether this verdict ended a RETRYABLE attempt. A definite refusal
-	// is terminal on the first attempt and never consumes the budget
-	// (0012_cancellation_refunds.sql:95-99).
+	// `charge` says whether this verdict costs an attempt; the store applies it. The
+	// runner passes true for every verdict, so a definite refusal is terminal with one
+	// recorded attempt (0012_cancellation_refunds.sql:95-99,
+	// TestDefiniteRefusalIsTerminalOnTheFirstAttempt).
 	Finalize(ctx context.Context, w store.CancellationWork, out store.CancellationOutcome, charge bool) error
 	Abandon(ctx context.Context, w store.CancellationWork, charge bool) error
 	// ChargeAttempt records one attempt for a retryable failed pass WITHOUT releasing the
@@ -133,12 +134,13 @@ func (r *Runner) Run(ctx context.Context) {
 // its book never materializes, so its rows are never even claimable.
 const runListLimit = 64
 
-// maxAttempts bounds retries of AMBIGUOUS failures only — a provider timeout, an
-// unavailable journal, a completion that did not persist. Those must not be terminal on the
-// first try: the money may already have moved, and a terminal verdict leaves it moved with
-// the tickets still valid and nothing driving the reversal. They must not retry forever
-// either, or the run never completes and its report is never readable. A DEFINITE refusal
-// is terminal immediately and never consumes an attempt.
+// maxAttempts caps the failed passes of a row whose failures are RETRYABLE — a provider
+// timeout, an unavailable journal, a completion that did not persist, or a commerce database
+// error before the drive (TKT-521). The ambiguous ones must not be terminal on the first
+// try: the money may already have moved, and a terminal verdict leaves it moved with the
+// tickets still valid and nothing driving the reversal. They must not retry forever either,
+// or the run never completes and its report is never readable. A DEFINITE refusal records
+// one terminal attempt and gets no retry.
 const maxAttempts = 5
 
 // MaxBatchesPerPass bounds one pass's claim loop (TKT-331), as it bounds the two draining
@@ -305,8 +307,10 @@ func (r *Runner) abandon(w store.CancellationWork, charge bool) {
 // COST, since the context is detached and so cannot be cancelled: up to 10s of charge time
 // per row (two tries of 5s). That is only reachable while the database is refusing THIS
 // write. `record` reaches here for ANY retryable outcome below the budget, driven or not:
-// a LookupRefund, OrderState, FixQuantity or ClearQuantity error before the drive is a
-// retryable `internal` outcome and is charged too, by the rule `record` states. After a
+// a pre-drive error that returns a retryable `internal` outcome is charged too, by the rule
+// `record` states. Those are the OrderState, FixQuantity and ClearQuantity errors, and a
+// LookupRefund error on a row with no fixed quantity; on a row with a fixed quantity a
+// lookup error is ignored and the pass continues. After a
 // cancellation only the row in flight keeps charging: RunOnce checks the context before
 // each new drive. Of the rows remaining in the batch, it hands back only those NOT already
 // driven in this pass, each hand-back on its own 5s context; a row already driven in this
@@ -447,13 +451,15 @@ func voidFailureCode(err error) string {
 // valid and nothing driving the reversal.
 func (r *Runner) record(ctx context.Context, w store.CancellationWork, out store.CancellationOutcome, drove bool) bool {
 	// An interruption releases the claim immediately: a successor should pick the row up
-	// now, not after a lease it never used. It costs an attempt only if the refund unit was
-	// actually called — an undriven claim must cost nothing, or a rolling restart spends a
-	// row's budget on work that never happened, and a driven one must cost its attempt, or
-	// a cancellation window recurring at exactly that point holds the row below the cap
-	// forever and its run never completes. This is the INTERRUPTION rule only. A failed
-	// pass that is not interrupted is the row's own failure and is charged below, driven
-	// or not (TKT-521).
+	// now, not after a lease it never used. This hand-back costs an attempt only if the
+	// refund unit was actually called — an undriven hand-back here must cost nothing, or a
+	// rolling restart spends a row's budget on work that never happened, and a driven one
+	// must cost its attempt, or a cancellation window recurring at exactly that point holds
+	// the row below the cap forever and its run never completes. This zero-cost rule
+	// applies only to the cancellation checks in RunOnce and here. `finalize` charges its
+	// hand-back of a failed outcome whether or not the refund unit ran, and a failed pass
+	// that is not interrupted is the row's own failure and is charged below, driven or not
+	// (TKT-521).
 	if ctx.Err() != nil {
 		r.abandon(w, drove)
 		return false
@@ -472,10 +478,11 @@ func (r *Runner) record(ctx context.Context, w store.CancellationWork, out store
 	// backoff. Releasing here to get the charge written would undo the paragraph above.
 	//
 	// The comparison is against w.Attempts+1 and not w.Attempts. w.Attempts is the count
-	// as observed at claim, and since the charge moved off the claim it no longer
-	// includes this pass — so comparing the bare value would allow a SIXTH drive of an
-	// ambiguous failure, one where the money may already have moved. That is the off-by-one
-	// the accounting move creates, and it is the whole reason this line changed.
+	// as observed at claim, and since the charge moved off the claim it does not include
+	// this pass — so comparing the bare value would allow a SIXTH failed pass, and for an
+	// ambiguous failure a sixth drive, one where the money may already have moved. That is
+	// the off-by-one the accounting move creates, and it is the whole reason this line
+	// changed.
 	if attempts := w.Attempts + 1; retryable(out) && attempts < maxAttempts {
 		// This pass failed, so this attempt is OWED, whether or not the refund unit ran.
 		// The budget counts failed passes, not drives (TKT-521, owner decision (b)): the
@@ -485,11 +492,14 @@ func (r *Runner) record(ctx context.Context, w store.CancellationWork, out store
 		// as a driven failure is.
 		//
 		// Losing the charge is not a cosmetic miscount: the row comes back after its lease
-		// with its old count, which permits one extra pass. For a driven ambiguous failure
+		// with its old count, which permits another pass. For a driven ambiguous failure
 		// that is one more drive than the budget allows. Under the old claim-time
 		// accounting the charge was banked before the drive and could not be lost this
-		// way, so this window belongs to the accounting move and is closed here rather than
-		// left as a known gap.
+		// way, so this window belongs to the accounting move. It is NOT closed: the
+		// detached retry recovers a transient write failure, but if neither write commits
+		// the charge is not recorded, and the row gets another pass after its lease
+		// expires. While the charge write keeps failing, the cap does not bound the number
+		// of passes.
 		//
 		// Charged on a detached context and retried once; chargeDriven carries the
 		// reasoning, and ChargeCancellationAttempt's compare-and-set on the claim-time
@@ -720,8 +730,10 @@ func (r *Runner) finalize(ctx context.Context, w store.CancellationWork, out sto
 	if ctx.Err() != nil && out.Outcome == "failed" {
 		// Charged whether or not the refund unit ran: this path does not know `drove`, and
 		// the failed outcome is charged like any failed pass even though no verdict is
-		// recorded. Unlike the undriven hand-backs in RunOnce and `record`, this late
-		// hand-back costs one attempt (ADR-040 §5, TKT-521).
+		// recorded. That includes a pre-drive failure that reaches here at the cap. The
+		// zero-cost rule for undriven hand-backs applies only to the cancellation checks in
+		// RunOnce and `record`; this late hand-back costs one attempt (ADR-040 §5,
+		// TKT-521).
 		r.abandon(w, true)
 		return false
 	}
