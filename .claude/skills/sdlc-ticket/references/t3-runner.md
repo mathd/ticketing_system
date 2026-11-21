@@ -99,7 +99,10 @@ provider error there.
 - **The `providerInstanceId` and `model` in the result must equal the request.** Record them, the
   effort, and `harness: t3` in the stage comment.
 - **The summary must be non-empty and contain a conclusive verdict.** The same rules as
-  `codex-runner.md` § Judging the output apply. A researcher call and a reviewer's open research
+  `codex-runner.md` § Judging the output apply. An empty, truncated or acknowledgement-only result
+  is a failed invocation. Launch it again once, with the same brief and the same frozen artifact,
+  and name the retry in the stage comment. A second failure goes to the escalation ladder. Count
+  launches per stage, round, lens and artifact: never more than two through `delegate_task`. A researcher call and a reviewer's open research
   requests have no verdict: judge them per `reviews.md` § Researcher.
 - **`hasPendingQuestion`**: the child asked something. If the ticket or the plan answers it,
   reply with `t3_pending_request_respond` (`threadId` = `childThreadId`). A human decision is
@@ -118,7 +121,25 @@ provider error there.
 3. **Stop on the current `agent:*` label and report to the human.**
 
 A **provider-level** failure (quota, revoked credentials) probably hits the other runner too: skip
-rung 2.
+rung 2. A quota or rate limit clears with time: it is a timed hold (§ Timed holds), not rung 3.
+Revoked credentials go to rung 3 at once.
+
+## Timed holds
+
+Some blockers clear with time and need no owner decision: a provider quota or rate limit, a GitHub,
+CI or vault outage, a package-age hold. They do not stop the run for the owner.
+
+1. Post a `kind=blocker` comment: the operation that failed, the exact error, and the time of the
+   next check.
+2. Schedule a recheck that wakes this thread: `schedule_task` with `schedule: {type: "once", runAt}`
+   and `bindToCurrentThread: true`. Use the reset time when the error gives one, 30 minutes
+   otherwise. `schedule_task` from a Codex session is **not verified**: if the call fails, or the
+   session has no scheduler, go to rung 3 and say that no recheck is scheduled.
+3. On the recheck, try the blocked operation first, with one cheap call. If it works, continue the
+   pending operation. If it fails, schedule the next recheck.
+4. After four rechecks or 12 hours, whichever comes first, stop and report to the owner.
+
+A timed hold never authorizes a model substitution, a skipped check or a merge.
 
 ## Continuation ownership
 
@@ -127,6 +148,24 @@ app completion notification over a polling loop. Record the pending operation be
 If independent work remains, continue it. If only a child result is pending, yield and resume on its
 notification. Read the final message with `task_status`; a plan-mode provider may not write files.
 A completed reviewer task is evidence to process, not a completed ticket or sprint.
+
+**Never end a turn with work pending and no wake source.** Before you yield, each pending operation
+has one of these, and the stage comment names it:
+
+- a delegated task: its completion notification (`mode: "async"`);
+- a PR check or review: the PR watch;
+- a timed hold: its scheduled recheck (§ Timed holds);
+- a command you started (the gate, `make browser`, a test run): **none is guaranteed, so wait for
+  it in the same turn.** Run it in the foreground with a timeout longer than its normal run, or
+  start it in the background and wait on it (`t3_background_wait` in a Claude or OpenCode session;
+  for the gate, until `.gate.lock` is gone), then read `.gate.verdict`. Do not write "the gate is
+  running" and end the turn.
+
+A turn that ends with a pending operation and no wake source stalls the run until the owner writes.
+
+**On resume, check the state before you act.** Confirm that `.gate.lock` is absent, that
+`.gate.verdict` names the current `HEAD` and tree, and that no earlier run still holds the gate's
+ports (`docker ps`). A verdict for another commit is not evidence.
 
 Do not launch a second orchestrator to watch the first one. On handoff, name the new owner, pending
 task IDs, current gate or CI watcher and exact next operation. Never leave two agents writing the

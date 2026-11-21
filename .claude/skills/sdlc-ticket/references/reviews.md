@@ -11,7 +11,9 @@ Adopted from the upstream sdlc-ticket review procedure (2026-10-16). It replaces
 docs-only merge-at-cap carve-out. The `sprint-review` stage was added on 2026-10-17 (§ Sprint
 review). On 2026-11-09 the upstream scope rule, the bounded-review rules and the convergence rules
 were adopted: finding origin, `priorFinding`, delta inspection, the approach check before round 3,
-optional review guidance and the optional security pass.
+optional review guidance and the optional security pass. On 2026-11-20 the triage rules were added,
+after the S-2 and S-3 measurements: the cost test, the `noted` disposition, reviewer `notes`, the
+clarification test for `materialChange`, and `FIX` for a missing disposition in every round.
 
 ## Inputs and identity
 
@@ -46,6 +48,13 @@ covers the tests that this repository's rules require: one test per guard predic
 fixture, both readings of a green mutation (`AGENTS.md`). Do not report style preferences or
 cleanup that has no concrete consequence; lint and the review guidance cover those.
 
+**For a plan, a finding is a defect that makes the implementer build the wrong thing, miss a COS, or
+be unable to verify the result,** when they follow the plan as written. Tell the reviewer to state
+that consequence in `impact`, and to put remarks on wording, format, the layout of evidence, or a
+detail that a competent implementer settles alone, in `notes`: a short array of plain sentences with
+no ID and no severity. Notes need no disposition and do not prevent `APPROVE`. A reviewer does not
+raise a note to a finding to get it applied.
+
 **Review guidance (`config.review.guidance`, optional).** When it names a repository file, give it
 to both lenses with its revision and digest. Use the version on the default branch. If the change
 under review edits that file, give the default-branch version and say that the PR changes it.
@@ -70,9 +79,10 @@ audit-only.
    applicable, every `kind=decision` comment, the initial findings and the verification evidence.
    It checks plan compliance, unsupported choices, omitted material decisions, and invalidated
    decisions with no superseding entry (`quality-practices.md` §2). For `plan-review`, it audits
-   the draft against the governing ADRs and the shaping decisions, and in the last round also the
-   plan recap (`plan-recap.md`): it must state the plan faithfully, keep every COS and add
-   nothing. **Do not fix between the two
+   the draft against the governing ADRs and the shaping decisions. With `gates: "human"`, in the
+   last round it also audits the plan recap (`plan-recap.md`): it must state the plan faithfully,
+   keep every COS and add nothing. With `gates: "autonomous"` the recap is written once, after the
+   last round, and is not audited (`plan-recap.md` § When). **Do not fix between the two
    lenses**; if the artifact changes, discard the incomplete round and review the new artifact.
 4. **Validate both results, merge duplicate defects, triage every finding** against the reviewed
    revision (SKILL.md § Hard rules — verify against the revision under review). Keep the original
@@ -83,8 +93,9 @@ audit-only.
    than posting it again. When code changes or new evidence make an earlier resolution wrong, reopen
    the finding with `priorFinding` and the new evidence. Never give the initial lens the earlier
    dispositions as a suppression list; they go to the audit.
-5. **Fix** accepted findings. § Stage policy decides what must be fixed, what can be deferred and
-   what needs a refutation check. Refuted claims get evidence. Log a `kind=decision` when a fix
+5. **Triage, then fix** accepted findings. § Stage policy decides what must be fixed, what can be
+   noted or deferred and what needs a refutation check. Apply the cost test (§ Triage below the
+   repeat threshold) before you accept a finding below the repeat threshold. Refuted claims get evidence. Log a `kind=decision` when a fix
    makes a material choice. Fix with the smallest change, and fix every in-scope occurrence of the
    finding's `bugClass` (§ Keep review bounded).
    **Who fixes matters if another round follows:** the fixer becomes an author, and the next
@@ -95,7 +106,12 @@ audit-only.
 6. **Verify** — gate, tests, mutation check on any test written for a fix (SKILL.md § Hard rules).
    Then apply § Stage policy. A fix that exceeds the finding's scope, or materially changes the
    approved plan, architecture, permissions or data handling, sets `materialChange: true` and
-   requires another round regardless of severity.
+   requires another round regardless of severity. Use the test of `plan-recap.md` § When step 4: a
+   change is material when it changes a COS, the scope, observable behaviour, a public interface,
+   data handling, permissions or an architecture choice. A change to wording, to an evidence
+   reference or its format, to a receipt, or a detail added inside the approved plan is a
+   clarification: record `materialChange: false`. When you set `true`, name the item that changed
+   in the stage comment. When you cannot tell, treat the change as material.
 7. **Record** the round (§ Round record) as a `kind=review` comment and run the contract script.
    Act on its output.
 8. **Before you start round 3, stop and diagnose why findings continue.** Record in a
@@ -128,7 +144,9 @@ outside it.
   behaviour the COS cover.
 - **Incidental, at any severity:** a defect outside that behaviour — another code path, a rare case
   the COS do not name, a small performance cost, extra compatibility. Defer it to a linked Backlog
-  ticket with a written scope reason. Keep its original severity. Never defer it "to final review":
+  ticket with a written scope reason when the work must still be done. Below the repeat threshold,
+  record it as `noted` when it is not worth doing (§ Triage below the repeat threshold). Keep its
+  original severity. Never defer it "to final review":
   a deferral always names a ticket.
 - A deferred finding at the repeat threshold still requires the next round, unless § Pre-existing
   findings exempts it.
@@ -148,6 +166,32 @@ across the completed tickets through its four review areas (`sdlc-sprint-review`
 Why a fix diff deserves care even below the threshold: in TKT-22, 30 of 42 findings were defects in
 code written to fix an earlier finding (`quality-practices.md` §2). Judge `materialChange` on the
 **fix diff**, honestly — it is the only route to a re-review for a Medium fix.
+
+### Triage below the repeat threshold
+
+A fix is not free. It adds code or text that no reviewer has seen, and a plan fix also changes the
+plan digest and the recap. Fixing is not the default for a finding below the repeat threshold. For
+each such finding, record one line with two facts: what fails for the deliverable if the artifact
+stays as it is, and what the fix costs (code or text added, a new digest and recap, new behaviour to
+verify). Then choose one disposition:
+
+- `fixed`: a must-fix as § Stage policy defines it, or a fix that is worth more than it costs.
+- `noted`: the finding is valid and the artifact stays as it is. Use it when no COS fails without the
+  fix, or when the fix costs more than it gives. The finding must carry `security: false`. `noted` is
+  valid for Low and Nit at every stage, and for Medium in `plan-review` only, where the implementer
+  and the code review still see the note. It needs no Backlog ticket. Never use it for a must-fix.
+- `deferred`: incidental work that must still be done, in a linked Backlog ticket.
+- `rejected`: the finding is wrong, with counter-evidence.
+
+**In `plan-review`, a Low or Nit finding does not change the plan.** Record it as `noted`, unless the
+implementer would build the wrong thing from the plan as written. The plan text, its digest and the
+recap stay as reviewed, so no drafter call follows. Give the noted plan findings and the reviewer
+`notes` to the implementer in its brief, as advice and not as scope, and to the `ai-review` audit.
+
+List each noted finding with its severity and its one-line reason: in `plan-final` for
+`plan-review`, in the review-guide for `ai-review`. With `gates: "human"` the human can overrule a
+note at the gate. With `gates: "autonomous"` the owner can overrule it in a board comment at any
+time. An overruled note becomes a must-fix.
 
 ### Pre-existing findings
 
@@ -203,6 +247,9 @@ PR or a model failure never resets it.
 number of distinct `round` values among the `stage=sprint-review kind=review` records on the sprint
 note, over all four areas. One round holds the four area pairs. So an area cannot use a round that
 the other areas do not use, and a change of area never resets the count.
+
+A missing disposition is not a reason to stop: the contract returns `FIX` for it in every round,
+the last authorized one included. The cap applies only when another review round is required.
 
 When round four still requires another review, the contract returns `STOP`: list the unresolved
 findings and every unreviewed fix in a `kind=blocker` comment, keep the current `agent:*` label and
@@ -269,7 +316,7 @@ the round record (`researcher`) and the stage comment.
 The reviewer returns one JSON object per lens, shaped like `assets/review-result.example.json`:
 `stage`, `round`, `lens` (`initial` | `audit`), `artifact`, `reviewer` (actual model),
 `complete`, `verdict` (`APPROVE` | `REVISE` | `BLOCKED`), `summary`, `findings`, and optionally
-`researchRequests`. Each finding has `id`, `severity`, `evidence`, `impact`, `correction`. Canonical
+`notes` (plain sentences that are not findings) and `researchRequests`. Each finding has `id`, `severity`, `evidence`, `impact`, `correction`. Canonical
 severities are `Critical`, `High`, `Medium`, `Low`, `Nit`; other labels map through
 `config.review.severityMap`, and an unknown label stops triage — never shift a numbering by
 assumption. Finding IDs are unique across both lenses; the audit references a duplicate rather than
@@ -302,18 +349,21 @@ status (the runner docs' "completed ≠ ran").
 Assemble it after both lenses, shaped like `assets/review-round.example.json`: `stage`, `round`,
 `area` (`sprint-review` only), `artifact`, `inspection` (`full` | `delta`) and, for a delta,
 `previousArtifact`, `reviewer`, optional `researcher`, optional `arm` (A/B only), `results` (the two lens objects, in order),
-`dispositions` (`fixed` | `rejected` | `deferred` per finding ID), `dispositionEvidence` (fix SHA and
-verification, refutation evidence, or follow-up ticket and scope reason), `verificationPassed`,
+`dispositions` (`fixed` | `noted` | `rejected` | `deferred` per finding ID), `dispositionEvidence`
+(fix SHA and verification, the cost-test line for a noted finding, refutation evidence, or follow-up
+ticket and scope reason), `verificationPassed`,
 `materialChange`, `refutationChecks`, and `securityPass` when `config.review.securityPass` is
 enabled. Carry still-unresolved findings from earlier rounds into the new results; a new round
 cannot hide them by omission. Keep each round's complete record in its comment: a later delta round
 validates against it.
 
-Post it as `<!-- sdlc:stage=<plan-review|ai-review|sprint-review> kind=review -->` with the record
-in a JSON code block (a `sprint-review` record goes on the sprint note, the others on the ticket),
-then run, from the repository root (comments are append-only: after a `FIX`, post the completed
-record again with the **same** `round` — for one stage, round and arm (or area), the latest record is
-the one that counts):
+Run the contract on the record file first, from the repository root. On `FIX`, complete the file
+and run it again. Post the record once, when the output is no longer `FIX`, as
+`<!-- sdlc:stage=<plan-review|ai-review|sprint-review> kind=review -->` with the record in a JSON
+code block (a `sprint-review` record goes on the sprint note, the others on the ticket). Do not post
+a record a second time for a change of wording. Comments are append-only: if a posted record must
+change, post it again with the **same** `round` — for one stage, round and arm (or area), the
+latest record is the one that counts:
 
 ```sh
 python3 .claude/skills/sdlc-ticket/scripts/review_round.py review .review-<ticket>-<stage>-r<n>.json \
@@ -357,8 +407,10 @@ Review loops grow a deliverable one cheap-looking fix at a time. Keep it at the 
 - Fix every occurrence of the finding's `bugClass` in the reviewed change that has evidence and is
   in scope, so the next round does not find the next one. Record occurrences outside the change as
   follow-up tickets. Do not add guards for hypothetical cases.
-- Do not accept a finding only to end the loop. Reject it with evidence or defer it with a scope
-  reason.
+- Do not accept a finding only to end the loop. Reject it with evidence, defer it with a scope
+  reason, or record it as `noted` after the cost test (§ Triage below the repeat threshold).
+- A plan is not the deliverable. After the first plan-review round, fix what blocks a correct
+  implementation and leave the rest as notes.
 - Record `git diff --shortstat <base>` at the first reviewed revision and at the final revision, code
   and test lines apart, beside the plan's estimate. If review grew the diff, look for what to cut
   before the hand-off.

@@ -17,10 +17,11 @@ occurrences and say which control would prevent the next one. Repetition alone d
 lint rule fits.
 
 Report review convergence in `measurements`, per stage (`plan-review`, `ai-review`): rounds to pass,
-and finding dispositions (fixed, rejected, deferred), counted once per finding across lenses and
+and finding dispositions (fixed, noted, rejected, deferred), counted once per finding across lenses and
 rounds through `priorFinding`. Say what the counts cannot show: `rejected` does not separate a wrong
-finding from an intentional choice, and `deferred` does not mean the finding did not matter. Missing
-history is unknown, not zero.
+finding from an intentional choice, and `deferred` does not mean the finding did not matter. Also
+report the share of findings below the repeat threshold that were fixed: a share near 100% means that
+the cost test did not run. Missing history is unknown, not zero.
 
 For each useful candidate, state:
 

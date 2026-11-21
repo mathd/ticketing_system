@@ -28,13 +28,21 @@ or you become its author. When `plan` is `main-agent`, the drafter is a subagent
 
 ## When
 
+**With `gates: "autonomous"`, steps 1 and 2 are one write.** No human reads the recap before
+Building (§ Format, *Decide now*). The drafter writes it once, after the last plan-review round and
+its dispositions, from the complete final plan, and copies each COS word for word into *Done when*.
+There is no recap audit and no fidelity check in this mode. Record the author in `plan-final`, with
+`recap checker: none (autonomous)`. Steps 3 to 5 apply unchanged.
+
 1. **Planning — before the last plan-review round's decision audit.** The drafter writes the recap from the
    complete plan (the draft with every amendment applied, not the delta) and give it to the auditor
    with the plan (`reviews.md` § One round step 3). The audit checks that the recap states the plan
    faithfully: no missing COS, no added behaviour, the open decisions shown. If a later round
    changes the plan, write a new recap for that round's audit.
 2. **After the last round's fixes.** Fixes below the repeat threshold change the plan without
-   another round (`reviews.md` § Stage policy). If they change anything the recap says, the drafter
+   another round (`reviews.md` § Stage policy). A `noted` finding changes neither the plan nor the
+   recap (`reviews.md` § Triage below the repeat threshold). Batch the fixes: rewrite the recap once,
+   after the last disposition, not after each fix. If the fixes change anything the recap says, the drafter
    rewrites the recap from the complete amended plan, then the plan reviewer does a **fidelity check**
    only: one read-only call that compares the new recap with the complete amended plan and answers
    faithful / not faithful with the differences. It is not a review round and does not count

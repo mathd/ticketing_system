@@ -26,6 +26,8 @@ REPEAT_SEVERITIES = {"Critical", "High"}
 STAGES = {"plan-review", "ai-review", "sprint-review"}
 SPRINT_AREAS = {"implementation", "verification", "documentation", "retrospective"}
 ORIGINS = {"introduced", "pre-existing", "unknown"}
+DISPOSITIONS = {"fixed", "noted", "rejected", "deferred"}
+NOTED_SEVERITIES = {"Low", "Nit"}
 INSPECTIONS = {"full", "delta"}
 REVIEW_KEYS = {"severityMap", "guidance", "securityPass"}
 
@@ -168,6 +170,7 @@ def review_action(
         )
         current = output.get("findings")
         require(isinstance(current, list), "findings must be a complete array")
+        validate_notes(output)
         for item in current:
             require(
                 isinstance(item, dict)
@@ -225,11 +228,10 @@ def review_action(
             confirmed_refutations.add(key)
         elif dispositions.get(key) == "rejected":
             disputed = True
+    validate_noted(items, dict(findings), dispositions, record["stage"])
     for key, _ in findings:
-        if dispositions.get(key) not in {"fixed", "rejected", "deferred"} or not text(
-            evidence.get(key)
-        ):
-            return "STOP" if number == authorized_through else "FIX"
+        if dispositions.get(key) not in DISPOSITIONS or not text(evidence.get(key)):
+            return "FIX"
     if disputed:
         return "STOP"
     if record.get("verificationPassed") is not True:
@@ -263,6 +265,43 @@ def validate_finding_fields(item: dict[str, Any]) -> None:
         require(key not in item or text(item[key]), f"{key} must be nonempty text")
     require(
         type(item.get("security", False)) is bool, "finding security must be boolean"
+    )
+
+
+def validate_notes(output: dict[str, Any]) -> None:
+    """Check the optional reviewer notes, which are remarks and not findings."""
+    notes = output.get("notes", [])
+    require(
+        isinstance(notes, list) and all(text(note) for note in notes),
+        "notes must be an array of nonempty text",
+    )
+
+
+def validate_noted(
+    items: list[dict[str, Any]],
+    levels: dict[str, str],
+    dispositions: dict[str, Any],
+    stage: str,
+) -> None:
+    """Refuse a noted disposition on a finding that needs a fix or a decision."""
+    for item in items:
+        require(
+            dispositions.get(item["id"]) != "noted"
+            or can_note(item, levels[item["id"]], stage),
+            "noted needs security: false and Low or Nit, or Medium in plan-review",
+        )
+
+
+def can_note(item: dict[str, Any], level: str, stage: str) -> bool:
+    """Return whether a finding can be closed as noted, with no change.
+
+    A noted finding is valid and stays as it is: the cost of a fix is more
+    than its value. Only an explicit non-security finding qualifies. Low and
+    Nit qualify at every stage. Medium qualifies only in plan review, where
+    the implementer and the code review still see the note.
+    """
+    return item.get("security") is False and (
+        level in NOTED_SEVERITIES or (level == "Medium" and stage == "plan-review")
     )
 
 

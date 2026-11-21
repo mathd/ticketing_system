@@ -78,8 +78,8 @@ and the report under `docs/sprints/<S-n>/`, delivered on the task's own PR.
 Ticket reviews cover correctness, security, COS, affected integration and material choices. Broad
 architecture cleanup, cross-story test quality, documentation consistency and the process retrospective
 belong to the final sprint review. Create linked Backlog tickets for incidental issues that final review must read.
-A finding is never deferred "to final review": it is fixed, rejected with evidence, or deferred to a
-named Backlog ticket under `reviews.md` § Stage policy. A security defect, or a correctness defect
+A finding is never deferred "to final review": it is fixed, noted with its cost-test reason, rejected with evidence,
+or deferred to a named Backlog ticket under `reviews.md` § Stage policy. A security defect, or a correctness defect
 in the behaviour this ticket's COS cover, needs a fix before merge at any severity. An incidental
 Critical or High finding can be deferred only when the reviewer placed it outside the COS; it still
 blocks the release readiness of the sprint until it is fixed or its work leaves the release.

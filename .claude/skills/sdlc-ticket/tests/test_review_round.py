@@ -493,19 +493,98 @@ class ReviewTests(unittest.TestCase):
             ):
                 review_round.review_action(candidate, policy())
 
-    def test_unresolved_findings_at_the_cap_stop_instead_of_asking_for_a_fix(self):
-        candidate = record("Medium", 4)
+    def test_a_missing_disposition_asks_for_a_fix_in_every_round(self):
+        # The cap applies only when another review round is required.
+        for number in (3, 4):
+            with self.subTest(round=number):
+                candidate = record("Medium", number)
+                candidate["dispositions"] = {}
+                self.assertEqual(review_round.review_action(candidate, policy()), "FIX")
+                candidate["dispositions"] = {"F1": "fixed"}
+                self.assertEqual(
+                    review_round.review_action(candidate, policy()), "HUMAN_REVIEW"
+                )
+        candidate = record("Low", 6)
         candidate["dispositions"] = {}
-        self.assertEqual(review_round.review_action(candidate, policy()), "STOP")
-        candidate = record("Medium", 3)
-        candidate["dispositions"] = {}
-        self.assertEqual(review_round.review_action(candidate, policy()), "FIX")
+        self.assertEqual(review_round.review_action(candidate, policy(), 6), "FIX")
 
     def test_approval_cannot_hide_material_finding(self):
         for level in ("High", "Medium"):
             candidate = record(level)
             candidate["results"][0]["verdict"] = "APPROVE"
             with self.subTest(level=level), self.assertRaises(ValueError):
+                review_round.review_action(candidate, policy())
+
+
+def noted_record(severity, stage):
+    item = record(severity, stage=stage)
+    item["results"][0]["findings"][0]["security"] = False
+    item["dispositions"] = {"F1": "noted"}
+    item["dispositionEvidence"] = {
+        "F1": "No COS fails without it; the fix adds a paragraph and a new digest."
+    }
+    return item
+
+
+class TriageTests(unittest.TestCase):
+    def test_noted_closes_a_low_finding_without_a_fix_or_another_round(self):
+        for severity in ("Low", "Nit", "P3", "P4"):
+            for stage in ("plan-review", "ai-review", "sprint-review"):
+                with self.subTest(severity=severity, stage=stage):
+                    self.assertEqual(
+                        review_round.review_action(
+                            noted_record(severity, stage), policy()
+                        ),
+                        "HUMAN_REVIEW",
+                    )
+
+    def test_noted_medium_is_valid_only_in_plan_review(self):
+        self.assertEqual(
+            review_round.review_action(noted_record("Medium", "plan-review"), policy()),
+            "HUMAN_REVIEW",
+        )
+        for stage in ("ai-review", "sprint-review"):
+            with self.subTest(stage=stage), self.assertRaises(ValueError):
+                review_round.review_action(noted_record("Medium", stage), policy())
+
+    def test_noted_never_closes_a_high_or_a_security_finding(self):
+        for severity in ("Critical", "High", "P0", "P1"):
+            with self.subTest(severity=severity), self.assertRaises(ValueError):
+                review_round.review_action(
+                    noted_record(severity, "plan-review"), policy()
+                )
+        for security in (True, None):
+            with self.subTest(security=security), self.assertRaises(ValueError):
+                candidate = noted_record("Low", "ai-review")
+                if security is None:
+                    del candidate["results"][0]["findings"][0]["security"]
+                else:
+                    candidate["results"][0]["findings"][0]["security"] = security
+                review_round.review_action(candidate, policy())
+
+    def test_noted_needs_a_recorded_reason(self):
+        candidate = noted_record("Low", "plan-review")
+        candidate["dispositionEvidence"] = {}
+        self.assertEqual(review_round.review_action(candidate, policy()), "FIX")
+
+    def test_invalid_noted_fails_even_when_another_disposition_is_missing(self):
+        candidate = noted_record("High", "ai-review")
+        second = {**finding("Low"), "id": "F2"}
+        candidate["results"][1] = {
+            **candidate["results"][1],
+            "findings": [second],
+            "verdict": "REVISE",
+        }
+        with self.assertRaises(ValueError):
+            review_round.review_action(candidate, policy())
+
+    def test_reviewer_notes_need_no_disposition(self):
+        candidate = record(stage="plan-review")
+        candidate["results"][0]["notes"] = ["Step 3 repeats the wording of step 2."]
+        self.assertEqual(review_round.review_action(candidate, policy()), "HUMAN_REVIEW")
+        for invalid in ("one note", [""], [{"text": "a note"}]):
+            with self.subTest(notes=invalid), self.assertRaises(ValueError):
+                candidate["results"][0]["notes"] = invalid
                 review_round.review_action(candidate, policy())
 
 

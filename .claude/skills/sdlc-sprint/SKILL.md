@@ -111,7 +111,10 @@ They are not part of `make check`.
 One primary agent owns the run from the approved start through the final close request. Finishing
 the last story triggers final validation, not an early hand-off. With `continuation: "manual"`, wait for the owner request before final validation. A close approval remains human.
 Record the next operation and retained task or PR watcher IDs before yielding. A completion event
-resumes that operation. A handoff transfers ownership explicitly and names the pending result.
+resumes that operation. Each pending operation needs a wake source before the turn ends, and a
+blocker that clears with time gets a scheduled recheck, not an owner stop
+(`sdlc-ticket/references/t3-runner.md` § Continuation ownership and § Timed holds). A turn that
+ends on a running gate stalls the sprint until the owner writes. A handoff transfers ownership explicitly and names the pending result.
 
 Before `POST /sprint/close`, require the local checker to return `CLOSE`. Its review checks are
 local workflow checks. The board server also permits direct UI closure and does not enforce the

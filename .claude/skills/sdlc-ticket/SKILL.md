@@ -94,7 +94,7 @@ Read the relevant file **before** executing the step — don't improvise the how
 | `references/exploration.md` | Intake is a raw idea, not a spec — coached brainstorm / brief / PRFAQ → brief in the epic |
 | `references/shaping.md` | Ticket in Backlog needs preparing for Gate 1 — the 8-item DoR (`readiness`, incl. the context-mémo bake), spikes, human decisions |
 | `references/quality-practices.md` | Pre-mortem on plans (Planning), findings triage + review-guide hand-off (Building), correct-course when a human pushes back |
-| `references/plan-recap.md` | **Planning, before the last plan-review audit** — the one-minute plan page for the human (`kind=plan-recap`, shown in the board's Plan tab): format, when to post and refresh it |
+| `references/plan-recap.md` | **Planning, before the last plan-review audit; in autonomous mode once, after the last round** — the one-minute plan page for the human (`kind=plan-recap`, shown in the board's Plan tab): format, when to post and refresh it |
 | `references/reviews.md` | **Before any `plan-review` or `ai-review` work** — round structure (initial inspection + decision audit), stage repeat policy and scope rule, pre-existing findings, delta inspection, security pass, four-round cap, refutation checks, researcher, round record + `scripts/review_round.py`, keeping review bounded |
 | `references/t3-runner.md` | **The session runs in T3 Code and a stage resolves to anything but `main-agent`** — `delegate_task` target, explicit effort, read-only caveat, output checks, escalation |
 | `references/codex-runner.md` | **A stage resolves to a `gpt-*` model outside T3** — `/codex:rescue`, brief files, job-record check, judging output, escalation ladder |
@@ -344,7 +344,10 @@ Each step is an agent action on the user's command. **Board ops = the board's HT
 #      complete plan in plain language, written by config.models.plan and checked by
 #      config.models.planReview (never by its author): audited in the last round — or, when that
 #      round's fixes changed what it says, rewritten and fidelity-checked (plan-recap.md step 2). It is what the
-#      human reads at Gate 2, in the board's Plan tab.
+#      human reads at Gate 2, in the board's Plan tab. In gates:"autonomous" it is written once,
+#      after the last round, with no audit and no fidelity check (plan-recap.md § When).
+#      REQUIRED SECTION — `Noted findings: <ID, severity, one-line reason>` or `none`
+#      (reviews.md § Triage below the repeat threshold). They go to the implementer as advice.
 #   If risk:low → skip to step 4.
 #   POST labels -agent:plan-review +needs:human
 #   ⛔ GATE 2 — wait for the human to transition Planning → Building.
@@ -399,6 +402,8 @@ Each step is an agent action on the user's command. **Board ops = the board's HT
 #   correctness in the behaviour the COS cover)→fix in PR, every in-scope occurrence of its
 #   bugClass, smallest change (`fixed`); incidental→new backlog ticket at any severity
 #   (`deferred`); rejected→stated reason, refutation check at the repeat threshold (`rejected`).
+#   Below the repeat threshold, run the cost test first (reviews.md § Triage below the repeat
+#   threshold): a valid Low or Nit that is not worth a change is `noted`, with its reason.
 #   Link repeats to earlier rounds with priorFinding. Before round 3, the approach check
 #   (reviews.md § One round step 8). Rebase on origin/main if behind; re-green.
 #   Never start a fix round in a worktree while a gate you launched there holds `.gate.lock` —
