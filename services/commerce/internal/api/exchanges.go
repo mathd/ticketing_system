@@ -122,29 +122,8 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		write(w, code, map[string]string{"error": message})
 		return
 	}
-	if found && existing.Settled && existing.Abandoned {
-		// A terminal abandonment (TKT-498, D24): the switch will never happen, so the replay
-		// repairs no switch obligation and answers `abandoned` with the original values.
-		writeExchange(w, existing, true)
-		return
-	}
 	if found && existing.Settled {
-		// Re-driving settlement is idempotent. It is normally a locked read, and it also
-		// repairs a settled row whose outbox obligation is absent without relying on rollout
-		// history to make that state impossible.
-		err := commercestore.CompleteExchangeSettlement(r.Context(), s.db, existing.OrganizerID, existing.ID, existing.ReplacementOrderID)
-		if errors.Is(err, commercestore.ErrExchangeAbandoned) {
-			// The abandonment finished after the lookup above (RA2-2): answer it as terminal.
-			existing.Abandoned = true
-			writeExchange(w, existing, true)
-			return
-		}
-		if err != nil {
-			slog.Default().ErrorContext(r.Context(), "repair settled exchange on replay", "exchange_id", existing.ID, "err", err)
-			write(w, 500, map[string]string{"error": "persist exchange"})
-			return
-		}
-		writeExchange(w, existing, true)
+		s.replaySettledExchange(w, r, existing)
 		return
 	}
 
@@ -186,6 +165,13 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 				slog.Default().ErrorContext(r.Context(), "resume exchange", "exchange_id", existing.ID, "err", err)
 			}
 			write(w, code, map[string]string{"error": message})
+			return
+		}
+		// Another request settled the exchange after the lookup above, and an abandonment may
+		// have finished since (R3-5). The settled replay answers it from Commerce: nothing
+		// forward is owed, and a terminal row answers `abandoned`.
+		if ex.Settled {
+			s.replaySettledExchange(w, r, ex)
 			return
 		}
 		// settling_at is best-effort, so NULL alone does not prove the provider was never
@@ -519,13 +505,47 @@ func (s *Server) completeExchangeFromBasis(w http.ResponseWriter, r *http.Reques
 		write(w, 500, map[string]string{"error": "persist exchange"})
 		return
 	}
-	if err := commercestore.CompleteExchangeSettlement(r.Context(), s.db, ex.OrganizerID, ex.ID, replacement); err != nil {
+	err = commercestore.CompleteExchangeSettlement(r.Context(), s.db, ex.OrganizerID, ex.ID, replacement)
+	ex.ReplacementOrderID, ex.Settled = replacement, true
+	if errors.Is(err, commercestore.ErrExchangeAbandoned) {
+		// Another request settled the exchange and its abandonment finished while this one ran
+		// its forward steps (R3-5). The locked read refused the settlement and the outbox write,
+		// so this answer is the terminal replay, not a failure.
+		ex.Abandoned = true
+		writeExchange(w, ex, true)
+		return
+	}
+	if err != nil {
 		slog.Default().ErrorContext(r.Context(), "complete exchange settlement", "err", err)
 		write(w, 500, map[string]string{"error": "persist exchange"})
 		return
 	}
-	ex.ReplacementOrderID, ex.Settled = replacement, true
 	writeExchange(w, ex, replay)
+}
+
+// replaySettledExchange answers a replay of a settled exchange from Commerce, with no dependency
+// call. Both settlement entry paths use it: the lookup that finds a settled row, and the basis
+// resume whose bind reloads one (R3-5).
+//
+// Settlement is re-driven, which is idempotent. It is normally a locked read, and it also repairs
+// a settled row whose outbox obligation is absent without relying on rollout history to make that
+// state impossible. Under the same row lock that the abandonment's terminal write takes, it
+// refuses a terminal row (TKT-498, RA2-2): the switch will never happen, so no switch obligation
+// is repaired, and the replay answers `abandoned` with the original values. That lock decides,
+// whether the abandonment finished before or after this request read the row.
+func (s *Server) replaySettledExchange(w http.ResponseWriter, r *http.Request, ex commercestore.Exchange) {
+	err := commercestore.CompleteExchangeSettlement(r.Context(), s.db, ex.OrganizerID, ex.ID, ex.ReplacementOrderID)
+	if errors.Is(err, commercestore.ErrExchangeAbandoned) {
+		ex.Abandoned = true
+		writeExchange(w, ex, true)
+		return
+	}
+	if err != nil {
+		slog.Default().ErrorContext(r.Context(), "repair settled exchange on replay", "exchange_id", ex.ID, "err", err)
+		write(w, 500, map[string]string{"error": "persist exchange"})
+		return
+	}
+	writeExchange(w, ex, true)
 }
 
 // shouldReleaseHoldOnBindError decides whether the hold this request took belongs to it.

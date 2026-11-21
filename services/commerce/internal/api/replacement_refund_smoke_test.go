@@ -102,6 +102,8 @@ type dependencyStub struct {
 	admissionStatus int
 	pause           chan struct{}
 	paused          chan struct{}
+	// pausePath limits the pause to the next call on this path; empty pauses the next call.
+	pausePath string
 }
 
 type stubCall struct {
@@ -124,7 +126,11 @@ func (s *dependencyStub) serve(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.calls = append(s.calls, stubCall{method: r.Method, path: r.URL.Path, organizer: r.URL.Query().Get("organizer_id"), body: body})
 	pause, paused := s.pause, s.paused
-	s.pause = nil
+	if pause != nil && (s.pausePath == "" || s.pausePath == r.URL.Path) {
+		s.pause = nil
+	} else {
+		pause = nil
+	}
 	issued, status := s.issued, s.admissionStatus
 	s.mu.Unlock()
 	if pause != nil {
@@ -173,9 +179,14 @@ func (s *dependencyStub) set(issued int32, status int) {
 // pauseNext blocks the next call until the returned release runs, and returns a channel that
 // closes when that call arrives.
 func (s *dependencyStub) pauseNext() (arrived <-chan struct{}, release func()) {
+	return s.pauseNextOn("")
+}
+
+// pauseNextOn is pauseNext for the next call on path only.
+func (s *dependencyStub) pauseNextOn(path string) (arrived <-chan struct{}, release func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.pause, s.paused = make(chan struct{}), make(chan struct{})
+	s.pause, s.paused, s.pausePath = make(chan struct{}), make(chan struct{}), path
 	p := s.pause
 	var once sync.Once
 	return s.paused, func() { once.Do(func() { close(p) }) }
@@ -194,7 +205,13 @@ func replacementRefundServer(t *testing.T, db *sql.DB, stub *dependencyStub) *Se
 // staffRefund answers the status and the decoded body, or a nil body when it is not JSON. It
 // does not fail the test itself, so a goroutine can call it.
 func staffRefund(t *testing.T, s *Server, org, order uuid.UUID, key string) (int, map[string]any) {
-	req := httptest.NewRequest(http.MethodPost, "/internal/orders/"+order.String()+"/refunds",
+	return staffRefundWithin(t, context.Background(), s, org, order, key)
+}
+
+// staffRefundWithin is staffRefund with a request context the test can cancel, as a caller's
+// deadline does.
+func staffRefundWithin(t *testing.T, ctx context.Context, s *Server, org, order uuid.UUID, key string) (int, map[string]any) {
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/internal/orders/"+order.String()+"/refunds",
 		bytes.NewBufferString(`{"quantity":2,"actor":"support","reason":"target slot cancelled"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Commerce-Staff-Write-Token", staffTok)
@@ -411,6 +428,86 @@ func TestAReplacementRefundPausedAfterBindingStopsBeforePaymentsOnceAbandonmentR
 	}
 	if got := refundStatus(t, db, ctx, f.organizer, commercestore.RefundID(f.organizer, key)); got != "pending" {
 		t.Fatalf("refund status = %q, want pending", got)
+	}
+}
+
+// RA3-2. The Back Office aborts a staff refund after 5 s (web/backoffice/src/lib/upstream.ts,
+// commerce.ts), and for an unswitched replacement the refund now reads Access before payments.
+// The abort cancels the request context. Each case cancels it while one call waits: the Access
+// read, or the payments call that the read delays. The refund stays pending under the same key,
+// and the same key replayed later converges: every payments call carries the refund's own id as
+// the leg key, so payments binds one leg.
+func TestAStaffRefundWhoseDeadlineCrossesConvergesOnReplay(t *testing.T) {
+	for _, tc := range []struct {
+		name, key, pausePath string
+		paymentsCalls        int
+	}{
+		{"during the Access read", "staff-deadline-access", "", 1},
+		{"during the payments call", "staff-deadline-payments", "/payments/internal/psp/partial-refund", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, ctx := exchangeAPIDB(t)
+			f := seedSettledReplacement(t, db, ctx)
+			stub := newDependencyStub(t)
+			s := replacementRefundServer(t, db, stub)
+			stub.set(f.quantity, http.StatusOK)
+			refundID := commercestore.RefundID(f.organizer, tc.key)
+			admissionPath := "/access/internal/orders/" + f.replacementOrder.String() + "/admission"
+			pausePath := tc.pausePath
+			if pausePath == "" {
+				pausePath = admissionPath
+			}
+
+			arrived, release := stub.pauseNextOn(pausePath)
+			defer release()
+			reqCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			done := make(chan int, 1)
+			go func() {
+				code, _ := staffRefundWithin(t, reqCtx, s, f.organizer, f.replacementOrder, tc.key)
+				done <- code
+			}()
+			select {
+			case <-arrived:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("the refund never reached %s", pausePath)
+			}
+			cancel() // The caller's deadline.
+			var code int
+			select {
+			case code = <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the cancelled refund never answered")
+			}
+			release()
+			if code == http.StatusOK {
+				t.Fatal("a refund whose caller gave up answered 200")
+			}
+			if got := refundStatus(t, db, ctx, f.organizer, refundID); got != "pending" {
+				t.Fatalf("refund status after the deadline = %q, want pending", got)
+			}
+
+			if code, body := staffRefund(t, s, f.organizer, f.replacementOrder, tc.key); code != http.StatusOK {
+				t.Fatalf("the replay = %d %v, want 200", code, body)
+			}
+			if got := refundStatus(t, db, ctx, f.organizer, refundID); got != "completed" {
+				t.Fatalf("refund status after the replay = %q, want completed", got)
+			}
+			var legKeys []any
+			for _, c := range stub.recorded() {
+				if c.path == "/payments/internal/psp/partial-refund" {
+					legKeys = append(legKeys, c.body["refund_key"])
+				}
+			}
+			if len(legKeys) != tc.paymentsCalls {
+				t.Fatalf("payments received %d partial refund call(s), want %d", len(legKeys), tc.paymentsCalls)
+			}
+			for _, k := range legKeys {
+				if k != refundID.String() {
+					t.Fatalf("partial refund leg keys = %v, want each to be the refund's own id %s", legKeys, refundID)
+				}
+			}
+		})
 	}
 }
 

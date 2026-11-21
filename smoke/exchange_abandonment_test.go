@@ -448,6 +448,24 @@ func commandPaymentsCalls(t *testing.T, ctx context.Context, traceID string) pay
 	}
 }
 
+// tracedRequests is one command run's requests to each dependency, on every route.
+type tracedRequests struct {
+	access, inventory, payments int
+}
+
+// commandRequests counts every request-log line that carries one command run's trace_id in
+// Access, inventory and payments (R3-6). Each service's request logger stamps the trace of every
+// request it serves (shared/go/obs), so a call on any route counts, listed or not.
+func commandRequests(t *testing.T, ctx context.Context, traceID string) tracedRequests {
+	t.Helper()
+	trace, request := `"trace_id":"`+traceID+`"`, `"msg":"request"`
+	return tracedRequests{
+		access:    serviceLogCount(t, ctx, "access", request, trace),
+		inventory: serviceLogCount(t, ctx, "inventory", request, trace),
+		payments:  serviceLogCount(t, ctx, "payments", request, trace),
+	}
+}
+
 // durableState is every durable effect of an abandonment, for a before/after comparison.
 type durableState struct {
 	abandonment                                          string
@@ -586,6 +604,13 @@ func abandonAndAssert(t *testing.T, ctx context.Context, x racedExchange) {
 		if first != want {
 			return fmt.Errorf("the first run's payments calls (trace %s) = %+v, want %+v", firstTrace, first, want)
 		}
+		// The all-route count sees the same run: two Access reads, one capacity return, and
+		// exactly the payments calls counted by route above. This is the positive control for
+		// the replay's zero below.
+		all := commandRequests(t, ctx, firstTrace)
+		if wantAll := (tracedRequests{access: 2, inventory: 1, payments: want.facts + want.refunds + want.operations + want.legs}); all != wantAll {
+			return fmt.Errorf("the first run's requests on every route (trace %s) = %+v, want %+v", firstTrace, all, wantAll)
+		}
 		return nil
 	})
 	if callsAfter.sourceAdmission-callsBefore.sourceAdmission != 1 || callsAfter.replacementAdmission-callsBefore.replacementAdmission != 1 {
@@ -611,22 +636,15 @@ func abandonAndAssert(t *testing.T, ctx context.Context, x racedExchange) {
 	if callsReplay != callsAfter {
 		t.Fatalf("the replay made remote calls: before %+v after %+v", callsAfter, callsReplay)
 	}
-	// The replay's payments calls, by its own trace, stay zero on every route. Watched for a few
-	// seconds, because a log line can arrive after the command returns.
+	// The replay's requests, by its own trace, stay zero in every dependency and on every route
+	// (R3-6). Watched for a few seconds, because a log line can arrive after the command returns.
 	replayTrace := commandTrace(t, againErr)
 	if replayTrace == firstTrace {
 		t.Fatalf("the replay reused the first run's trace %s", firstTrace)
 	}
 	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
-		replay := commandPaymentsCalls(t, ctx, replayTrace)
-		if replay.operations != 0 {
-			t.Fatalf("the replay (trace %s) made %d payments operation read(s), want 0", replayTrace, replay.operations)
-		}
-		if replay.legs != 0 {
-			t.Fatalf("the replay (trace %s) made %d payments refund-leg read(s), want 0", replayTrace, replay.legs)
-		}
-		if replay.facts != 0 || replay.refunds != 0 {
-			t.Fatalf("the replay (trace %s) made payments writes: %+v", replayTrace, replay)
+		if replay := commandRequests(t, ctx, replayTrace); replay != (tracedRequests{}) {
+			t.Fatalf("the replay (trace %s) made requests: %+v, want none", replayTrace, replay)
 		}
 	}
 	if replayState := readDurableState(t, ctx, x); replayState != after {

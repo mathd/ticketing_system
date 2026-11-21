@@ -133,10 +133,12 @@ contract is unchanged.
 **What counts as an Access answer.** Every Commerce admission read uses one Access caller: the
 exchange's pre-money check, the replacement refund dispatch check below, and both abandonment reads.
 That caller sends the shared internal token, which each call site names, and never follows a
-redirect. A redirect is an unresolved answer, and the redirect target receives no request. An answer
-with a duplicate member name, or with `admitted: true` and `issued_count: 0`, proves nothing: Access
-reports an admission only for one of the order's issued tickets. The pre-money check answers such a
-reply with its existing `502`.
+redirect. A redirect is an unresolved answer, and the redirect target receives no request. The answer
+is decoded exactly: both members, with names matched exactly and not null, and no unknown or
+duplicate member. A case variant such as `Issued_Count` is a different name, not a second value for
+`issued_count`. An answer that fails this rule, or with `admitted: true` and `issued_count: 0`,
+proves nothing: Access reports an admission only for one of the order's issued tickets. The
+pre-money check answers such a reply with its existing `502`.
 
 **Three branches, by the sign of the stored delta.** Every branch keeps the exchange, both orders and
 the two original gross facts, and returns the whole target claim to inventory under one receipt
@@ -213,10 +215,34 @@ and a same-organizer checkout that used the literal key `exchange:<id>` holds a 
 replacement's key. This prerequisite exists because of that alias; reconsider it when TKT-586 removes
 the alias. The abandonment refuses a completed replacement refund or one for which Payments holds a
 leg. Only Payments' own leg-absence answer counts as no leg; any other 404 stops the command for a
-retry. Every Payments, Access and inventory answer the command decodes refuses a duplicate member
-name. So a 404 or a typed `422 provider_refund_failed` that names a field twice is not evidence: it
-records nothing and the same command can retry. A pending replacement refund with that answer does not stop the abandonment, and stays
-pending afterwards.
+retry. A pending replacement refund with Payments' leg-absence answer does not stop the abandonment,
+and stays pending afterwards.
+
+The Back Office aborts a staff refund after 5 s, and for a replacement whose switch is not recorded
+the Access read runs inside that deadline. The deadline stays. When it crosses during the Access read
+or during the Payments call, the request is cancelled and the refund stays pending under the same
+key. The same key replayed later sends the refund's own id as the Payments leg key, so Payments binds
+one leg.
+
+**What counts as a Payments or inventory answer.** The command decodes every answer exactly: member
+names matched exactly, no unknown or duplicate member, no trailing content, and no null member.
+Payments omits a value it does not have; it never writes null. Then the answer must be one that its
+producer can write:
+
+- a found operation has a valid bind time; a resolved one has a fact id and no status-replay
+  deadline; only a resolved operation with status `captured` and the stored delta proves the
+  capture;
+- a confirmation pair (`confirmed_captured_amount` or `confirmed_amount`, and `confirmed_currency`)
+  is complete and agrees with the money, or is omitted on a legacy row; a refund leg that is not
+  completed carries none;
+- the typed failure is `422` with exactly `error: provider refund failed`,
+  `code: provider_refund_failed` and a `re_` provider reference;
+- a journal acknowledgment has a positive sequence, a boolean replay flag and a hash of 64
+  lowercase hex digits (a SHA-256 entry hash).
+
+Any other answer is not evidence. It records nothing, and the same command can retry. Only the typed
+`422` records the provider failure that stops the abandonment. The Commerce check of the journal
+acknowledgment is a shape check: chain verification stays in Payments, within ADR-021's limit.
 
 **Replacement voids.** A zero-gross replacement is reversed by a void, not a refund. Once the
 abandonment starts, the void binder refuses a fresh bind and a replay on the replacement order, with
@@ -225,10 +251,20 @@ the void's ticket obligation could never be discharged. An existing void row sta
 
 **The exchange replay.** A replay of the original exchange request after a terminal abandonment
 answers `200` with status `abandoned` and the original exchange and money values, and does not repair
-the switch outbox. A started abandonment that is not terminal still answers `switch_pending`. The
-replay decides under the exchange row lock that the terminal transaction also takes. A replay that
-read the exchange before the terminal commit therefore still answers `abandoned` and writes no
-outbox row.
+the switch outbox. A started abandonment that is not terminal still answers `switch_pending`. A
+replay reaches settlement by one of two entry paths, and both give this answer when the abandonment
+wins:
+
+- **Settled row.** The replay finds a settled exchange, or its basis bind reloads one because
+  another request settled it after the replay's first read. It answers from Commerce with no
+  dependency call: `abandoned` for a terminal row, otherwise the idempotent settlement repair.
+- **Unsettled basis.** The replay resumes from the basis and runs its forward steps. Its final
+  settlement decides under the exchange row lock that the terminal transaction also takes. If
+  another request settled the exchange and the abandonment finished in the meantime, the locked
+  read refuses the settlement and the outbox write, and the replay answers `abandoned`.
+
+So a replay that read the exchange before the terminal commit answers `abandoned`, makes no
+dependency call after it sees the terminal row, and writes no outbox row.
 
 **Attribution, and the adversary (ADR-021).** The command records the trimmed typed operator name,
 the reason, and the PostgreSQL `session_user`. Only the first name and reason pair can resume or

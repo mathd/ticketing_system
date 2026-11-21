@@ -60,9 +60,11 @@ type Inventory interface {
 	ReturnCapacity(ctx context.Context, org, hold, receipt uuid.UUID, quantity int32) (CapacityReturn, error)
 }
 
-// ChargeEvidence is payments' operation read. Found is false for its 404.
+// ChargeEvidence is payments' operation read. Found is false for its 404. Status is the
+// terminal result of a resolved operation.
 type ChargeEvidence struct {
 	Found, Resolved                 bool
+	Status                          string
 	CapturedAmount, ConfirmedAmount *int64
 	Currency, ConfirmedCurrency     *string
 }
@@ -149,7 +151,7 @@ const (
 	maxLegReadsPerInspection = maxReplacementQuantity + 1
 	// MaxRemoteCalls is the longest command, a fresh upgrade: two Access reads, the delta
 	// capture read, maxInspections inspections, then the abandonment leg read, the partial
-	// refund, the capacity return and the journal append.
+	// refund, the capacity return and the journal append. One of them is the partial refund.
 	MaxRemoteCalls = 2 + 1 + maxInspections*maxLegReadsPerInspection + 4
 	// DatabaseAllowance is the time for the command's Commerce transactions: at most twelve
 	// short ones (load, gross-fact check, a list and a reservation per inspection, two progress
@@ -158,9 +160,10 @@ const (
 )
 
 // CommandDeadline is the time one command run needs when each remote call takes its full
-// per-call timeout: MaxRemoteCalls of perCall, plus DatabaseAllowance.
-func CommandDeadline(perCall time.Duration) time.Duration {
-	return time.Duration(MaxRemoteCalls)*perCall + DatabaseAllowance
+// timeout: the one partial refund at refund, every other call at perCall, plus
+// DatabaseAllowance (R3-3).
+func CommandDeadline(perCall, refund time.Duration) time.Duration {
+	return time.Duration(MaxRemoteCalls-1)*perCall + refund + DatabaseAllowance
 }
 
 // Service is the operator path. It holds no lease and runs on no timer.
@@ -263,7 +266,8 @@ func (s *Service) verifyDeltaEvidence(ctx context.Context, e store.SettledExchan
 		if err != nil {
 			return err
 		}
-		if !op.Found || !op.Resolved || op.CapturedAmount == nil || op.Currency == nil {
+		// Payments records a successful charge as `captured` (server.go charge).
+		if !op.Found || !op.Resolved || op.Status != "captured" || op.CapturedAmount == nil || op.Currency == nil {
 			return fmt.Errorf("%w: exchange %s: no resolved capture under %s", ErrDeltaEvidence, e.ID, key)
 		}
 		if *op.CapturedAmount != e.DeltaAmount || *op.Currency != e.Currency ||

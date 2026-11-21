@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -131,6 +132,14 @@ func TestAbandonExchangeRefusesEachUnusableSettingBeforeAnyDependency(t *testing
 		{"INVENTORY_URL with a query", "INVENTORY_URL", "http://inventory:8080/?x=1", "INVENTORY_URL"},
 		{"INVENTORY_URL with an empty query", "INVENTORY_URL", "http://inventory:8080/?", "INVENTORY_URL"},
 		{"ACCESS_URL with a fragment", "ACCESS_URL", "http://access:8080/#x", "ACCESS_URL"},
+		// R3-4. A fragment delimiter anywhere, even with nothing after it, makes every appended
+		// path part of the fragment; an empty host or a port outside 1-65535 cannot be dialled.
+		{"ACCESS_URL with a bare fragment delimiter", "ACCESS_URL", "http://access:8080/#", "ACCESS_URL"},
+		{"INVENTORY_URL with a fragment delimiter before the slash", "INVENTORY_URL", "http://inventory:8080#/", "INVENTORY_URL"},
+		{"PAYMENTS_URL with an empty hostname", "PAYMENTS_URL", "http://:8080", "PAYMENTS_URL"},
+		{"ACCESS_URL with port 0", "ACCESS_URL", "http://access:0", "ACCESS_URL"},
+		{"INVENTORY_URL with port 65536", "INVENTORY_URL", "http://inventory:65536", "INVENTORY_URL"},
+		{"PAYMENTS_URL with an empty port", "PAYMENTS_URL", "http://payments:/", "PAYMENTS_URL"},
 		{"INTERNAL_SERVICE_TOKEN unset", "INTERNAL_SERVICE_TOKEN", "", "INTERNAL_SERVICE_TOKEN"},
 		{"PAYMENTS_INTERNAL_TOKEN unset", "PAYMENTS_INTERNAL_TOKEN", "", "PAYMENTS_INTERNAL_TOKEN"},
 		{"PAYMENTS_INTERNAL_TOKEN equal to the shared token", "PAYMENTS_INTERNAL_TOKEN", abandonInternalToken, "must not equal"},
@@ -169,13 +178,35 @@ func TestAbandonExchangeWithValidArgumentsReachesTheDatabase(t *testing.T) {
 	}
 }
 
-// R2-5. The command deadline covers the longest command at the per-call timeout: 160 remote
-// calls of 10 s (two Access reads, the delta read, three inspections of up to 51 leg reads, and
-// the abandonment leg read, refund, capacity return and journal append) plus 2 minutes of
-// database work. The value is written out so that a change to it is a visible decision.
-func TestAbandonExchangeDeadlineCoversTheLongestCommand(t *testing.T) {
-	if got, want := abandonDeadline(), 160*10*time.Second+2*time.Minute; got != want {
-		t.Fatalf("abandonDeadline() = %v, want %v", got, want)
+// R3-3. The delta refund has its own timeout, longer than the evidence-read timeout: payments
+// can list the provider's refunds, submit and read back before it answers. Both answers below
+// arrive one second after the evidence-read timeout, through the client the command builds. The
+// refund completes; the evidence read gives up at its own timeout, so the two timeouts are
+// distinct.
+func TestTheCommandRefundOutlastsTheEvidenceReadTimeout(t *testing.T) {
+	delay := paymentsEvidenceTimeout + time.Second
+	fact := uuid.New()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(delay)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"refunded","fact_id":"` + fact.String() + `","amount":1000,"currency":"EUR","replay":false}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := newAbandonClient(srv.URL, srv.URL, srv.URL, abandonInternalToken, abandonPaymentsToken)
+	ctx := context.Background()
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ChargeOperation(ctx, uuid.New(), "exchange-charge:x")
+		readErr <- err
+	}()
+	start := time.Now()
+	got, err := client.PartialRefund(ctx, exchangeabandon.RefundRequest{OrganizerID: uuid.New(),
+		ChargeKey: "exchange-charge:x", RefundKey: uuid.NewString(), Amount: 1000, Currency: "EUR"})
+	if err != nil || got.FactID != fact {
+		t.Fatalf("a refund answered after %v = %+v, %v; want the refunded answer", time.Since(start).Round(time.Millisecond), got, err)
+	}
+	if err := <-readErr; !errors.Is(err, exchangeabandon.ErrUnavailable) {
+		t.Fatalf("an evidence read answered after %v: err = %v, want ErrUnavailable at its own timeout", delay, err)
 	}
 }
 

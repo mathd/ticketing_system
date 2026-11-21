@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -256,6 +257,8 @@ func TestDeltaEvidenceThatDisagreesStopsBeforeTheReservation(t *testing.T) {
 	}{
 		{"upgrade capture under another key", upgradeUnit, func(w *world) { w.captureKey = "exchange-charge:" + uuid.NewString() }},
 		{"upgrade capture unresolved", upgradeUnit, func(w *world) { w.capture.Resolved = false }},
+		{"upgrade capture of another status", upgradeUnit, func(w *world) { w.capture.Status = "succeeded" }},
+		{"upgrade capture declined", upgradeUnit, func(w *world) { w.capture.Status = "declined" }},
 		{"upgrade capture without captured amount", upgradeUnit, func(w *world) { w.capture.CapturedAmount = nil }},
 		{"upgrade capture of another amount", upgradeUnit, func(w *world) { w.capture.CapturedAmount = i64(w.f.Delta + 1) }},
 		{"upgrade capture in another currency", upgradeUnit, func(w *world) { w.capture.Currency = str("USD") }},
@@ -827,39 +830,14 @@ func TestReplacementRefundsDecideTheReservation(t *testing.T) {
 			t.Fatalf("replacement refund status = %q (err %v), want pending", status, err)
 		}
 	})
-	t.Run("a refund bound between inspection and the locked recheck is inspected again", func(t *testing.T) {
-		db, ctx := abandonDB(t)
-		f := seed(t, db, ctx, upgradeUnit)
-		bindReplacementRefund(t, db, ctx, f, "first")
-		w := newWorld(t, f)
-		var late uuid.UUID
-		w.onReplacementLeg = func(string) {
-			if late == uuid.Nil {
-				late = bindReplacementRefund(t, db, ctx, f, "late")
-			}
-		}
-		mustAbandon(t, db, ctx, w)
-		w.mu.Lock()
-		var lateReads int
-		for i, c := range w.calls {
-			_ = i
-			if c == "payments:replacement-leg" {
-				lateReads++
-			}
-		}
-		w.mu.Unlock()
-		// First inspection: one leg read. Second inspection: both refunds.
-		if lateReads != 3 {
-			t.Fatalf("replacement leg reads = %d, want 3 (one, then both after the set changed)", lateReads)
-		}
-		assertTerminal(t, db, ctx, w)
-	})
 }
 
 // R2-5. A full valid refund set fits the command deadline. The replacement holds 50 units; 48
 // pending quantity-one refunds exist, and one more is bound during each of the first two
 // inspections, so the command inspects three times (48, 49 and 50 leg reads) and then completes.
-// With every remote call at its full timeout, the run still fits CommandDeadline.
+// Each late refund commits between an inspection and the locked recheck, so the read counts also
+// prove that the locked recheck sends the command back to inspect again. With every remote call at its full timeout (the refund at its own, R3-3), the run still fits
+// CommandDeadline. The two timeouts are the CLI's: 10 s per call and 35 s for the refund.
 func TestAFullValidRefundSetFitsTheCommandDeadline(t *testing.T) {
 	db, ctx := abandonDB(t)
 	f := seedQuantity(t, db, ctx, upgradeUnit, 50)
@@ -884,10 +862,10 @@ func TestAFullValidRefundSetFitsTheCommandDeadline(t *testing.T) {
 	if total != 2+1+147+4 {
 		t.Fatalf("the command made %d remote calls, want 154: %v", total, w.calls)
 	}
-	const perCall = 10 * time.Second
-	if worst := time.Duration(total)*perCall + DatabaseAllowance; worst > CommandDeadline(perCall) {
-		t.Fatalf("%d calls at %v each plus %v of database work = %v, over the %v deadline",
-			total, perCall, DatabaseAllowance, worst, CommandDeadline(perCall))
+	const perCall, refund = 10 * time.Second, 35 * time.Second
+	if worst := time.Duration(total-1)*perCall + refund + DatabaseAllowance; worst > CommandDeadline(perCall, refund) {
+		t.Fatalf("%d calls at %v each, the refund at %v, plus %v of database work = %v, over the %v deadline",
+			total-1, perCall, refund, DatabaseAllowance, worst, CommandDeadline(perCall, refund))
 	}
 }
 
@@ -937,7 +915,7 @@ func wireService(t *testing.T, db *sql.DB, w *world, route *string, status int, 
 		_, _ = rw.Write([]byte(body))
 	}))
 	t.Cleanup(srv.Close)
-	over := wireOver{world: w, client: NewHTTP(srv.URL, srv.URL, srv.URL, "internal", "payments", 5*time.Second), route: route}
+	over := wireOver{world: w, client: NewHTTP(srv.URL, srv.URL, srv.URL, "internal", "payments", 5*time.Second, 5*time.Second), route: route}
 	return New(db, over, over, w)
 }
 
@@ -982,6 +960,9 @@ func TestOnlyPaymentsLegAbsenceAnswerAdmitsAPendingReplacementRefund(t *testing.
 // or capacity call. Each refusal has a control that differs only in the refused property.
 func TestContradictoryEvidenceStopsBeforeTheReservation(t *testing.T) {
 	delta := strconv.FormatInt(int64(quantity)*(upgradeUnit-sourceUnit), 10)
+	// A producer-valid resolved capture (payments server.go operation).
+	capture := `{"resolved":true,"occurred_at":"2026-11-21T10:00:00Z","status":"captured",` +
+		`"fact_id":"7f1c1f3e-8f53-4b0c-9a51-0f8f0b2f5e11","captured_amount":` + delta + `,"currency":"EUR"}`
 	for _, tc := range []struct {
 		name, route string
 		status      int
@@ -992,8 +973,11 @@ func TestContradictoryEvidenceStopsBeforeTheReservation(t *testing.T) {
 		{"replacement admission control", "replacement-admission", 200, `{"admitted":false,"issued_count":0}`, false, true},
 		{"replacement admitted with no issued ticket", "replacement-admission", 200, `{"admitted":true,"issued_count":0}`, false, false},
 		{"replacement admission with a duplicate field", "replacement-admission", 200, `{"admitted":false,"issued_count":1,"issued_count":0}`, false, false},
-		{"delta capture control", "charge", 200, `{"resolved":true,"captured_amount":` + delta + `,"currency":"EUR"}`, false, true},
-		{"delta capture with a duplicate field", "charge", 200, `{"resolved":true,"captured_amount":1,"captured_amount":` + delta + `,"currency":"EUR"}`, false, false},
+		{"replacement admission with a case variant", "replacement-admission", 200, `{"admitted":false,"Issued_Count":0}`, false, false},
+		{"delta capture control", "charge", 200, capture, false, true},
+		{"delta capture with a duplicate field", "charge", 200, strings.Replace(capture, `"captured_amount":`, `"captured_amount":1,"captured_amount":`, 1), false, false},
+		{"delta capture with a case variant", "charge", 200, strings.Replace(capture, `"captured_amount":`, `"Captured_Amount":1,"captured_amount":`, 1), false, false},
+		{"delta capture with a null confirmation pair", "charge", 200, strings.Replace(capture, `}`, `,"confirmed_captured_amount":null,"confirmed_currency":null}`, 1), false, false},
 		{"leg absence with a duplicate field", "replacement-leg", 404, `{"error":"route","error":"refund leg not found"}`, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1031,7 +1015,7 @@ func TestAnAmbiguousProviderFailureStaysRetryable(t *testing.T) {
 	w := newWorld(t, f)
 	route := "partial-refund"
 	svc := wireService(t, db, w, &route, http.StatusUnprocessableEntity,
-		`{"error":"x","code":"other","code":"provider_refund_failed","provider_ref":"re_ambiguous"}`)
+		`{"error":"provider refund failed","code":"other","code":"provider_refund_failed","provider_ref":"re_ambiguous"}`)
 	if _, err := svc.Abandon(ctx, f.Org, f.Exchange, f.attribution()); !errors.Is(err, ErrUnavailable) || errors.Is(err, store.ErrAbandonmentRefundFailed) {
 		t.Fatalf("err = %v, want ErrUnavailable", err)
 	}

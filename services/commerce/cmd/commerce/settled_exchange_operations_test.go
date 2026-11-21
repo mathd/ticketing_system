@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +41,30 @@ func TestListSettledUnswitchedExchangesRefusesBadArgumentsWithoutReachingTheData
 	}
 	if n := dials(); n != 0 {
 		t.Errorf("a bad argument reached the database %d time(s); validation must refuse first", n)
+	}
+}
+
+// R3-4. pgx reads a blank connection string as the shell's PG* defaults, which can name another
+// database. The listing refuses a blank DATABASE_URL before it opens the database. PG* points at
+// the dial counter, so a connection made from the defaults would be counted.
+func TestListSettledUnswitchedExchangesRefusesABlankDatabaseURL(t *testing.T) {
+	dials := listenForDials(t)
+	u, err := url.Parse(os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{"PGHOST": u.Hostname(), "PGPORT": u.Port(), "PGUSER": "u",
+		"PGDATABASE": "db", "PGSSLMODE": "disable", "PGCONNECT_TIMEOUT": "2"} {
+		t.Setenv(name, value)
+	}
+	for _, value := range []string{"", "  "} {
+		t.Setenv("DATABASE_URL", value)
+		if err := listSettledUnswitchedExchanges([]string{uuid.NewString()}); err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
+			t.Errorf("with DATABASE_URL=%q: err = %v, want it to name DATABASE_URL", value, err)
+		}
+	}
+	if n := settled(dials); n != 0 {
+		t.Errorf("a blank DATABASE_URL reached a database %d time(s)", n)
 	}
 }
 

@@ -3,17 +3,21 @@ package exchangeabandon
 // The HTTP side of the abandonment command: Access's admission read, payments' evidence reads,
 // its partial refund and its journal append, and inventory's capacity return.
 //
-// The client decodes; the service judges. Every answer is decoded strictly: exactly one JSON
-// object of the declared shape, no unknown field, no duplicate member name, no trailing content.
-// An answer that does not decode is ErrUnavailable, never a verdict. A 404 is absence only when
-// it is the endpoint's own "not found" object, and a redirect is never followed. The HTTP
-// mechanics follow exchangeunwind and refundoutcome, whose rules came from review there.
+// The client decodes; the service judges. Every answer is decoded exactly: one JSON object of
+// the declared shape, member names matched exactly, no unknown or duplicate member, no trailing
+// content, and no null member. The client also refuses an answer that its producer cannot write
+// (the endpoint contract in services/payments/api/openapi.yaml and its handlers). An answer that
+// fails either rule is ErrUnavailable, never a verdict. A 404 is absence only when it is the
+// endpoint's own "not found" object, and a redirect is never followed. The HTTP mechanics follow
+// exchangeunwind and refundoutcome, whose rules came from review there.
 
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -34,16 +38,21 @@ const maxAnswerBytes = 64 << 10
 
 // HTTP reaches the three services. Payments takes its own credential; Access and inventory take
 // the internal token. Each call site names its credential: a configured URL never chooses it.
+//
+// Client's timeout bounds each read and the two short writes. RefundTimeout bounds the delta
+// refund POST alone, which can wait on several provider calls inside payments (R3-3).
 type HTTP struct {
 	Client                               *http.Client
+	RefundTimeout                        time.Duration
 	AccessURL, PaymentsURL, InventoryURL string
 	InternalToken, PaymentsToken         string
 }
 
-// NewHTTP builds the client with one timeout per call.
-func NewHTTP(accessURL, paymentsURL, inventoryURL, internalToken, paymentsToken string, timeout time.Duration) HTTP {
+// NewHTTP builds the client: timeout for each call, and refundTimeout for the delta refund.
+func NewHTTP(accessURL, paymentsURL, inventoryURL, internalToken, paymentsToken string, timeout, refundTimeout time.Duration) HTTP {
 	return HTTP{
 		Client:        &http.Client{Timeout: timeout},
+		RefundTimeout: refundTimeout,
 		AccessURL:     strings.TrimSuffix(accessURL, "/"),
 		PaymentsURL:   strings.TrimSuffix(paymentsURL, "/"),
 		InventoryURL:  strings.TrimSuffix(inventoryURL, "/"),
@@ -129,26 +138,46 @@ func absent(raw []byte, message string) bool {
 	var body struct {
 		Error *string `json:"error"`
 	}
-	return decodeStrict(raw, &body) == nil && body.Error != nil && *body.Error == message
+	return decodeExact(raw, &body) == nil && body.Error != nil && *body.Error == message
 }
 
-// decodeStrict accepts exactly one object of out's shape with no unknown field, no duplicate
-// member name and no trailing content. It decodes every evidence object here: the 404 absence
-// bodies, the typed 422, and the refund, fact and capacity answers (R2-3, RA2-4). encoding/json
-// keeps the last of duplicate names, so jsontext, which rejects them, checks the body first.
-func decodeStrict(raw []byte, out any) error {
-	if !jsontext.Value(raw).IsValid() {
-		return fmt.Errorf("%w: not one JSON value with unique member names", ErrUnavailable)
-	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(out); err != nil {
+// decodeExact accepts exactly one object of out's shape: member names matched exactly, no
+// unknown or duplicate member (escaped spellings included) and no trailing content. It decodes
+// every evidence object here (R2-3, RA2-4, R3-1). The v1 decoder matched names without regard to
+// case, so `resolved` and `Resolved` were two values for one field and the last one won.
+//
+// A required field is a pointer, so an absent or null member is nil and the caller refuses it.
+// A member the producer may omit is an optional, which refuses an explicit null.
+func decodeExact(raw []byte, out any) error {
+	if err := jsonv2.Unmarshal(raw, out, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return fmt.Errorf("%w: decode: %v", ErrUnavailable, err)
 	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("%w: trailing content after the answer", ErrUnavailable)
-	}
 	return nil
+}
+
+// optional is a member that the producer omits when it has no value. Set reports that the answer
+// carries it. Payments omits these keys and never writes null, so a null is refused: it must not
+// read as the legacy absence (RA3-1).
+type optional[T any] struct {
+	Set   bool
+	Value T
+}
+
+func (o *optional[T]) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
+	if dec.PeekKind() == 'n' {
+		return errors.New("an optional member is null; the producer omits it instead")
+	}
+	o.Set = true
+	return jsonv2.UnmarshalDecode(dec, &o.Value)
+}
+
+// pointer returns the value of a present member, or nil for an omitted one.
+func (o optional[T]) pointer() *T {
+	if !o.Set {
+		return nil
+	}
+	v := o.Value
+	return &v
 }
 
 // errorText returns a dependency's short error message, or nothing. An undecodable or long
@@ -186,27 +215,38 @@ func (h HTTP) ChargeOperation(ctx context.Context, org uuid.UUID, key string) (C
 	default:
 		return ChargeEvidence{}, fmt.Errorf("%w: payments operation read answered %d", ErrUnavailable, code)
 	}
+	// Payments writes resolved and occurred_at for every found operation; status and fact_id for a
+	// resolved one; the amounts for a captured one; the confirmation pair when the provider
+	// confirmed; and the status-replay deadline only for an unresolved one (server.go operation,
+	// psp.go statusReplayDeadline).
 	var body struct {
-		Resolved                *bool           `json:"resolved"`
-		OccurredAt              json.RawMessage `json:"occurred_at"`
-		Status                  *string         `json:"status"`
-		FactID                  *uuid.UUID      `json:"fact_id"`
-		CapturedAmount          *int64          `json:"captured_amount"`
-		Currency                *string         `json:"currency"`
-		ConfirmedCapturedAmount *int64          `json:"confirmed_captured_amount"`
-		ConfirmedCurrency       *string         `json:"confirmed_currency"`
-		StatusReplayDeadlineAt  json.RawMessage `json:"status_replay_deadline_at"`
+		Resolved                *bool               `json:"resolved"`
+		OccurredAt              *time.Time          `json:"occurred_at"`
+		Status                  optional[string]    `json:"status"`
+		FactID                  optional[uuid.UUID] `json:"fact_id"`
+		CapturedAmount          optional[int64]     `json:"captured_amount"`
+		Currency                optional[string]    `json:"currency"`
+		ConfirmedCapturedAmount optional[int64]     `json:"confirmed_captured_amount"`
+		ConfirmedCurrency       optional[string]    `json:"confirmed_currency"`
+		StatusReplayDeadlineAt  optional[time.Time] `json:"status_replay_deadline_at"`
 	}
-	if err := decodeStrict(raw, &body); err != nil {
+	if err := decodeExact(raw, &body); err != nil {
 		return ChargeEvidence{}, err
 	}
-	if body.Resolved == nil {
+	switch {
+	case body.Resolved == nil:
 		return ChargeEvidence{}, fmt.Errorf("%w: payments operation read has no resolved field", ErrUnavailable)
+	case body.OccurredAt == nil || body.OccurredAt.IsZero():
+		return ChargeEvidence{}, fmt.Errorf("%w: payments operation read has no bind time", ErrUnavailable)
+	case *body.Resolved && (!body.FactID.Set || body.FactID.Value == uuid.Nil):
+		return ChargeEvidence{}, fmt.Errorf("%w: payments resolved operation has no fact id", ErrUnavailable)
+	case *body.Resolved && body.StatusReplayDeadlineAt.Set:
+		return ChargeEvidence{}, fmt.Errorf("%w: payments resolved operation carries a status-replay deadline", ErrUnavailable)
 	}
 	return ChargeEvidence{
-		Found: true, Resolved: *body.Resolved,
-		CapturedAmount: body.CapturedAmount, Currency: body.Currency,
-		ConfirmedAmount: body.ConfirmedCapturedAmount, ConfirmedCurrency: body.ConfirmedCurrency,
+		Found: true, Resolved: *body.Resolved, Status: body.Status.Value,
+		CapturedAmount: body.CapturedAmount.pointer(), Currency: body.Currency.pointer(),
+		ConfirmedAmount: body.ConfirmedCapturedAmount.pointer(), ConfirmedCurrency: body.ConfirmedCurrency.pointer(),
 	}, nil
 }
 
@@ -228,22 +268,27 @@ func (h HTTP) RefundLeg(ctx context.Context, org uuid.UUID, sourceKey, refundKey
 	default:
 		return LegEvidence{}, fmt.Errorf("%w: payments refund-leg read answered %d", ErrUnavailable, code)
 	}
+	// Payments sets the confirmation pair when the leg completes, and omits it on a bound leg and
+	// on a leg completed before its migration 0006 (refund_leg.go).
 	var body struct {
-		Completed         *bool   `json:"completed"`
-		Amount            *int64  `json:"amount"`
-		Currency          *string `json:"currency"`
-		ConfirmedAmount   *int64  `json:"confirmed_amount"`
-		ConfirmedCurrency *string `json:"confirmed_currency"`
+		Completed         *bool            `json:"completed"`
+		Amount            *int64           `json:"amount"`
+		Currency          *string          `json:"currency"`
+		ConfirmedAmount   optional[int64]  `json:"confirmed_amount"`
+		ConfirmedCurrency optional[string] `json:"confirmed_currency"`
 	}
-	if err := decodeStrict(raw, &body); err != nil {
+	if err := decodeExact(raw, &body); err != nil {
 		return LegEvidence{}, err
 	}
 	if body.Completed == nil || body.Amount == nil || body.Currency == nil {
 		return LegEvidence{}, fmt.Errorf("%w: payments refund-leg read is missing a declared field", ErrUnavailable)
 	}
+	if !*body.Completed && (body.ConfirmedAmount.Set || body.ConfirmedCurrency.Set) {
+		return LegEvidence{}, fmt.Errorf("%w: payments refund leg carries a confirmation but is not completed", ErrUnavailable)
+	}
 	return LegEvidence{
 		Found: true, Completed: *body.Completed, Amount: *body.Amount, Currency: *body.Currency,
-		ConfirmedAmount: body.ConfirmedAmount, ConfirmedCurrency: body.ConfirmedCurrency,
+		ConfirmedAmount: body.ConfirmedAmount.pointer(), ConfirmedCurrency: body.ConfirmedCurrency.pointer(),
 	}, nil
 }
 
@@ -253,7 +298,11 @@ func (h HTTP) RefundLeg(ctx context.Context, org uuid.UUID, sourceKey, refundKey
 // request. Everything else, and every answer that does not decode, is ErrUnavailable: payments
 // may have moved the money, and the same key resolves it on the next run.
 func (h HTTP) PartialRefund(ctx context.Context, r RefundRequest) (RefundAnswer, error) {
-	code, raw, err := h.payments(ctx, http.MethodPost, h.PaymentsURL+"/internal/psp/partial-refund", map[string]any{
+	client := *h.Client
+	client.Timeout = h.RefundTimeout
+	refund := h
+	refund.Client = &client
+	code, raw, err := refund.payments(ctx, http.MethodPost, h.PaymentsURL+"/internal/psp/partial-refund", map[string]any{
 		"organizer_id": r.OrganizerID, "idempotency_key": r.ChargeKey, "refund_key": r.RefundKey,
 		"amount": r.Amount, "currency": r.Currency,
 	})
@@ -268,7 +317,9 @@ func (h HTTP) PartialRefund(ctx context.Context, r RefundRequest) (RefundAnswer,
 			Code        string `json:"code"`
 			ProviderRef string `json:"provider_ref"`
 		}
-		if decodeStrict(raw, &failed) != nil || failed.Code != "provider_refund_failed" ||
+		// The producer's typed failure: exactly these three members and values (openapi.yaml
+		// ProviderRefundFailed, psp.go failedRefund422). Only this answer writes the stop marker.
+		if decodeExact(raw, &failed) != nil || failed.Error != "provider refund failed" || failed.Code != "provider_refund_failed" ||
 			!strings.HasPrefix(failed.ProviderRef, "re_") || len(failed.ProviderRef) <= len("re_") || len(failed.ProviderRef) > 255 {
 			return RefundAnswer{}, fmt.Errorf("%w: payments answered 422 without a typed provider failure", ErrUnavailable)
 		}
@@ -285,7 +336,7 @@ func (h HTTP) PartialRefund(ctx context.Context, r RefundRequest) (RefundAnswer,
 		Currency *string    `json:"currency"`
 		Replay   *bool      `json:"replay"`
 	}
-	if err := decodeStrict(raw, &body); err != nil {
+	if err := decodeExact(raw, &body); err != nil {
 		return RefundAnswer{}, err
 	}
 	if body.Status == nil || *body.Status != "refunded" || body.FactID == nil || *body.FactID == uuid.Nil ||
@@ -321,13 +372,23 @@ func (h HTTP) AppendFact(ctx context.Context, f store.ExchangeAbandonedFact) err
 		Hash     *string `json:"hash"`
 		Replay   *bool   `json:"replay"`
 	}
-	if err := decodeStrict(raw, &ack); err != nil {
+	if err := decodeExact(raw, &ack); err != nil {
 		return err
 	}
-	if ack.Sequence == nil || *ack.Sequence <= 0 || ack.Hash == nil || *ack.Hash == "" || ack.Replay == nil {
+	if ack.Sequence == nil || *ack.Sequence <= 0 || ack.Hash == nil || !isEntryHash(*ack.Hash) || ack.Replay == nil {
 		return fmt.Errorf("%w: payments journal acknowledgment is incomplete", ErrUnavailable)
 	}
 	return nil
+}
+
+// isEntryHash reports a journal entry hash as payments writes it: the lowercase hex of a SHA-256
+// digest (store.Hex of the entry hash), 64 digits.
+func isEntryHash(s string) bool {
+	if len(s) != 2*32 || strings.ToLower(s) != s {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
 }
 
 // ReturnCapacity posts `/internal/holds/{hold}/refund-capacity` with the abandonment's receipt
@@ -352,7 +413,7 @@ func (h HTTP) ReturnCapacity(ctx context.Context, org, hold, receipt uuid.UUID, 
 		UnreturnedQuantity *int32     `json:"unreturned_quantity"`
 		Replay             *bool      `json:"replay"`
 	}
-	if err := decodeStrict(raw, &body); err != nil {
+	if err := decodeExact(raw, &body); err != nil {
 		return CapacityReturn{}, err
 	}
 	if body.HoldID == nil || body.Quantity == nil || body.UnreturnedQuantity == nil || body.Replay == nil {

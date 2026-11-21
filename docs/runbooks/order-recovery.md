@@ -328,8 +328,8 @@ docker compose exec commerce /app list-settled-unswitched-exchanges <organizer-i
 #   settled_at=2026-11-20T09:30:00Z quantity=2 delta=+1000 EUR abandonment=none
 ```
 
-The command needs only `DATABASE_URL` and reads Commerce only, so it works while Access, Payments
-and Inventory are down. It exits **zero** when there is nothing to list. Rows are sorted by
+The command needs only `DATABASE_URL`, which must not be empty, and reads Commerce only, so it works
+while Access, Payments and Inventory are down. It exits **zero** when there is nothing to list. Rows are sorted by
 settlement time, then by exchange id.
 
 **The rows are candidates.** Commerce cannot see Access's tickets. A row can be a switch whose
@@ -375,7 +375,7 @@ service. It needs all of these, and the `commerce` container has them:
 
 - `DATABASE_URL`, not empty. An empty value would select the shell's PostgreSQL defaults.
 - `ACCESS_URL`, `PAYMENTS_URL` and `INVENTORY_URL`, each an absolute `http` or `https` base URL with
-  a host and no query or fragment.
+  a host name, a port in 1–65535 if it names one, no query, and no `#` anywhere.
 - `INTERNAL_SERVICE_TOKEN` for Access and inventory.
 - `PAYMENTS_INTERNAL_TOKEN` for Payments. It must be set and must differ from
   `INTERNAL_SERVICE_TOKEN`. There is no fallback to the shared token.
@@ -383,10 +383,12 @@ service. It needs all of these, and the `commerce` container has them:
 The operator name is 1–200 and the reason 1–500 characters after trimming.
 
 The command first prints `abandon-exchange trace_id=<id>` on stderr. Every service request log
-stamps that trace id on this run's calls, so you can find them. The run can take up to 28 min 40 s
-when every dependency is slow: up to 160 calls of 10 s each (three inspections of up to 51
-replacement refund legs) and 2 minutes of database work. A run stopped at that deadline keeps its
-recorded progress; run the same command again.
+stamps that trace id on this run's calls, so you can find them. The run can take up to 29 min 5 s
+when every dependency is slow: up to 159 calls of 10 s each (three inspections of up to 51
+replacement refund legs), the delta refund of up to 35 s, and 2 minutes of database work. The refund
+waits longer because Payments answers it only after its provider calls; 35 s is just over Payments'
+30 s default response-write deadline. A run stopped at a deadline keeps its recorded progress; run the
+same command again.
 
 What the command does, in this order:
 
@@ -450,7 +452,7 @@ organizer=… exchange=… source_order=… replacement_order=… target_hold=�
 | `REFUSED: exchange … is not a candidate` | The exchange is not settled, Access switched its tickets, its rows are inconsistent, or its gross journal facts disagree with it. A started abandonment whose rows became inconsistent is refused the same way before any further step. Nothing changed. | Not settled: use the [wedged exchange unwind](#wedged-exchange-operator-unwind). Switched: the [exchange obligation sweep](#exchange-obligation-sweep) owns it. Inconsistent rows or facts: treat as an incident. |
 | `REFUSED: Access does not prove an admitted source with an unissued replacement` | Access reports the source not admitted or not fully issued, or reports replacement tickets. Nothing changed. | Replacement tickets mean that the switch happened and its Commerce callback is late. Follow the failed-event procedure in [ticket lifecycle](./ticket-lifecycle.md). A source that is not admitted is not this procedure's case. |
 | `REFUSED: payments evidence for exchange … needs reconciliation first` | The delta charge or the downgrade refund does not match the exchange, a refund of the replacement completed, or Payments holds a leg for a pending refund of the replacement. | Reconcile by hand. Money can have moved on the replacement through the TKT-586 checkout-key alias. Do not abandon until it is understood. |
-| `INCOMPLETE: exchange … was not abandoned` | A dependency was unavailable, gave an answer that proves nothing (a redirect, a `404` that is not Payments' own "not found" answer, an answer that names a field twice, or an Access admission with no issued ticket), or refused one request. Every recorded step stays. | Clear the cause and run the **same** command again. |
+| `INCOMPLETE: exchange … was not abandoned` | A dependency was unavailable, gave an answer that proves nothing (a redirect, a `404` that is not Payments' own "not found" answer, an answer that is not exactly what the dependency writes, such as a field named twice, a case variant of a field name, a null field or a malformed journal hash, or an Access admission with no issued ticket), or refused one request. Every recorded step stays. | Clear the cause and run the **same** command again. |
 
 ### The provider refused the delta refund (TKT-588)
 

@@ -18,6 +18,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,9 +43,13 @@ func listSettledUnswitchedExchanges(args []string) error {
 		return fmt.Errorf("organizer id: %w", err)
 	}
 
+	dsn, err := requiredDatabaseURL()
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), operatorDBTimeout)
 	defer cancel()
-	db, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
 	}
@@ -109,12 +114,21 @@ func signedAmount(v int64) string {
 
 const abandonExchangeUsage = `usage: commerce abandon-exchange <organizer-id> <exchange-id> "<operator-name>" "<reason>"`
 
-// abandonDeadline bounds the whole command (R2-5, supersedes D21's 2 minutes). It is the
-// service's longest command, exchangeabandon.MaxRemoteCalls, at the per-call timeout
-// paymentsEvidenceTimeout, plus exchangeabandon.DatabaseAllowance: 28 min 40 s. A run that
-// stops at the deadline keeps its recorded progress, and the same command resumes it.
+// partialRefundTimeout bounds the delta refund POST (R3-3). Payments answers it only after its
+// provider work: the Stripe adapter lists the payment's refunds, submits and reads the refund
+// back, each call with its own 15 s budget. Payments' response-write deadline
+// (HTTP_WRITE_TIMEOUT, 30 s by default) is the latest moment it can still answer, so a longer
+// client wait gains nothing. 35 s is that deadline plus 5 s for the connection and the transfer.
+// A Payments deployment with a longer write deadline is not waited for: the command stops as
+// unresolved, and the same refund key resolves it on the next run.
+const partialRefundTimeout = 35 * time.Second
+
+// abandonDeadline bounds the whole command (R2-5, R3-3). It is the service's longest command,
+// exchangeabandon.MaxRemoteCalls, with the partial refund at partialRefundTimeout and every other
+// call at paymentsEvidenceTimeout, plus exchangeabandon.DatabaseAllowance: 29 min 5 s. A run
+// that stops at the deadline keeps its recorded progress, and the same command resumes it.
 func abandonDeadline() time.Duration {
-	return exchangeabandon.CommandDeadline(paymentsEvidenceTimeout)
+	return exchangeabandon.CommandDeadline(paymentsEvidenceTimeout, partialRefundTimeout)
 }
 
 // abandonExchange abandons one settled exchange whose source Access admitted (TKT-498).
@@ -170,11 +184,9 @@ func abandonExchange(args []string) error {
 	if err != nil {
 		return err
 	}
-	// pgx reads an empty connection string as "use the PG* environment defaults", which can
-	// select another database (RA2-3).
-	dsn := strings.TrimSpace(os.Getenv("DATABASE_URL"))
-	if dsn == "" {
-		return errors.New("DATABASE_URL is required: an empty value would select the shell's PostgreSQL defaults")
+	dsn, err := requiredDatabaseURL()
+	if err != nil {
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), abandonDeadline())
@@ -192,8 +204,7 @@ func abandonExchange(args []string) error {
 		return err
 	}
 	_, _ = fmt.Fprintf(os.Stderr, "abandon-exchange trace_id=%s\n", traceID)
-	client := exchangeabandon.NewHTTP(accessURL, paymentsURL, inventoryURL, internalToken, paymentsToken, paymentsEvidenceTimeout).
-		WithTrace(traceID, spanID)
+	client := newAbandonClient(accessURL, paymentsURL, inventoryURL, internalToken, paymentsToken).WithTrace(traceID, spanID)
 	res, err := exchangeabandon.New(db, client, client, client).Abandon(ctx, org, exchangeID, attribution)
 	if err != nil {
 		reportAbandonRefusal(os.Stderr, exchangeID, res.Exchange, err)
@@ -207,6 +218,12 @@ func abandonExchange(args []string) error {
 	return nil
 }
 
+// newAbandonClient builds the command's client to Access, payments and inventory.
+func newAbandonClient(accessURL, paymentsURL, inventoryURL, internalToken, paymentsToken string) exchangeabandon.HTTP {
+	return exchangeabandon.NewHTTP(accessURL, paymentsURL, inventoryURL, internalToken, paymentsToken,
+		paymentsEvidenceTimeout, partialRefundTimeout)
+}
+
 // newCommandTrace returns a random W3C trace id and parent span id, as lowercase hex.
 func newCommandTrace() (traceID, spanID string, err error) {
 	var raw [24]byte
@@ -216,19 +233,43 @@ func newCommandTrace() (traceID, spanID string, err error) {
 	return hex.EncodeToString(raw[:16]), hex.EncodeToString(raw[16:]), nil
 }
 
-// serviceBaseURL reads one dependency's base URL. It accepts only an absolute http or https URL
-// with a host and no query or fragment, because each call appends its path to it.
+// requiredDatabaseURL reads DATABASE_URL for both settled-exchange commands. pgx reads an empty
+// connection string as "use the PG* environment defaults", which can select another database
+// (RA2-3, R3-4).
+func requiredDatabaseURL() (string, error) {
+	dsn := strings.TrimSpace(os.Getenv("DATABASE_URL"))
+	if dsn == "" {
+		return "", errors.New("DATABASE_URL is required: an empty value would select the shell's PostgreSQL defaults")
+	}
+	return dsn, nil
+}
+
+// serviceBaseURL reads one dependency's base URL. Each call appends its path to the value, so it
+// accepts only an absolute http or https URL with a non-empty host name, an explicit port (if
+// any) in 1-65535, no query, and no fragment delimiter anywhere: after a `#`, even a bare one,
+// the appended path is part of the fragment and is never sent (R3-4).
 func serviceBaseURL(name string) (string, error) {
 	raw := strings.TrimSuffix(os.Getenv(name), "/")
 	if raw == "" {
 		return "", fmt.Errorf("%s is required", name)
 	}
 	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" ||
-		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
-		return "", fmt.Errorf("%s must be an absolute http or https base URL with a host and no query or fragment", name)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" ||
+		u.RawQuery != "" || u.ForceQuery || strings.Contains(raw, "#") || !validPort(u) {
+		return "", fmt.Errorf("%s must be an absolute http or https base URL with a host name, a port in 1-65535 if any, "+
+			"and no query or fragment", name)
 	}
 	return raw, nil
+}
+
+// validPort accepts a URL with no explicit port, or with a decimal port in 1-65535. A host that
+// ends in a colon names an empty port.
+func validPort(u *url.URL) bool {
+	if !strings.HasSuffix(u.Host, ":") && u.Port() == "" {
+		return true
+	}
+	port, err := strconv.Atoi(u.Port())
+	return err == nil && port >= 1 && port <= 65535
 }
 
 func errOrNil(err error) error {

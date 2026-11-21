@@ -98,7 +98,7 @@ func (c *countingDependency) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	switch {
 	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/internal/operations"):
-		_, _ = fmt.Fprintf(w, `{"resolved":true,"occurred_at":"2026-11-21T10:00:00Z","status":"succeeded","fact_id":"%s","captured_amount":%d,"currency":"EUR"}`,
+		_, _ = fmt.Fprintf(w, `{"resolved":true,"occurred_at":"2026-11-21T10:00:00Z","status":"captured","fact_id":"%s","captured_amount":%d,"currency":"EUR"}`,
 			uuid.New(), c.delta)
 	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/internal/refund-legs"):
 		w.WriteHeader(http.StatusNotFound)

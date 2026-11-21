@@ -225,7 +225,7 @@ func newWorld(t *testing.T, f fixture) *world {
 	}
 	if f.Delta > 0 {
 		amount, currency := f.Delta, "EUR"
-		w.capture = ChargeEvidence{Found: true, Resolved: true, CapturedAmount: &amount, Currency: &currency}
+		w.capture = ChargeEvidence{Found: true, Resolved: true, Status: "captured", CapturedAmount: &amount, Currency: &currency}
 		w.captured = f.Delta
 	}
 	if f.Delta < 0 {

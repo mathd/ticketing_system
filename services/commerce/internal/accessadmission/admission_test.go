@@ -81,10 +81,15 @@ func TestReadRefusesEveryAnswerThatIsNotAWellFormed200(t *testing.T) {
 		// R2-3. Access reports an admission only for an issued ticket, so this is a contradiction,
 		// not "zero tickets".
 		{"admitted with no issued ticket", http.StatusOK, `{"admitted":true,"issued_count":0}`, nil},
-		// R2-3. encoding/json keeps the last of duplicate names; each case's last value is valid.
+		// R2-3. A decoder that kept the last of duplicate names would accept each case: its last value is valid.
 		{"duplicate admitted", http.StatusOK, `{"admitted":true,"admitted":false,"issued_count":2}`, nil},
 		{"duplicate issued_count", http.StatusOK, `{"admitted":false,"issued_count":0,"issued_count":2}`, nil},
 		{"duplicate name spelled with an escape", http.StatusOK, `{"admitted":false,"issued_count":0,"issued_\u0063ount":2}`, nil},
+		// R3-1. Member names match exactly. A case-insensitive decoder reads each of these as a
+		// second value for one field, and the last value is valid.
+		{"case variant of issued_count", http.StatusOK, `{"admitted":false,"issued_count":0,"Issued_Count":2}`, nil},
+		{"case variant of admitted", http.StatusOK, `{"admitted":true,"ADMITTED":false,"issued_count":2}`, nil},
+		{"case variant alone", http.StatusOK, `{"Admitted":false,"issued_count":2}`, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls []recordedCall

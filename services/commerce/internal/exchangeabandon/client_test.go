@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -45,7 +46,7 @@ func wire(t *testing.T, status int, body string) (HTTP, *seenRequest) {
 		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(srv.Close)
-	return NewHTTP(srv.URL+"/access/", srv.URL+"/payments", srv.URL+"/inventory", "internal-token", "payments-token", 5*time.Second), seen
+	return NewHTTP(srv.URL+"/access/", srv.URL+"/payments", srv.URL+"/inventory", "internal-token", "payments-token", 5*time.Second, 5*time.Second), seen
 }
 
 func TestAdmissionUsesTheSharedReaderWithTheInternalToken(t *testing.T) {
@@ -61,15 +62,23 @@ func TestAdmissionUsesTheSharedReaderWithTheInternalToken(t *testing.T) {
 	}
 }
 
+// Producer-valid answers, from services/payments/internal/api/server.go (operation) and
+// refund_leg.go. A resolved capture carries its status, fact id and bind time, and no
+// status-replay deadline; a confirmation is a complete pair, or omitted on a legacy row.
+const (
+	factIDWire  = "7f1c1f3e-8f53-4b0c-9a51-0f8f0b2f5e11"
+	captureWire = `{"resolved":true,"occurred_at":"2026-11-21T10:00:00.123456Z","status":"captured",` +
+		`"fact_id":"` + factIDWire + `","captured_amount":1000,"currency":"EUR"`
+	opControl = captureWire + `,"confirmed_captured_amount":1000,"confirmed_currency":"EUR"}`
+	opLegacy  = captureWire + `}`
+)
+
 func TestChargeOperationReadsTheScopedKey(t *testing.T) {
 	org := uuid.New()
-	const full = `{"resolved":true,"occurred_at":"2026-11-21T10:00:00Z","status":"succeeded","fact_id":"` +
-		`7f1c1f3e-8f53-4b0c-9a51-0f8f0b2f5e11","captured_amount":1000,"currency":"EUR",` +
-		`"confirmed_captured_amount":1000,"confirmed_currency":"EUR","status_replay_deadline_at":"2026-12-21T10:00:00Z"}`
-	h, seen := wire(t, 200, full)
+	h, seen := wire(t, 200, opControl)
 	got, err := h.ChargeOperation(context.Background(), org, "exchange-charge:x")
-	if err != nil || !got.Found || !got.Resolved || *got.CapturedAmount != 1000 || *got.Currency != "EUR" ||
-		*got.ConfirmedAmount != 1000 || *got.ConfirmedCurrency != "EUR" {
+	if err != nil || !got.Found || !got.Resolved || got.Status != "captured" || *got.CapturedAmount != 1000 ||
+		*got.Currency != "EUR" || *got.ConfirmedAmount != 1000 || *got.ConfirmedCurrency != "EUR" {
 		t.Fatalf("evidence = %+v, %v", got, err)
 	}
 	if seen.method != http.MethodGet || seen.path != "/payments/internal/operations" || seen.token != "payments-token" ||
@@ -77,27 +86,50 @@ func TestChargeOperationReadsTheScopedKey(t *testing.T) {
 		t.Fatalf("request = %+v", seen)
 	}
 
-	legacy, _ := wire(t, 200, `{"resolved":true,"occurred_at":"2026-11-21T10:00:00Z","status":"succeeded","fact_id":"7f1c1f3e-8f53-4b0c-9a51-0f8f0b2f5e11","captured_amount":1000,"currency":"EUR"}`)
+	legacy, _ := wire(t, 200, opLegacy)
 	if got, err := legacy.ChargeOperation(context.Background(), org, "k"); err != nil || got.ConfirmedAmount != nil || got.ConfirmedCurrency != nil {
 		t.Fatalf("legacy evidence = %+v, %v; want absent confirmation", got, err)
+	}
+	// An unresolved operation carries no status or fact id, and can carry the deadline.
+	unresolved, _ := wire(t, 200, `{"resolved":false,"occurred_at":"2026-11-21T10:00:00Z","status_replay_deadline_at":"2026-11-22T10:00:00Z"}`)
+	if got, err := unresolved.ChargeOperation(context.Background(), org, "k"); err != nil || !got.Found || got.Resolved {
+		t.Fatalf("unresolved evidence = %+v, %v; want found and unresolved", got, err)
 	}
 	absent, _ := wire(t, 404, `{"error":"operation not found"}`)
 	if got, err := absent.ChargeOperation(context.Background(), org, "k"); err != nil || got.Found {
 		t.Fatalf("404 = %+v, %v; want not found", got, err)
 	}
+	// Each 200 case changes one property of the producer-valid control (R3-1, R3-2, RA3-1).
 	for _, tc := range []struct {
 		name, body string
 		status     int
 	}{
 		{"500", `{}`, 500},
 		{"409", `{}`, 409},
-		{"no resolved", `{"occurred_at":"x"}`, 200},
-		{"unknown field", `{"resolved":true,"extra":1}`, 200},
-		{"wrong type", `{"resolved":true,"captured_amount":"1000"}`, 200},
-		{"trailing", `{"resolved":true}{}`, 200},
+		{"no resolved", strings.Replace(opControl, `"resolved":true,`, ``, 1), 200},
+		{"null resolved", strings.Replace(opControl, `"resolved":true`, `"resolved":null`, 1), 200},
+		{"unknown field", strings.Replace(opControl, `}`, `,"extra":1}`, 1), 200},
+		{"wrong type", strings.Replace(opControl, `"captured_amount":1000`, `"captured_amount":"1000"`, 1), 200},
+		{"trailing", opControl + `{}`, 200},
+		{"case variant of a member", strings.Replace(opControl, `}`, `,"Captured_Amount":5}`, 1), 200},
+		{"case variant alone", strings.Replace(opControl, `"resolved"`, `"Resolved"`, 1), 200},
+		{"no occurred_at", strings.Replace(opControl, `"occurred_at":"2026-11-21T10:00:00.123456Z",`, ``, 1), 200},
+		{"null occurred_at", strings.Replace(opControl, `"2026-11-21T10:00:00.123456Z"`, `null`, 1), 200},
+		{"malformed occurred_at", strings.Replace(opControl, `"2026-11-21T10:00:00.123456Z"`, `"2026-11-21"`, 1), 200},
+		{"zero occurred_at", strings.Replace(opControl, `"2026-11-21T10:00:00.123456Z"`, `"0001-01-01T00:00:00Z"`, 1), 200},
+		{"resolved without fact_id", strings.Replace(opControl, `"fact_id":"`+factIDWire+`",`, ``, 1), 200},
+		{"resolved with the nil fact_id", strings.Replace(opControl, factIDWire, uuid.Nil.String(), 1), 200},
+		{"null fact_id", strings.Replace(opControl, `"`+factIDWire+`"`, `null`, 1), 200},
+		{"resolved with a status-replay deadline", strings.Replace(opControl, `}`, `,"status_replay_deadline_at":"2026-11-22T10:00:00Z"}`, 1), 200},
+		{"null status-replay deadline", strings.Replace(opControl, `}`, `,"status_replay_deadline_at":null}`, 1), 200},
+		{"null status", strings.Replace(opControl, `"status":"captured"`, `"status":null`, 1), 200},
+		{"null captured_amount", strings.Replace(opControl, `"captured_amount":1000`, `"captured_amount":null`, 1), 200},
+		{"null confirmation pair", captureWire + `,"confirmed_captured_amount":null,"confirmed_currency":null}`, 200},
+		{"null confirmed currency", captureWire + `,"confirmed_captured_amount":1000,"confirmed_currency":null}`, 200},
 		{"route-level 404", "404 page not found\n", 404},
 		{"404 with another message", `{"error":"not found"}`, 404},
 		{"404 with an extra field", `{"error":"operation not found","x":1}`, 404},
+		{"404 with a case variant", `{"Error":"operation not found"}`, 404},
 		{"404 with no body", ``, 404},
 	} {
 		h, _ := wire(t, tc.status, tc.body)
@@ -107,17 +139,29 @@ func TestChargeOperationReadsTheScopedKey(t *testing.T) {
 	}
 }
 
+const (
+	legWire    = `{"completed":true,"amount":700,"currency":"EUR"`
+	legControl = legWire + `,"confirmed_amount":700,"confirmed_currency":"EUR"}`
+)
+
 func TestRefundLegReadsTheScopedLeg(t *testing.T) {
 	org := uuid.New()
-	h, seen := wire(t, 200, `{"completed":true,"amount":700,"currency":"EUR"}`)
+	h, seen := wire(t, 200, legControl)
 	got, err := h.RefundLeg(context.Background(), org, "src-key", "exchange-refund:x")
-	if err != nil || !got.Found || !got.Completed || got.Amount != 700 || got.Currency != "EUR" || got.ConfirmedAmount != nil {
+	if err != nil || !got.Found || !got.Completed || got.Amount != 700 || got.Currency != "EUR" ||
+		*got.ConfirmedAmount != 700 || *got.ConfirmedCurrency != "EUR" {
 		t.Fatalf("leg = %+v, %v", got, err)
 	}
 	if seen.method != http.MethodGet || seen.path != "/payments/internal/refund-legs" || seen.token != "payments-token" ||
 		seen.query["organizer_id"] != org.String() || seen.query["source_idempotency_key"] != "src-key" ||
 		seen.query["refund_idempotency_key"] != "exchange-refund:x" {
 		t.Fatalf("request = %+v", seen)
+	}
+	for _, body := range []string{legWire + `}`, `{"completed":false,"amount":700,"currency":"EUR"}`} {
+		h, _ := wire(t, 200, body)
+		if got, err := h.RefundLeg(context.Background(), org, "a", "b"); err != nil || !got.Found || got.ConfirmedAmount != nil {
+			t.Fatalf("%s = %+v, %v; want a found leg with no confirmation", body, got, err)
+		}
 	}
 	absent, _ := wire(t, 404, `{"error":"refund leg not found"}`)
 	if got, err := absent.RefundLeg(context.Background(), org, "a", "b"); err != nil || got.Found {
@@ -128,14 +172,20 @@ func TestRefundLegReadsTheScopedLeg(t *testing.T) {
 		status     int
 	}{
 		{"503", `{}`, 503},
-		{"missing completed", `{"amount":700,"currency":"EUR"}`, 200},
-		{"missing amount", `{"completed":true,"currency":"EUR"}`, 200},
-		{"null currency", `{"completed":true,"amount":700,"currency":null}`, 200},
-		{"unknown field", `{"completed":true,"amount":700,"currency":"EUR","abandoned":true}`, 200},
+		{"missing completed", strings.Replace(legControl, `"completed":true,`, ``, 1), 200},
+		{"missing amount", strings.Replace(legControl, `"amount":700,`, ``, 1), 200},
+		{"null currency", strings.Replace(legControl, `"currency":"EUR"`, `"currency":null`, 1), 200},
+		{"unknown field", strings.Replace(legControl, `}`, `,"abandoned":true}`, 1), 200},
+		{"case variant of a member", strings.Replace(legControl, `}`, `,"Completed":false}`, 1), 200},
+		{"null confirmation pair", legWire + `,"confirmed_amount":null,"confirmed_currency":null}`, 200},
+		{"null confirmed amount", legWire + `,"confirmed_amount":null,"confirmed_currency":"EUR"}`, 200},
+		// Payments sets a confirmation only when the leg completes (RA3-1).
+		{"confirmation on an incomplete leg", strings.Replace(legControl, `"completed":true`, `"completed":false`, 1), 200},
 		{"not JSON", `leg`, 200},
 		{"route-level 404", "404 page not found\n", 404},
 		{"404 with another message", `{"error":"operation not found"}`, 404},
 		{"404 with an extra field", `{"error":"refund leg not found","x":1}`, 404},
+		{"404 with a case variant", `{"ERROR":"refund leg not found"}`, 404},
 		{"404 with no body", ``, 404},
 	} {
 		h, _ := wire(t, tc.status, tc.body)
@@ -173,10 +223,16 @@ func TestPartialRefundClassifiesEveryAnswer(t *testing.T) {
 		body   string
 		want   error
 	}{
-		{"422 without code", 422, `{"error":"x","provider_ref":"re_1"}`, ErrUnavailable},
-		{"422 wrong code", 422, `{"error":"x","code":"other","provider_ref":"re_1"}`, ErrUnavailable},
-		{"422 bare re_", 422, `{"error":"x","code":"provider_refund_failed","provider_ref":"re_"}`, ErrUnavailable},
-		{"422 not re_", 422, `{"error":"x","code":"provider_refund_failed","provider_ref":"ch_1"}`, ErrUnavailable},
+		// Each 422 case changes one property of the producer's typed failure (openapi.yaml
+		// ProviderRefundFailed, psp.go failedRefund422).
+		{"422 without code", 422, `{"error":"provider refund failed","provider_ref":"re_1"}`, ErrUnavailable},
+		{"422 wrong code", 422, `{"error":"provider refund failed","code":"other","provider_ref":"re_1"}`, ErrUnavailable},
+		{"422 bare re_", 422, `{"error":"provider refund failed","code":"provider_refund_failed","provider_ref":"re_"}`, ErrUnavailable},
+		{"422 not re_", 422, `{"error":"provider refund failed","code":"provider_refund_failed","provider_ref":"ch_1"}`, ErrUnavailable},
+		{"422 wrong error", 422, `{"error":"x","code":"provider_refund_failed","provider_ref":"re_1"}`, ErrUnavailable},
+		{"422 without error", 422, `{"code":"provider_refund_failed","provider_ref":"re_1"}`, ErrUnavailable},
+		{"422 with a case variant", 422, `{"error":"provider refund failed","Code":"x","code":"provider_refund_failed","provider_ref":"re_1"}`, ErrUnavailable},
+		{"422 with an unknown field", 422, `{"error":"provider refund failed","code":"provider_refund_failed","provider_ref":"re_1","x":1}`, ErrUnavailable},
 		{"409 exhausted ceiling", 409, `{"error":"refund legs would exceed the captured amount"}`, ErrRefused},
 		{"404 no operation", 404, `{"error":"operation not found"}`, ErrRefused},
 		{"502 unresolved", 502, `{"error":"provider refund unresolved"}`, ErrUnavailable},
@@ -186,6 +242,8 @@ func TestPartialRefundClassifiesEveryAnswer(t *testing.T) {
 		{"200 missing amount", 200, `{"status":"refunded","fact_id":"` + fact.String() + `","currency":"EUR","replay":false}`, ErrUnavailable},
 		{"200 unknown field", 200, `{"status":"refunded","fact_id":"` + fact.String() + `","amount":1000,"currency":"EUR","replay":false,"x":1}`, ErrUnavailable},
 		{"200 trailing", 200, `{"status":"refunded","fact_id":"` + fact.String() + `","amount":1000,"currency":"EUR","replay":false} x`, ErrUnavailable},
+		{"200 with a case variant", 200, `{"status":"refunded","fact_id":"` + fact.String() + `","amount":1000,"currency":"EUR","replay":false,"Amount":1}`, ErrUnavailable},
+		{"200 null replay", 200, `{"status":"refunded","fact_id":"` + fact.String() + `","amount":1000,"currency":"EUR","replay":null}`, ErrUnavailable},
 	} {
 		h, _ := wire(t, tc.status, tc.body)
 		if _, err := h.PartialRefund(context.Background(), req); !errors.Is(err, tc.want) || errors.Is(err, ErrProviderRefundFailed) {
@@ -200,7 +258,10 @@ func TestAppendFactSendsTheCanonicalEnvelopeAndRequiresAnAcknowledgment(t *testi
 		Amount: 3200, Currency: "EUR", OccurredAt: time.Date(2026, 11, 21, 10, 0, 0, 123000, time.UTC),
 		SourceGross: 2200, DeltaAmount: 1000, RefundFactID: uuid.New(),
 	}
-	h, seen := wire(t, 200, `{"sequence":42,"hash":"ab12","replay":false}`)
+	// The producer's acknowledgment: hex of a SHA-256 entry hash (payments store.Hex), 64
+	// lowercase hex digits.
+	const hash = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+	h, seen := wire(t, 200, `{"sequence":42,"hash":"`+hash+`","replay":false}`)
 	if err := h.AppendFact(context.Background(), f); err != nil {
 		t.Fatal(err)
 	}
@@ -224,9 +285,16 @@ func TestAppendFactSendsTheCanonicalEnvelopeAndRequiresAnAcknowledgment(t *testi
 		{"400 invalid payload", 400, `{"error":"invalid fact"}`, ErrRefused},
 		{"409", 409, `{"error":"fact id reused with different content"}`, ErrRefused},
 		{"503", 503, `{}`, ErrUnavailable},
-		{"200 zero sequence", 200, `{"sequence":0,"hash":"ab","replay":false}`, ErrUnavailable},
+		{"200 zero sequence", 200, `{"sequence":0,"hash":"` + hash + `","replay":false}`, ErrUnavailable},
+		{"200 negative sequence", 200, `{"sequence":-1,"hash":"` + hash + `","replay":false}`, ErrUnavailable},
 		{"200 empty hash", 200, `{"sequence":1,"hash":"","replay":false}`, ErrUnavailable},
-		{"200 missing replay", 200, `{"sequence":1,"hash":"ab"}`, ErrUnavailable},
+		{"200 short hash", 200, `{"sequence":1,"hash":"` + hash[:62] + `","replay":false}`, ErrUnavailable},
+		{"200 long hash", 200, `{"sequence":1,"hash":"` + hash + `00","replay":false}`, ErrUnavailable},
+		{"200 uppercase hash", 200, `{"sequence":1,"hash":"` + strings.ToUpper(hash) + `","replay":false}`, ErrUnavailable},
+		{"200 hash that is not hex", 200, `{"sequence":1,"hash":"` + hash[:63] + `g","replay":false}`, ErrUnavailable},
+		{"200 missing replay", 200, `{"sequence":1,"hash":"` + hash + `"}`, ErrUnavailable},
+		{"200 null replay", 200, `{"sequence":1,"hash":"` + hash + `","replay":null}`, ErrUnavailable},
+		{"200 case variant", 200, `{"sequence":1,"hash":"` + hash + `","replay":false,"Sequence":2}`, ErrUnavailable},
 		{"200 not JSON", 200, `ok`, ErrUnavailable},
 	} {
 		h, _ := wire(t, tc.status, tc.body)
@@ -259,6 +327,7 @@ func TestReturnCapacityPostsTheReceiptAndDecodesStrictly(t *testing.T) {
 		{"500", 500, `{}`, ErrUnavailable},
 		{"missing remainder", 200, `{"hold_id":"` + hold.String() + `","quantity":2,"replay":false}`, ErrUnavailable},
 		{"unknown field", 200, `{"hold_id":"` + hold.String() + `","quantity":2,"unreturned_quantity":0,"replay":false,"x":1}`, ErrUnavailable},
+		{"case variant", 200, `{"hold_id":"` + hold.String() + `","quantity":2,"unreturned_quantity":2,"Unreturned_Quantity":0,"replay":false}`, ErrUnavailable},
 	} {
 		h, _ := wire(t, tc.status, tc.body)
 		if _, err := h.ReturnCapacity(context.Background(), org, hold, receipt, 2); !errors.Is(err, tc.want) {
@@ -268,8 +337,8 @@ func TestReturnCapacityPostsTheReceiptAndDecodesStrictly(t *testing.T) {
 }
 
 // R2-3, RA2-4. Every evidence object that can establish absence, failure or success refuses a
-// duplicate member name. encoding/json keeps the last value, so each body below would decode to a
-// valid answer: its last value is the one the method accepts.
+// duplicate member name. Each body is a producer-valid answer with one member named twice, and
+// its last value is the one the method accepts: a decoder that kept the last value would pass it.
 func TestEveryEvidenceObjectRefusesADuplicateMemberName(t *testing.T) {
 	org, fact, hold := uuid.New(), uuid.New(), uuid.New()
 	refund := RefundRequest{OrganizerID: org, ChargeKey: "exchange-charge:x", RefundKey: "rk", Amount: 1000, Currency: "EUR"}
@@ -294,7 +363,7 @@ func TestEveryEvidenceObjectRefusesADuplicateMemberName(t *testing.T) {
 			}
 			return err
 		}},
-		{"operation", 200, `{"resolved":false,"resolved":true,"captured_amount":1000,"currency":"EUR"}`, func(h HTTP) error {
+		{"operation", 200, strings.Replace(opControl, `"resolved":true`, `"resolved":false,"resolved":true`, 1), func(h HTTP) error {
 			_, err := h.ChargeOperation(context.Background(), org, "k")
 			return err
 		}},
@@ -309,7 +378,7 @@ func TestEveryEvidenceObjectRefusesADuplicateMemberName(t *testing.T) {
 			_, err := h.RefundLeg(context.Background(), org, "a", "b")
 			return err
 		}},
-		{"typed provider failure", 422, `{"error":"x","code":"other","code":"provider_refund_failed","provider_ref":"re_1"}`, func(h HTTP) error {
+		{"typed provider failure", 422, `{"error":"provider refund failed","code":"other","code":"provider_refund_failed","provider_ref":"re_1"}`, func(h HTTP) error {
 			_, err := h.PartialRefund(context.Background(), refund)
 			return err
 		}},
@@ -317,7 +386,7 @@ func TestEveryEvidenceObjectRefusesADuplicateMemberName(t *testing.T) {
 			_, err := h.PartialRefund(context.Background(), refund)
 			return err
 		}},
-		{"journal acknowledgment", 200, `{"sequence":0,"sequence":1,"hash":"ab","replay":false}`, func(h HTTP) error {
+		{"journal acknowledgment", 200, `{"sequence":0,"sequence":1,"hash":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08","replay":false}`, func(h HTTP) error {
 			return h.AppendFact(context.Background(), abandoned)
 		}},
 		{"capacity return", 200, `{"hold_id":"` + hold.String() + `","quantity":2,"unreturned_quantity":2,"unreturned_quantity":0,"replay":false}`, func(h HTTP) error {
@@ -348,7 +417,7 @@ func TestEachDependencyCallSendsItsOwnCredential(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	base := srv.URL + "/svc"
-	h := NewHTTP(base+"-access", base, base+"-inventory", "internal-token", "payments-token", 5*time.Second)
+	h := NewHTTP(base+"-access", base, base+"-inventory", "internal-token", "payments-token", 5*time.Second, 5*time.Second)
 	ctx, org, order, hold := context.Background(), uuid.New(), uuid.New(), uuid.New()
 	_, _ = h.Admission(ctx, org, order)
 	_, _ = h.ReturnCapacity(ctx, org, hold, uuid.New(), 1)
@@ -390,7 +459,7 @@ func TestARedirectIsUnresolvedAndIsNotFollowed(t *testing.T) {
 		origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, target.URL+r.URL.Path, code)
 		}))
-		h := NewHTTP(origin.URL, origin.URL+"/payments", origin.URL+"/inventory", "internal-token", "payments-token", 5*time.Second)
+		h := NewHTTP(origin.URL, origin.URL+"/payments", origin.URL+"/inventory", "internal-token", "payments-token", 5*time.Second, 5*time.Second)
 		ctx, org := context.Background(), uuid.New()
 		calls := map[string]error{}
 		_, calls["admission"] = h.Admission(ctx, org, uuid.New())
@@ -433,7 +502,7 @@ func TestWithTraceSendsTheCommandTraceOnEveryCall(t *testing.T) {
 		_, _ = h.PartialRefund(ctx, RefundRequest{OrganizerID: org, ChargeKey: "k", RefundKey: "r", Amount: 1, Currency: "EUR"})
 		_ = h.AppendFact(ctx, store.ExchangeAbandonedFact{ID: uuid.New(), OrganizerID: org})
 	}
-	h := NewHTTP(srv.URL+"/access", srv.URL+"/payments", srv.URL+"/inventory", "internal-token", "payments-token", 5*time.Second)
+	h := NewHTTP(srv.URL+"/access", srv.URL+"/payments", srv.URL+"/inventory", "internal-token", "payments-token", 5*time.Second, 5*time.Second)
 	call(h.WithTrace(trace, span))
 	mu.Lock()
 	if len(seen) != 6 {

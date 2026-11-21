@@ -18,13 +18,10 @@
 package accessadmission
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -102,24 +99,17 @@ func Read(ctx context.Context, call Caller, accessURL string, order, organizer u
 // decode accepts exactly one object with both declared fields, each of its declared type, no
 // unknown field, no duplicate member name, no trailing content, an issued count in 0-50, and no
 // admission without an issued ticket.
+//
+// encoding/json/v2 matches member names exactly and refuses a duplicate name, escaped spellings
+// included. The v1 decoder matches names without regard to case, so `issued_count` and
+// `Issued_Count` were two values for one field and the last one won (R2-3, R3-1).
 func decode(body []byte) (Admission, error) {
-	// encoding/json keeps the last of duplicate names, so a body that names a field twice could
-	// decode to either value. jsontext rejects duplicate names, escaped spellings included (R2-3).
-	if !jsontext.Value(body).IsValid() {
-		return Admission{}, fmt.Errorf("%w: not one JSON value with unique member names", ErrUnavailable)
-	}
 	var answer struct {
 		Admitted    *bool  `json:"admitted"`
 		IssuedCount *int32 `json:"issued_count"`
 	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&answer); err != nil {
+	if err := json.Unmarshal(body, &answer, json.RejectUnknownMembers(true)); err != nil {
 		return Admission{}, fmt.Errorf("%w: decode: %v", ErrUnavailable, err)
-	}
-	var trailing any
-	if decoder.Decode(&trailing) != io.EOF {
-		return Admission{}, fmt.Errorf("%w: trailing content after the summary", ErrUnavailable)
 	}
 	if answer.Admitted == nil || answer.IssuedCount == nil {
 		return Admission{}, fmt.Errorf("%w: a declared field is missing or null", ErrUnavailable)

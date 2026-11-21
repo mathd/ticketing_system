@@ -94,11 +94,11 @@ type SettledExchange struct {
 	AbandonedAt                 time.Time
 
 	// What the joins found. Unexported: only consistencyError reads them.
-	sourceInOrg, replacementFound, replacementInOrg bool
-	sourceQuantity, replacementQuantity             int32
-	replacementOrderStatus, replacementStatus       string
-	replacementOrderReservation                     uuid.UUID
-	replacementHold                                 uuid.UUID
+	sourceInOrg, replacementFound             bool
+	sourceQuantity, replacementQuantity       int32
+	replacementOrderStatus, replacementStatus string
+	replacementOrderReservation               uuid.UUID
+	replacementHold                           uuid.UUID
 }
 
 // settledExchangeSelect reads one exchange with its source and replacement lines. The caller
@@ -123,7 +123,7 @@ const settledExchangeSelect = `
 	       sr.id, sr.hold_id, sr.buyer_id, sr.quantity,
 	       CASE WHEN rr.id IS NOT NULL THEN ro.id END, CASE WHEN rr.id IS NOT NULL THEN ro.idempotency_key END,
 	       CASE WHEN rr.id IS NOT NULL THEN ro.status END, CASE WHEN rr.id IS NOT NULL THEN ro.reservation_id END,
-	       rr.id, rr.hold_id, rr.quantity, rr.status
+	       rr.hold_id, rr.quantity, rr.status
 	FROM order_exchanges x
 	JOIN orders so ON so.id = x.source_order_id
 	LEFT JOIN reservations sr ON sr.id = so.reservation_id AND sr.organizer_id = x.organizer_id
@@ -139,7 +139,7 @@ func scanSettledExchange(s rowScanner) (SettledExchange, error) {
 	var replacementOrder, replacementReservation, targetHold uuid.NullUUID
 	var targetTotal, delta sql.NullInt64
 	var settledAt, switchedAt sql.NullTime
-	var srID, srHold, srBuyer, roID, roReservation, rrID, rrHold uuid.NullUUID
+	var srID, srHold, srBuyer, roID, roReservation, rrHold uuid.NullUUID
 	var srQty, rrQty sql.NullInt32
 	var soKey, roKey, roStatus, rrStatus sql.NullString
 	var startedAt, returnedAt, abandonedAt sql.NullTime
@@ -155,7 +155,7 @@ func scanSettledExchange(s rowScanner) (SettledExchange, error) {
 		&soKey,
 		&srID, &srHold, &srBuyer, &srQty,
 		&roID, &roKey, &roStatus, &roReservation,
-		&rrID, &rrHold, &rrQty, &rrStatus); err != nil {
+		&rrHold, &rrQty, &rrStatus); err != nil {
 		return SettledExchange{}, err
 	}
 	e.ReplacementOrderID, e.ReplacementReservationID, e.TargetHoldID = replacementOrder.UUID, replacementReservation.UUID, targetHold.UUID
@@ -166,7 +166,6 @@ func scanSettledExchange(s rowScanner) (SettledExchange, error) {
 	e.SourceReservationID, e.SourceHoldID, e.BuyerID, e.sourceQuantity = srID.UUID, srHold.UUID, srBuyer.UUID, srQty.Int32
 	e.replacementFound = roID.Valid
 	e.ReplacementPaymentKey, e.replacementOrderStatus, e.replacementOrderReservation = roKey.String, roStatus.String, roReservation.UUID
-	e.replacementInOrg = rrID.Valid
 	e.replacementHold, e.replacementQuantity, e.replacementStatus = rrHold.UUID, rrQty.Int32, rrStatus.String
 	e.AbandonmentStarted, e.AbandonmentStartedAt = startedAt.Valid, startedAt.Time.UTC()
 	e.AbandonmentOperator, e.AbandonmentSessionUser, e.AbandonmentReason = operator.String, sessionUser.String, reason.String
@@ -190,31 +189,32 @@ func (e SettledExchange) stateError() error {
 
 // consistencyError judges the source and replacement rows against the candidate definition.
 //
-// Each check after a presence check reads its row only when the row is present, so that every
-// input class is refused by exactly one predicate and its message names the actual defect: an
-// absent reservation reads as quantity 0, which would otherwise also fail the quantity check.
+// The cases run in order, and each presence check comes before the checks that read its row, so
+// every input class is refused by exactly one predicate and its message names the actual defect:
+// an absent reservation reads as quantity 0, which would otherwise also fail the quantity check.
 // An unsettled row has no replacement order (0010's settlement shape), so the listing's
 // exclusion of unsettled rows is the `replacement order is missing` check. The loader projects
 // the replacement order only through a reservation in the organizer, so a replacement
-// reservation in another organizer also reads as a missing replacement order.
+// reservation in another organizer also reads as a missing replacement order, and a found
+// replacement order has its reservation in the organizer.
 func (e SettledExchange) consistencyError() error {
 	reason := ""
 	switch {
 	case !e.sourceInOrg:
 		reason = "the source reservation is not in the exchange's organizer"
-	case e.sourceInOrg && e.sourceQuantity != e.Quantity:
+	case e.sourceQuantity != e.Quantity:
 		reason = "the source reservation's quantity differs from the exchange's"
 	case !e.replacementFound:
 		reason = "the replacement order is missing, or its reservation is not in the exchange's organizer"
-	case e.replacementFound && e.replacementOrderReservation != e.ReplacementReservationID:
+	case e.replacementOrderReservation != e.ReplacementReservationID:
 		reason = "the replacement order is on another reservation than the exchange records"
-	case e.replacementFound && e.replacementOrderStatus != "completed":
+	case e.replacementOrderStatus != "completed":
 		reason = "the replacement order did not complete"
-	case e.replacementInOrg && e.replacementStatus != "completed":
+	case e.replacementStatus != "completed":
 		reason = "the replacement reservation did not complete"
-	case e.replacementInOrg && e.replacementQuantity != e.Quantity:
+	case e.replacementQuantity != e.Quantity:
 		reason = "the replacement reservation's quantity differs from the exchange's"
-	case e.replacementInOrg && e.replacementHold != e.TargetHoldID:
+	case e.replacementHold != e.TargetHoldID:
 		reason = "the replacement reservation does not hold the target hold"
 	case e.SourceHoldID == e.TargetHoldID:
 		reason = "the source and target holds are the same hold"

@@ -517,8 +517,3 @@ marker through the real refund unit and a real Commerce database, and asserts th
 order and `refunded`. `cmd/commerce` `TestProductionWorkerConstructionPassesEachClaimItsBatchAndLease`
 asserts the lease at `Store.Claim`: 225 s at batch 3 and an 11 s timeout. Setting
 `MaxCallsPerOrder = 4` turns both red. No call latency was measured for this decision.
-
-### Integrity language, unchanged (ADR-021)
-
-The attempt count, the lease and the claim id are commerce database state. This is honest-writer
-consistency, not a guarantee against a writer with access to the commerce database.
