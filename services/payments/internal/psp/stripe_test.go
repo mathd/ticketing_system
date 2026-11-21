@@ -867,6 +867,16 @@ func TestStripeRefundPostSuccessIsReReadFromTheCurrentRefund(t *testing.T) {
 				t.Fatalf("Refund = %+v err=%v, want Unknown", got, err)
 			}
 		}, 1},
+		{"the re-read is not a refund object", posted, stubResp{200, `{"id":"re_cached","object":"charge","amount":1250,"currency":"eur","status":"succeeded","payment_intent":"pi_test_authonly"}`}, func(t *testing.T, got Result, err error) {
+			if err == nil || got.Outcome != Unknown || got.ProviderRef != "re_cached" {
+				t.Fatalf("Refund = %+v err=%v, want Unknown for re_cached: a charge object does not confirm a refund", got, err)
+			}
+		}, 1},
+		{"the re-read has no object type", posted, stubResp{200, `{"id":"re_cached","amount":1250,"currency":"eur","status":"succeeded","payment_intent":"pi_test_authonly"}`}, func(t *testing.T, got Result, err error) {
+			if err == nil || got.Outcome != Unknown {
+				t.Fatalf("Refund = %+v err=%v, want Unknown: a missing object type does not confirm a refund", got, err)
+			}
+		}, 1},
 		{"the posted success has no id", `{"object":"refund","amount":1250,"currency":"eur","status":"succeeded","payment_intent":"pi_test_authonly"}`,
 			stubResp{200, current("succeeded", 1250, "eur")}, func(t *testing.T, got Result, err error) {
 				if err == nil || got.Outcome != Unknown {

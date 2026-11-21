@@ -477,9 +477,12 @@ error. Run this check as part of provider reconciliation for every refund closed
    in Stripe, all pages) and keep each refund whose `metadata.compensation_key` equals
    `compensation_stamp`.
 3. A `succeeded` refund in that list, or a leg with `status = 'refunded'` and a `fact_id` (a
-   `payment.refunded` journal fact), is an invariant violation: the provider returned money for an
-   attempt that an operator closed as refunded outside or abandoned. Stop all further money actions
-   on the order and its charge, and reconcile by hand with the buyer and the provider.
+   `payment.refunded` journal fact), is an invariant violation for an attempt that an operator
+   closed as refunded outside or abandoned. Stop all further money actions on the order and its
+   charge. A journal fact alone does not prove that money moved: the fact can record a success the
+   provider reported just before the refund failed. When the journal fact is the only signal,
+   confirm the refund's current state with the provider (`GET /v1/refunds/<re_ id>`) before you
+   reconcile by hand with the buyer and the provider.
 
 **Roll forward, not back.** Commerce migration 0027 refuses to roll back while `refund_outcomes` or
 `order_refund_abandonment_dispositions` holds a row, and Payments migration 0007 refuses while

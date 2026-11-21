@@ -442,6 +442,11 @@ func (s *Stripe) currentRefund(ctx context.Context, id string) (Result, error) {
 	if cur.ID != id {
 		return Result{Outcome: Unknown, ProviderRef: id}, fmt.Errorf("stripe refund re-read of %q returned %q", id, cur.ID)
 	}
+	// The retrieve must describe a refund: another object type with the same id, status and
+	// money is not evidence that money came back (TKT-525).
+	if cur.Object != "refund" {
+		return Result{Outcome: Unknown, ProviderRef: id}, fmt.Errorf("stripe refund re-read of %q returned object %q", id, cur.Object)
+	}
 	return mapRefundStatus(cur)
 }
 
