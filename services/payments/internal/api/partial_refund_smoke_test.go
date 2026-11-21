@@ -229,14 +229,14 @@ func (p *terminalKeysPSP) Refund(_ context.Context, _, idempotencyKey string, _ 
 // TestStripeRefundResolutionFailsClosedOnAFailedRefund in the psp package.
 func TestPartialRefundRepeatAfterTerminal422ReusesTheStoredProviderKey(t *testing.T) {
 	org, sourceKey := uuid.New(), "leg-terminal-repeat"
-	h, _ := refundServer(t, org, sourceKey, 2500)
+	_, _ = refundServer(t, org, sourceKey, 2500)
 	db, ctx := refundDB(t)
 	provider := &terminalKeysPSP{PSP: psp.NewFake()}
 	ring, err := store.NewKeyring("refund-key", []byte("payments-refund-leg-key-0123456"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	h = newTestServerWithPSP(store.New(db, ring), refundCredential, provider).Router(nil, true)
+	h := newTestServerWithPSP(store.New(db, ring), refundCredential, provider).Router(nil, true)
 
 	body := `{"organizer_id":"` + org.String() + `","idempotency_key":"` + sourceKey + `","refund_key":"refund-terminal-repeat","amount":1250,"currency":"EUR"}`
 	for attempt := 1; attempt <= 2; attempt++ {
