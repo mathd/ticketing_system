@@ -4,7 +4,7 @@ Date: 2026-11-20
 
 ## Status
 
-Accepted (TKT-525, owner decisions of 2026-10-12, plan decisions D7–D13, D15 and D16).
+Accepted (TKT-525, owner decisions of 2026-10-12, the TKT-525 plan decisions).
 
 Amends [ADR-032](ADR-032-stripe-behind-the-psp-port.md) §Amendment — a provider-failed refund is
 never re-submitted (TKT-347): the post-purchase refund path now has an operator route. The rule that
@@ -15,7 +15,7 @@ attempts count against both ceilings): a refund with a recorded `abandoned` outc
 (§12). ADR-037 §4 stays as written, including its rule against locks across provider calls. Qualifies
 [ADR-040](ADR-040-event-cancellation-bulk-refund-runs.md) §3 the same way.
 
-Delivery: TKT-525 is one PR in two slices (D7). Slice S1 is `refunded_outside` (§1–§9). Slice S2 is
+Delivery: TKT-525 is one PR in two slices. Slice S1 is `refunded_outside` (§1–§9). Slice S2 is
 `abandoned`: the Payments abandonment endpoint and marker write, the two ceiling exclusions, the
 dispatch refusal, the Commerce outcome, the bulk skip and the Back Office replacement (§10–§16).
 
@@ -45,7 +45,7 @@ The owner decided on 2026-10-12:
 
 ## Decision
 
-### 1. One append-only outcome table with a generic subject (D8)
+### 1. One append-only outcome table with a generic subject
 
 Commerce migration 0027 adds `refund_outcomes`, keyed by `(organizer_id, subject_kind, subject_id)`.
 TKT-525 writes only `subject_kind='order_refund'`. The table has no foreign key to `order_refunds`,
@@ -74,7 +74,7 @@ referenced columns, and stops unless exactly one matches. `order_refunds` gets:
 The Down locks `order_refunds` and then `refund_outcomes`, then refuses while any outcome exists.
 An empty Down restores the 0007 rule under the name `order_refunds_completion_check`.
 
-### 3. `refunded_outside` requires a read-only Payments proof first (D13)
+### 3. `refunded_outside` requires a read-only Payments proof first
 
 Commerce cannot tell from its own pending row whether money moved: Payments can complete a leg
 before Commerce records it. So the command asks Payments to prove the failure before it writes:
@@ -102,14 +102,14 @@ GET /internal/psp/partial-refund/failure-proof?organizer_id=&idempotency_key=&re
 The CLI requires the proof's amount and currency to equal the refund's. It makes no writing HTTP
 call.
 
-### 4. The completion writes no money fact (D15)
+### 4. The completion writes no money fact
 
 The owner calls the outcome "not a payments fact", citing ADR-032. The ordinary Commerce completion
 appends `order.refunded` to `order_facts` and forwards it to the Payments journal. Under this
 reading, an outside completion does neither. **Consumers of the Payments journal or of Commerce
 `order_facts` must read `refund_outcomes` for outside refunds.**
 
-### 5. One short transaction in the ordinary lock order (D16)
+### 5. One short transaction in the ordinary lock order
 
 The command inspects the refund in the organizer with no lock, asks Payments with no lock (ADR-037
 §4), then writes in one transaction. It locks the refund row and then the order row, the order
@@ -132,7 +132,7 @@ and reason) returns the original record with its original time and attribution, 
 Any other repeat is a conflict. A refund that Payments completed is ineligible. All four are
 answered from Commerce alone, with no Payments call.
 
-### 7. Attribution is honest-operator evidence (D9, ADR-003, ADR-021)
+### 7. Attribution is honest-operator evidence (ADR-003, ADR-021)
 
 The command records the typed operator name and PostgreSQL `session_user`, which the database reads
 on the writing connection. On the documented access path (`docker compose exec commerce …`),
@@ -159,7 +159,7 @@ proof refuses a marked leg, so an outside completion cannot follow an abandonmen
 committed. The Down locks `payment_operations`, then `payment_refund_legs`, then the marker table, and
 refuses while a marker exists.
 
-### 10. `abandoned`: Payments first, then Commerce (D10, D11)
+### 10. `abandoned`: Payments first, then Commerce
 
 ```
 commerce record-refund-outcome <organizer-id> <refund-id> abandoned <operator> <reason>
@@ -182,7 +182,7 @@ reference: Payments supplies the provider's `re_` for the failed refund.
 The first committed Commerce outcome supplies the recorded operator name and reason. An exact replay
 (same kind, operator name and reason) returns that record; the reference is not part of the command.
 
-### 11. The Payments abandonment endpoint and its marker transaction (D10)
+### 11. The Payments abandonment endpoint and its marker transaction
 
 The endpoint takes the organizer, the charge `idempotency_key`, a canonical UUID `refund_key`, and
 the expected `amount` and `currency`. It is behind the Payments internal credential only. It relies
@@ -228,7 +228,7 @@ existing provider idempotency key covers overlapping submissions under the provi
 contract. `TestPartialRefundDispatchRefusesAnAbandonedLeg` pins the 409 with no provider call. With
 the marker read removed, the same fixture answers 422 after one listing GET, and still makes no POST.
 
-### 14. Recovery after an uncertain answer (D11)
+### 14. Recovery after an uncertain answer
 
 There is no request table. A conclusive Payments 404 or 409 on a new abandonment leaves both
 services without a new record; the operator corrects the target, or reconciles the original leg, and
@@ -259,7 +259,7 @@ refuses (`refunds.ErrRefundAbandoned`) before any Payments call, and the runner 
 classification. If it commits after the bind, Payments' marker has committed first and dispatch
 answers 409. The `(slot, order)` key, attempt charges and terminal report snapshots are unchanged.
 
-### 16. Staff replacement through the Back Office (D12, owner decision of 2026-10-12)
+### 16. Staff replacement through the Back Office (owner decision of 2026-10-12)
 
 After a recorded `abandoned` outcome, staff can submit a new refund under a new key through the Back
 Office. The platform never re-submits automatically, and no operator command re-submits.
@@ -287,7 +287,7 @@ with a fresh key. A generic refusal and a different saved key keep the existing 
   on that deadline, rerun the failed job from the previous version before you continue.
 - Roll forward, not back, once either migration holds outcome or marker history. Both Downs refuse.
 - The quantity and money reports that read only `order_facts` or the Payments journal do not see an
-  outside refund (D15).
+  outside refund.
 - An operator can close a failed refund that nobody will refund. Each service releases only that
   refund's allowance, and staff can refund again under a new key. The abandoned row stays `pending`
   and its leg stays `bound`: both are history, not work.
