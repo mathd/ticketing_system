@@ -28,6 +28,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"ticketing/services/commerce/internal/accessadmission"
 	commercestore "ticketing/services/commerce/internal/store"
 )
 
@@ -53,6 +54,11 @@ var (
 	// (TKT-525 S2, ADR-087). Nothing is sent to payments: the platform never re-submits that
 	// attempt. Staff can refund again under a NEW key; the abandoned unit is already released.
 	ErrRefundAbandoned = errors.New("refund abandoned by an operator (refund_abandoned)")
+	// ErrReplacementNotIssued reports a refund of an exchange REPLACEMENT order for which Access
+	// did not report issued replacement tickets (TKT-498, D14). Nothing was sent to payments. It
+	// wraps ErrPaymentsUnresolved, so the refund stays pending behind the existing retry path:
+	// the staff 502 and the bulk `unavailable`.
+	ErrReplacementNotIssued = fmt.Errorf("%w: the exchange replacement has no issued tickets", ErrPaymentsUnresolved)
 )
 
 // Service refunds one order at a time.
@@ -100,6 +106,10 @@ func (s *Service) Refund(ctx context.Context, in commercestore.RefundRequest) (R
 	// abandoned after this read is refused there.
 	if refund.Abandoned {
 		return Result{}, ErrRefundAbandoned
+	}
+	// Immediately before payments, for both callers (TKT-498, D10, D14).
+	if err := s.requireIssuedReplacement(ctx, refund); err != nil {
+		return Result{}, err
 	}
 
 	factID, err := s.refundPayment(ctx, refund)
@@ -322,6 +332,41 @@ func (s *Service) DriveVoid(ctx context.Context, v commercestore.OrderVoid) comm
 	})
 	v.TicketsVoided, v.CapacityReturned = rev.TicketsVoided, rev.CapacityReturned
 	return v
+}
+
+// requireIssuedReplacement lets a refund of an exchange replacement order reach payments only
+// after Access reports issued replacement tickets.
+//
+// A replacement refund can move money only through the TKT-586 alias, under which payments
+// resolves the replacement's checkout key `exchange:<id>` to the exchange's charge. A settled
+// exchange whose switch Access refused has no replacement ticket, and its abandonment refunds
+// the delta and returns the target capacity itself. A replacement refund bound before the
+// abandonment reserved would otherwise dispatch after it and pay a second time.
+//
+// Issued replacement tickets are permanent, and the abandonment's second Access read refuses
+// any exchange that has them. So a dispatch that passes this read cannot race a successful
+// abandonment, and one that sees zero tickets never calls payments, even when it bound before
+// the reservation. A second read of the Commerce marker here would leave a window before the
+// HTTP call; this read does not.
+//
+// Missing, malformed or zero issuance leaves the refund unresolved through the existing retry
+// path. An order that is not a replacement is not affected.
+func (s *Service) requireIssuedReplacement(ctx context.Context, refund commercestore.Refund) error {
+	replacement, err := commercestore.IsExchangeReplacementOrder(ctx, s.db, refund.OrganizerID, refund.OrderID)
+	if err != nil {
+		return err
+	}
+	if !replacement {
+		return nil
+	}
+	admission, err := accessadmission.Read(ctx, accessadmission.Caller(s.call), s.accessURL, refund.OrderID, refund.OrganizerID)
+	if err != nil {
+		return fmt.Errorf("%w (%v)", ErrReplacementNotIssued, err)
+	}
+	if admission.IssuedCount <= 0 {
+		return ErrReplacementNotIssued
+	}
+	return nil
 }
 
 // refundPayment moves the money through payments' partial-refund leg. The source key is

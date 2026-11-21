@@ -62,14 +62,15 @@ func main() {
 // wedged-exchange commands are the supported way to resume work that automated recovery
 // has stopped claiming (TKT-146 and TKT-255). record-refund-outcome records an operator's
 // outcome for a failed post-purchase refund (TKT-525). list-settled-unswitched-exchanges lists
-// settled exchanges whose ticket switch never happened (TKT-498).
+// settled exchanges whose ticket switch never happened, and abandon-exchange abandons one whose
+// source Access admitted (TKT-498).
 type commandCallbacks struct {
 	migrate                                                      func() error
 	healthcheck                                                  func() int
 	enrolReseller, revokeReseller, listResellers                 func([]string) error
 	listParked, unparkOrder, listWedgedExchanges, unwindExchange func([]string) error
 	recordRefundOutcome                                          func([]string) error
-	listSettledUnswitchedExchanges                               func([]string) error
+	listSettledUnswitchedExchanges, abandonExchange              func([]string) error
 }
 
 func productionCommandCallbacks() commandCallbacks {
@@ -80,6 +81,7 @@ func productionCommandCallbacks() commandCallbacks {
 		listWedgedExchanges: listWedgedExchanges, unwindExchange: unwindExchange,
 		recordRefundOutcome:            recordRefundOutcome,
 		listSettledUnswitchedExchanges: listSettledUnswitchedExchanges,
+		abandonExchange:                abandonExchange,
 	}
 }
 
@@ -101,6 +103,7 @@ func commandRegistry(callbacks commandCallbacks) cmdline.Registry {
 		"record-refund-outcome": cmdline.WithArgs(callbacks.recordRefundOutcome),
 		// TKT-498: settled exchanges whose ticket switch never happened.
 		"list-settled-unswitched-exchanges": cmdline.WithArgs(callbacks.listSettledUnswitchedExchanges),
+		"abandon-exchange":                  cmdline.WithArgs(callbacks.abandonExchange),
 	}
 }
 

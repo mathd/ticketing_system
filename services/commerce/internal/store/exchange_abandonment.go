@@ -844,3 +844,22 @@ func VerifyExchangeGrossFacts(ctx context.Context, q rowQuerier, e SettledExchan
 	}
 	return nil
 }
+
+// IsExchangeReplacementOrder reports whether an order is the replacement of an exchange in the
+// organizer. It finds the exchange through the replacement RESERVATION, which the basis
+// persists before settlement publishes replacement_order_id, so an order whose settlement is
+// still in flight is found too. Both the order's reservation and the exchange are scoped to the
+// organizer; 0028's partial index on (organizer_id, replacement_reservation_id) backs the read.
+func IsExchangeReplacementOrder(ctx context.Context, q rowQuerier, org, order uuid.UUID) (bool, error) {
+	var found bool
+	err := q.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM orders o
+			JOIN reservations r ON r.id = o.reservation_id AND r.organizer_id = $1
+			JOIN order_exchanges x ON x.organizer_id = $1 AND x.replacement_reservation_id = r.id
+			WHERE o.id = $2)`, org, order).Scan(&found)
+	if err != nil {
+		return false, fmt.Errorf("read replacement identity of order %s: %w", order, err)
+	}
+	return found, nil
+}
