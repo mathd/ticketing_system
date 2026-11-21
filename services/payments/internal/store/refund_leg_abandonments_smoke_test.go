@@ -71,7 +71,7 @@ func TestAbandonedLegDoesNotReleaseACompletedLeg(t *testing.T) {
 	if _, err := j.BindRefundLeg(ctx, org, key, "refund-a", 1000, "EUR"); err != nil {
 		t.Fatal(err)
 	}
-	if err := j.CompleteRefundLeg(ctx, org, key, "refund-a", "re_ok", uuid.New(), ConfirmedRefund{Amount: 1000, Currency: "EUR"}); err != nil {
+	if err := completeLeg(ctx, j, org, key, "refund-a", "re_ok", uuid.New(), ConfirmedRefund{Amount: 1000, Currency: "EUR"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := j.BindRefundLeg(ctx, org, key, "refund-b", 1000, "EUR"); err != nil {
@@ -86,9 +86,9 @@ func TestAbandonedLegDoesNotReleaseACompletedLeg(t *testing.T) {
 	}
 }
 
-// CompleteRefundLeg never completes a marked leg (ADR-087 §13). The dispatch handler re-reads
-// the marker after the provider answers; this is the backstop for a marker that commits after
-// that read. A marker on another leg of the same charge does not block this leg.
+// CompleteRefundLeg never completes a marked leg and never appends its fact (D34, ADR-087 §13):
+// it reads the marker under the leg lock and answers abandoned with the marker's reference. A
+// marker on another leg of the same charge does not block this leg.
 func TestCompleteRefundLegRefusesAMarkedLeg(t *testing.T) {
 	db, ctx := journalDB(t)
 	j := New(db, fullRing(t))
@@ -100,14 +100,20 @@ func TestCompleteRefundLegRefusesAMarkedLeg(t *testing.T) {
 		}
 	}
 	markAbandoned(t, ctx, db, org, key, "refund-a")
-	if err := j.CompleteRefundLeg(ctx, org, key, "refund-a", "re_late", uuid.New(), ConfirmedRefund{Amount: 1000, Currency: "EUR"}); !errors.Is(err, ErrRefundLegNotCompleted) {
-		t.Fatalf("completing a marked leg: err = %v, want ErrRefundLegNotCompleted", err)
+	late := uuid.New()
+	m, abandoned, err := j.CompleteRefundLeg(ctx, org, key, "refund-a", "re_late", legFact(org, key, late, 1000), ConfirmedRefund{Amount: 1000, Currency: "EUR"})
+	if err != nil || !abandoned || m.ProviderRef != "re_failed_marked" {
+		t.Fatalf("completing a marked leg: marker=%+v abandoned=%v err=%v, want the marker re_failed_marked", m, abandoned, err)
+	}
+	var facts int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM journal_entries WHERE fact_id=$1`, late).Scan(&facts); err != nil || facts != 0 {
+		t.Fatalf("a marked leg's fact was appended: count=%d err=%v", facts, err)
 	}
 	leg, found, err := j.LookupRefundLeg(ctx, org, key, "refund-a")
 	if err != nil || !found || leg.Status != "bound" || leg.ProviderRef != "" || leg.ConfirmedAmount != nil {
 		t.Fatalf("marked leg after the refused completion = %+v found=%v err=%v, want still bound with no result", leg, found, err)
 	}
-	if err := j.CompleteRefundLeg(ctx, org, key, "refund-b", "re_b", uuid.New(), ConfirmedRefund{Amount: 1000, Currency: "EUR"}); err != nil {
+	if err := completeLeg(ctx, j, org, key, "refund-b", "re_b", uuid.New(), ConfirmedRefund{Amount: 1000, Currency: "EUR"}); err != nil {
 		t.Fatalf("the unmarked leg beside it must complete: %v", err)
 	}
 }

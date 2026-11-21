@@ -49,8 +49,9 @@ type StaffOrderRefund struct {
 	CreatedAt      time.Time
 	CompletedAt    *time.Time
 	// Abandoned reports a committed `abandoned` operator outcome for this refund (TKT-525,
-	// ADR-087): nothing will ever move under its key. A pending abandonment reservation does
-	// not set it.
+	// ADR-087): the platform will not submit or record a refund under its key again. A
+	// provider request admitted before the abandonment is outside that promise (ADR-087 §13).
+	// A pending abandonment reservation does not set it.
 	Abandoned bool
 }
 

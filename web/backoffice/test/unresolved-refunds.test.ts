@@ -54,6 +54,15 @@ describe('an outstanding refund outlives the request that produced it (TKT-194)'
   // The forged/stale-provenance defect, from the other side: the store is the
   // only source of the key, so a later request naming a different key cannot
   // displace the one that actually became ambiguous.
+  it('matches the order and organizer without case, but keeps the key as typed', () => {
+    const upperOrder = '9ABCDEF0-1111-4111-8111-111111111111';
+    refunds.note('ORG-AB', req(upperOrder, K1));
+
+    expect(refunds.find('org-ab', upperOrder.toLowerCase())).toMatchObject({ idempotencyKey: K1 });
+    expect(refunds.clear('org-ab', upperOrder.toLowerCase(), K1.toUpperCase())).toBe(false);
+    expect(refunds.clear('org-ab', upperOrder.toLowerCase(), K1)).toBe(true);
+  });
+
   it('keeps the FIRST key, and a later attempt does not replace it', () => {
     refunds.note(ORG, req(ORDER, K1));
     refunds.note(ORG, req(ORDER, K2));

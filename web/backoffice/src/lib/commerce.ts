@@ -244,7 +244,11 @@ export async function confirmsAbandonedRefund(req: {
       });
       if (res.status !== 200) return false;
       const b = responseObject(await res.json(), 'staff order detail');
-      if (b.order_id !== req.orderId || b.organizer_id !== req.organizerId) return false;
+      // Case-insensitive, as everywhere else on this console: the form accepts an
+      // uppercase UUID, and commerce answers in canonical lowercase (R3-2). The key
+      // below stays an exact match. A mismatch throws, and the catch answers false.
+      sameIdentity(uuid(b.order_id, 'order_id'), req.orderId, 'order_id');
+      sameIdentity(uuid(b.organizer_id, 'organizer_id'), req.organizerId, 'organizer_id');
       if (!Array.isArray(b.refunds)) return false;
       return b.refunds.some((f: unknown) => {
         if (typeof f !== 'object' || f === null) return false;

@@ -282,23 +282,37 @@ The guarantee has two halves:
   PaymentIntent. The provider deduplicates it within its key retention (ADR-032 §Refund), and no
   other key can create this leg's refund.
 
-**A Refunded answer on an abandoned leg is never recorded.** After the provider answers Refunded
-and before any journal append, dispatch reads the marker again. On a marker it appends no fact,
-completes nothing, answers the same 409 and logs both refund references, the marker's and the
-answer's. A succeeded refund on a leg proven failed is a reconciliation alarm; a different reference
-is the stronger one. `CompleteRefundLeg` also refuses a marked leg (`AND NOT EXISTS` on the marker),
-as a backstop for a marker that commits after that second read.
+**A Refunded answer on an abandoned leg is never recorded.** After the provider answers Refunded,
+`CompleteRefundLeg` runs ONE short transaction. It takes the locks the abandonment's marker
+transaction takes (§11), in the same order: the `payment_operations` row, then the leg row, both
+scoped by organizer. Under those locks it reads the marker in a separate statement. On a marker it
+appends no fact, completes nothing, and dispatch answers the same 409 and logs both refund
+references, the marker's and the answer's. Without a marker, the `payment.refunded` journal fact and
+the leg completion commit in that same transaction. The marker's foreign key to the leg row cannot be
+satisfied while that row is locked, so no marker commits between the read and the commit. No lock is
+held across the provider call. A completed replay keeps its existing answer. A succeeded refund on a
+leg proven failed is a reconciliation alarm; a different reference is the stronger one.
 
-A lease that fenced admission was rejected: it needs a new table and operator-facing refusals, and
-it still relies on provider idempotency, because a frozen process resumes and POSTs under whatever
-lease it holds. **Accepted residual risk:** a process that stalls between the listing and the POST
-for longer than the provider's 24 h key retention could create a new refund under the stored key.
-Reconciliation finds it from the stamp.
+A marker read in its own statement, followed by a separate append and completion, was rejected: a
+marker that commits between those statements still lets an append-only fact through.
+
+**Money under the abandoned key is not promised never to move.** The marker records that the platform
+will not refund that attempt again and that its answer is not recorded. It does not stop a POST that
+was already admitted. A lease that fenced admission was rejected: it needs a new table and
+operator-facing refusals, and it still relies on provider idempotency, because a frozen process
+resumes and POSTs under whatever lease it holds. **Accepted residual risk:** a process that stalls
+between the listing and the POST for longer than the provider's 24 h key retention could create a new
+refund under the stored key. Nothing records it. Reconciliation finds it from the stamp.
 
 `TestPartialRefundDispatchRefusesAnAbandonedLeg` pins the 409 with no provider call.
 `TestPartialRefundReplaySendsTheStoredKeyAsHeaderAndStamp` pins the identical replay request.
 `TestPartialRefundDispatchRecordsNothingWhenTheMarkerCommitsDuringTheProviderCall` commits the marker
 inside the provider call and pins no fact, no completion and the 409.
+`TestPartialRefundDispatchRecordsNothingWhenTheMarkerCommitsAfterTheProviderAnswer` opens the marker
+transaction during the provider call and commits it after the Refunded answer, while dispatch waits
+for the operation lock: 409, the leg still bound, zero refund facts.
+`TestAbandonIsRefusedWhenDispatchCommitsFirst` pins the reverse order: dispatch commits one fact and
+the completion, and the abandonment then refuses a completed leg with no marker.
 
 ### 14. Recovery, and the cost of starting an abandonment
 
@@ -339,6 +353,15 @@ when the abandonment has committed it applies the same classification with no fu
 A staff replacement can complete before the runner handles that 409, so the zero-quantity verdicts
 apply there too. Any other Payments refusal keeps `refund_refused`.
 
+**A failed re-read after a Payments refusal is not a verdict.** The runner cannot tell an abandonment
+from any other refusal without that read, so it records a retryable `internal` failure: the pass is
+charged one attempt, and the lease is the backoff. The next pass resolves the row again. If the
+abandonment has committed, it skips with no Payments call. If not, it calls Payments again under the
+same key, which the provider deduplicates, and a refusal with a successful read is then
+`refund_refused`. So a failing read can use more of the row's attempt budget and cause one more
+same-key Payments call per pass. `TestBulkRunRetriesWhenTheReadAfterAPaymentsRefusalFails` fails only
+that read and pins the charge and both retry outcomes.
+
 **A fresh cancellation bind on an order with an abandoned refund is refused.** A runner requests the
 sold quantity minus the completed quantity, and a later staff refund does not say which abandoned
 units it replaced. So `BindOrderRefund` refuses a new key in the reserved `cancel:` namespace when any
@@ -371,8 +394,10 @@ that key is a generic 409, not `refund_abandoned`. For this case the staff order
 (`GET /internal/orders/{id}`, scoped by the session's organizer assertion) reports `abandoned` per
 refund: true only for a committed `abandoned` outcome, never for a pending reservation. Whenever the
 page holds a saved retry, it reads that detail and retires the retry only when the detail names the
-same organizer and order and an abandoned refund under the same key. Any other answer, including a
-failed read, keeps the retry. The next form has a fresh key, and the replacement carries the current
+same organizer and order and an abandoned refund under the same key. The organizer and order compare
+as UUIDs, case-insensitively: the form accepts an uppercase UUID and Commerce answers in lowercase.
+The key compares exactly. Any other answer, including a failed read and an answer from an older
+Commerce without the `abandoned` flag, keeps the retry. The next form has a fresh key, and the replacement carries the current
 session's identity.
 
 ## Consequences

@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -372,6 +373,106 @@ func TestBulkRunClassifiesAPaymentsRefusalAfterAnAbandonment(t *testing.T) {
 				if err := db.QueryRowContext(ctx, `SELECT failure_reason FROM cancellation_refund_orders WHERE organizer_id=$1 AND order_id=$2`, o.org, o.order).Scan(&reason); err != nil || reason.String != c.reason {
 					t.Fatalf("failure reason = %q err=%v, want %q", reason.String, err, c.reason)
 				}
+			}
+		})
+	}
+}
+
+// failOneLookup fails the next LookupRefund once it is armed, and only that one.
+type failOneLookup struct {
+	DBStore
+	mu    sync.Mutex
+	armed bool
+}
+
+func (f *failOneLookup) arm() {
+	f.mu.Lock()
+	f.armed = true
+	f.mu.Unlock()
+}
+
+func (f *failOneLookup) LookupRefund(ctx context.Context, org, refundID uuid.UUID) (store.Refund, bool, error) {
+	f.mu.Lock()
+	armed := f.armed
+	f.armed = false
+	f.mu.Unlock()
+	if armed {
+		return store.Refund{}, false, errors.New("lookup failed after the payments refusal")
+	}
+	return f.DBStore.LookupRefund(ctx, org, refundID)
+}
+
+// D35 (RA3-3), ADR-087 §15: the runner's re-read after a payments refusal fails, and only that
+// read fails. The pass is a charged, retryable `internal` failure: one attempt, no verdict, the
+// lease kept as the backoff. It is not a terminal refund_refused built on a read that did not
+// happen. After the lease, the next pass decides the row: with no abandonment it calls payments
+// again under the SAME key, and that refusal is refund_refused; with an abandonment committed
+// during the first call it skips with no payments call.
+func TestBulkRunRetriesWhenTheReadAfterAPaymentsRefusalFails(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		during   func(t *testing.T, ctx context.Context, db *sql.DB, o abandonedOrder)
+		payments int
+	}{
+		{"not abandoned", func(*testing.T, context.Context, *sql.DB, abandonedOrder) {}, 2},
+		{"abandoned during the call", func(t *testing.T, ctx context.Context, db *sql.DB, o abandonedOrder) {
+			recordAbandonedOutcome(t, ctx, db, o)
+		}, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			db, ctx := runnerDB(t)
+			o := seedAbandonedCancellation(t, ctx, db, false)
+			startRun(t, ctx, db, o, false)
+			st := &failOneLookup{DBStore: DBStore{DB: db}}
+			transport := &refusingTransport{}
+			first := true
+			transport.during = func() {
+				if first {
+					first = false
+					c.during(t, ctx, db, o)
+					st.arm()
+				}
+			}
+			refunder := &countingRefunder{Service: refunds.New(db, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")}
+			runner := New(st, refunder, time.Minute, 10, time.Minute)
+
+			runner.RunOnce(ctx)
+			if n := transport.payments(); n != 1 {
+				t.Fatalf("first pass: payments calls = %d, want the refused one", n)
+			}
+			got := readVerdict(t, ctx, db, o)
+			if got.outcome != "" || got.failureCode != "" || got.attempts != 1 {
+				t.Fatalf("first pass: verdict = %+v, want no verdict and one charged attempt", got)
+			}
+			var leased bool
+			if err := db.QueryRowContext(ctx, `SELECT lease_until > now() FROM cancellation_refund_orders WHERE organizer_id=$1 AND order_id=$2`, o.org, o.order).Scan(&leased); err != nil || !leased {
+				t.Fatalf("first pass: lease kept = %v err=%v, want the lease kept as the backoff", leased, err)
+			}
+
+			if _, err := db.ExecContext(ctx, `UPDATE cancellation_refund_orders SET lease_until=now()-interval '1 minute' WHERE organizer_id=$1 AND order_id=$2`, o.org, o.order); err != nil {
+				t.Fatal(err)
+			}
+			runner.RunOnce(ctx)
+
+			if n := transport.payments(); n != c.payments {
+				t.Fatalf("after the retry: payments calls = %d, want %d", n, c.payments)
+			}
+			if c.payments == 2 {
+				transport.mu.Lock()
+				var posts []string
+				for _, call := range transport.calls {
+					if strings.Contains(call, "/internal/psp/partial-refund") {
+						posts = append(posts, call)
+					}
+				}
+				transport.mu.Unlock()
+				if len(posts) != 2 || posts[0] != posts[1] {
+					t.Fatalf("the retry changed the payments request: %q", posts)
+				}
+			}
+			got = readVerdict(t, ctx, db, o)
+			if got.outcome != "failed" || got.failureCode != "refund_refused" || got.money || got.attempts != 2 {
+				t.Fatalf("after the retry: verdict = %+v, want a terminal refund_refused on the second attempt", got)
 			}
 		})
 	}

@@ -44,6 +44,30 @@ func seedCaptured(t *testing.T, db *sql.DB, ctx context.Context, org uuid.UUID, 
 	})
 }
 
+// completeLeg runs CompleteRefundLeg with a valid payment.refunded fact for factID. The fact's
+// content depends only on its inputs, so a retry under the same id is a journal replay. An
+// abandoned answer is an error here: the tests that expect one call CompleteRefundLeg directly.
+func completeLeg(ctx context.Context, j *Journal, org uuid.UUID, sourceKey, refundKey, providerRef string, factID uuid.UUID, confirmed ConfirmedRefund) error {
+	amount := confirmed.Amount
+	if amount <= 0 {
+		amount = 1 // refused before the fact is read; any valid amount
+	}
+	_, abandoned, err := j.CompleteRefundLeg(ctx, org, sourceKey, refundKey, providerRef, legFact(org, sourceKey, factID, amount), confirmed)
+	if err == nil && abandoned {
+		return errors.New("refund leg abandoned")
+	}
+	return err
+}
+
+func legFact(org uuid.UUID, sourceKey string, factID uuid.UUID, amount int64) Fact {
+	return Fact{
+		ID: factID, OrganizerID: org, Type: "payment.refunded",
+		OccurredAt: time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC),
+		BuyerID:    uuid.NewSHA1(uuid.NameSpaceOID, factID[:]), Amount: amount, Currency: "EUR",
+		Payload: map[string]string{"order_id": uuid.NewSHA1(uuid.NameSpaceOID, []byte(sourceKey)).String()},
+	}
+}
+
 // The convergence property the whole design rests on: two binds under the same refund key
 // produce ONE row and therefore ONE deterministic provider idempotency key. Without it a
 // commerce retry issues a second provider refund.
@@ -304,22 +328,22 @@ func TestCompleteRefundLegIsOnceOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	first, second := uuid.New(), uuid.New()
-	if err := j.CompleteRefundLeg(ctx, org, key, "refund-1", "re_first", first, ConfirmedRefund{Amount: 1250, Currency: "EUR"}); err != nil {
+	if err := completeLeg(ctx, j, org, key, "refund-1", "re_first", first, ConfirmedRefund{Amount: 1250, Currency: "EUR"}); err != nil {
 		t.Fatal(err)
 	}
 	// A second completion under a DIFFERENT fact writes nothing, and now says so (TKT-257).
 	// A silent no-op here means the caller appended a compensating fact to an append-only
 	// journal and believes the leg settled under ITS fact, when the row records another.
 	// The once-only property below is unchanged; what changed is that the caller can tell.
-	if err := j.CompleteRefundLeg(ctx, org, key, "refund-1", "re_second", second, ConfirmedRefund{Amount: 1250, Currency: "EUR"}); !errors.Is(err, ErrRefundLegNotCompleted) {
+	if err := completeLeg(ctx, j, org, key, "refund-1", "re_second", second, ConfirmedRefund{Amount: 1250, Currency: "EUR"}); !errors.Is(err, ErrRefundLegNotCompleted) {
 		t.Fatalf("a second completion under a different fact must report that it wrote no row, got %v", err)
 	}
 	// But a retry of the SAME completion is idempotent success, not an error. Two concurrent
-	// requests both pass the handler's completed-leg short-circuit, both append the
-	// deterministic fact (the journal dedupes them), and both reach here; one UPDATE wins on
-	// `status='bound'` and the loser's work is genuinely done. Failing it would turn a
-	// successful duplicate into a 500 and a pointless recovery retry (ai-review, third pass).
-	if err := j.CompleteRefundLeg(ctx, org, key, "refund-1", "re_first", first, ConfirmedRefund{Amount: 1250, Currency: "EUR"}); err != nil {
+	// requests both pass the handler's completed-leg short-circuit and both reach here; the
+	// second waits on the leg lock and finds the leg completed under the same deterministic
+	// fact, so its work is genuinely done. Failing it would turn a successful duplicate into a
+	// 500 and a pointless recovery retry (ai-review, third pass).
+	if err := completeLeg(ctx, j, org, key, "refund-1", "re_first", first, ConfirmedRefund{Amount: 1250, Currency: "EUR"}); err != nil {
 		t.Fatalf("re-completing under the SAME fact is the concurrent-duplicate case and must succeed, got %v", err)
 	}
 	leg, found, err := j.LookupRefundLeg(ctx, org, key, "refund-1")
@@ -342,7 +366,7 @@ func TestCompletedRefundLegsCountAgainstTheCeiling(t *testing.T) {
 	if _, err := j.BindRefundLeg(ctx, org, key, "refund-1", 900, "EUR"); err != nil {
 		t.Fatal(err)
 	}
-	if err := j.CompleteRefundLeg(ctx, org, key, "refund-1", "re_1", uuid.New(), ConfirmedRefund{Amount: 900, Currency: "EUR"}); err != nil {
+	if err := completeLeg(ctx, j, org, key, "refund-1", "re_1", uuid.New(), ConfirmedRefund{Amount: 900, Currency: "EUR"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := j.BindRefundLeg(ctx, org, key, "refund-2", 200, "EUR"); !errors.Is(err, ErrRefundExceedsCapture) {
@@ -413,7 +437,7 @@ func TestCompleteRefundLegRequiresProviderConfirmation(t *testing.T) {
 		{"nothing at all", ConfirmedRefund{}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			if err := j.CompleteRefundLeg(ctx, org, key, "refund-1", "re_x", uuid.New(), c.confirmed); !errors.Is(err, ErrRefundLegNotCompleted) {
+			if err := completeLeg(ctx, j, org, key, "refund-1", "re_x", uuid.New(), c.confirmed); !errors.Is(err, ErrRefundLegNotCompleted) {
 				t.Fatalf("completion without confirmation must be refused, got %v", err)
 			}
 		})
@@ -428,7 +452,7 @@ func TestCompleteRefundLegRequiresProviderConfirmation(t *testing.T) {
 	}
 	// The same leg completes once the confirmation is supplied — proving the refusals above
 	// were about the confirmation and not about some other precondition this fixture failed.
-	if err := j.CompleteRefundLeg(ctx, org, key, "refund-1", "re_ok", uuid.New(), ConfirmedRefund{Amount: 1250, Currency: "EUR"}); err != nil {
+	if err := completeLeg(ctx, j, org, key, "refund-1", "re_ok", uuid.New(), ConfirmedRefund{Amount: 1250, Currency: "EUR"}); err != nil {
 		t.Fatal(err)
 	}
 }

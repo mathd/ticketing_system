@@ -471,8 +471,8 @@ type refundListFailure struct {
 //
 // nil means the listing completed or visit stopped it. Anything else is a failure that proves
 // nothing: a transport failure, a provider error, a malformed or incomplete page, an entry with
-// no id or no metadata, a page that cannot advance the cursor or repeats one, or a listing that
-// does not terminate.
+// no id or no metadata, a page that holds its own cursor, a page that cannot advance the cursor
+// or repeats one, or a listing that does not terminate.
 func (s *Stripe) listRefunds(ctx context.Context, providerRef string, visit func(stripeRefund) bool) *refundListFailure {
 	fail := func(res Result, err error) *refundListFailure { return &refundListFailure{res: res, err: err} }
 	q := url.Values{}
@@ -498,9 +498,17 @@ func (s *Stripe) listRefunds(ctx context.Context, providerRef string, visit func
 		// Every entry must be classifiable before any is visited: an id to name it and a
 		// metadata object to read the stamp from. Stripe sends `metadata: {}` on an unstamped
 		// refund; a null or missing one is not evidence that the refund is unstamped.
+		//
+		// A page that holds its own starting_after cursor did not advance past it. It is
+		// refused here, before any entry is accepted and before has_more=false can end the
+		// listing (RA3-2): what such a page claims to complete proves nothing.
+		after := q.Get("starting_after")
 		for _, rf := range data {
 			if rf == nil || rf.ID == "" || rf.Metadata == nil {
 				return fail(unknown(errors.New("stripe refund list entry has no id or no metadata")))
+			}
+			if after != "" && rf.ID == after {
+				return fail(unknown(fmt.Errorf("stripe refund list page after %q holds that refund again", after)))
 			}
 		}
 		for _, rf := range data {

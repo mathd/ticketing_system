@@ -268,19 +268,19 @@ describe('another staff member retires a saved retry that an operator abandoned'
     organizerAssertion: `v2.catalog-org/test.${STAFF_B}.${ORGANIZER}.99999999999.${'B'.repeat(86)}`,
   };
 
-  function staffDetail(abandoned: boolean, organizer = ORGANIZER) {
+  function staffDetail(abandoned: boolean, organizer = ORGANIZER, orderId = ORDER) {
     return json({
-      order_id: ORDER,
+      order_id: orderId,
       organizer_id: organizer,
       status: 'completed',
       refunds: [{ refund_id: 'b0000000-0000-4000-8000-000000000001', idempotency_key: REFUND_KEY, abandoned }],
     });
   }
 
-  async function asStaffB(fields: Record<string, string>, detail: () => Response) {
+  async function asStaffB(fields: Record<string, string>, detail: () => Response, savedOrderId = ORDER) {
     const { unresolvedRefunds } = await import('../src/lib/unresolved-refunds');
     unresolvedRefunds.note(ORGANIZER, {
-      orderId: ORDER,
+      orderId: savedOrderId,
       quantity: 2,
       reason: 'original request',
       idempotencyKey: REFUND_KEY,
@@ -298,12 +298,13 @@ describe('another staff member retires a saved retry that an operator abandoned'
         });
         return json({ error: 'refund idempotency key reused with a different request' }, 409);
       }
-      if (url.endsWith(`/internal/orders/${ORDER}`)) {
+      const order = savedOrderId.toLowerCase();
+      if (url.toLowerCase().endsWith(`/internal/orders/${order}`)) {
         reads.push(headers.get('X-Catalog-Organizer-Assertion'));
         return detail();
       }
-      if (url.includes(`/api/commerce/orders/${ORDER}`)) {
-        return json({ order_id: ORDER, status: 'completed' });
+      if (url.toLowerCase().includes(`/api/commerce/orders/${order}`)) {
+        return json({ order_id: order, status: 'completed' });
       }
       throw new Error(`unexpected request: ${url}`);
     }));
@@ -353,9 +354,37 @@ describe('another staff member retires a saved retry that an operator abandoned'
     expect(freshKeys(html)).not.toContain(REFUND_KEY);
   }, 30_000);
 
+  // R3-2. Staff A looked the order up by its uppercase UUID, so the saved retry
+  // and its form carry that spelling. Commerce's staff read answers the same
+  // order in canonical lowercase. The order is the same, so the retry retires.
+  it('retires it when the saved order id is uppercase and commerce answers lowercase', async () => {
+    const lower = '9abcdef0-0000-4000-8000-0000000000ab';
+    const upper = lower.toUpperCase();
+    const { html, writes, reads, unresolvedRefunds } = await asStaffB(
+      { ...savedRetry, order_id: upper },
+      () => staffDetail(true, ORGANIZER, lower),
+      upper,
+    );
+    expect(writes).toHaveLength(1);
+    expect(reads).toEqual([staffB.organizerAssertion]);
+    expect(unresolvedRefunds.find(ORGANIZER, upper)).toBeUndefined();
+    expect(html).not.toContain('Retry the same refund');
+    expect(html).toContain('recorded this refund as abandoned');
+    const keys = freshKeys(html);
+    expect(keys.length).toBeGreaterThan(0);
+    expect(keys).not.toContain(REFUND_KEY);
+  }, 30_000);
+
   it.each([
     ['the refund is not abandoned', () => staffDetail(false)],
     ['the read names another organizer', () => staffDetail(true, '00000000-0000-4000-8000-000000000009')],
+    // D35: a commerce build older than the `abandoned` flag answers without it.
+    ['the read has no abandoned flag', () => json({
+      order_id: ORDER,
+      organizer_id: ORGANIZER,
+      status: 'completed',
+      refunds: [{ refund_id: 'b0000000-0000-4000-8000-000000000001', idempotency_key: REFUND_KEY }],
+    })],
     ['the read is unavailable', () => json({ error: 'down' }, 500)],
   ])('keeps it when %s', async (_name, detail) => {
     const { html, unresolvedRefunds } = await asStaffB(savedRetry, detail);

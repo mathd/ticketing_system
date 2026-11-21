@@ -848,8 +848,29 @@ describe('the committed-abandonment read (TKT-525)', () => {
     expect(calls[0].headers['X-Catalog-Organizer-Assertion']).toBe('session-assertion');
   });
 
+  // R3-2. The form accepts an uppercase UUID; commerce answers in canonical
+  // lowercase. The order and organizer compare case-insensitively.
+  it('confirms when the order and organizer were asked in uppercase and commerce answers lowercase', async () => {
+    const calls = spyFetch(detail(), 200);
+    expect(await confirmsAbandonedRefund({
+      ...ask,
+      orderId: ORDER.toUpperCase(),
+      organizerId: TEST_ORGANIZER_ID.toUpperCase(),
+    })).toBe(true);
+    expect(calls[0].url).toBe(`http://localhost:8082/internal/orders/${ORDER.toUpperCase()}`);
+  });
+
+  it('confirms when the organizer differs only in case', async () => {
+    const organizer = 'fedcba98-7654-4321-8fed-cba987654321';
+    spyFetch(detail({ organizer_id: organizer }), 200);
+    expect(await confirmsAbandonedRefund({ ...ask, organizerId: organizer.toUpperCase() })).toBe(true);
+  });
+
   it.each([
     ['the key is not abandoned', detail({}, { abandoned: false }), 200],
+    ['the key differs only in case', detail({}, { idempotency_key: KEY.toUpperCase() }), 200],
+    ['the order id is not a UUID', detail({ order_id: `${ORDER} ` }), 200],
+    ['the organizer id is not a UUID', detail({ organizer_id: 42 }), 200],
     ['the abandoned flag is not a boolean', detail({}, { abandoned: 'true' }), 200],
     ['the abandoned flag is absent', detail({}, { abandoned: undefined }), 200],
     ['only another key is abandoned', detail({}, { idempotency_key: 'another-key-2' }), 200],

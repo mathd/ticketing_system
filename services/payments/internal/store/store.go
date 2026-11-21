@@ -262,8 +262,26 @@ func (j *Journal) Append(ctx context.Context, f Fact) (Entry, bool, error) {
 // which is the point: the invariant lives in the database, not in the
 // discipline of callers.
 func (j *Journal) AppendWithSettlement(ctx context.Context, f Fact, settlement []SettlementEntry) (Entry, bool, error) {
-	if err := validate(f); err != nil {
+	f, err := prepareFact(f)
+	if err != nil {
 		return Entry{}, false, err
+	}
+	tx, err := j.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Entry{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	e, replay, err := j.appendTx(ctx, tx, f, settlement)
+	if err != nil {
+		return Entry{}, false, err
+	}
+	return e, replay, tx.Commit()
+}
+
+// prepareFact validates a fact and fixes its timestamp to the precision the journal stores.
+func prepareFact(f Fact) (Fact, error) {
+	if err := validate(f); err != nil {
+		return Fact{}, err
 	}
 	if f.OccurredAt.IsZero() {
 		f.OccurredAt = time.Now().UTC()
@@ -271,17 +289,19 @@ func (j *Journal) AppendWithSettlement(ctx context.Context, f Fact, settlement [
 	// PostgreSQL timestamptz stores microseconds. Sign the persisted precision,
 	// otherwise verification would canonicalize different bytes after reload.
 	f.OccurredAt = f.OccurredAt.UTC().Truncate(time.Microsecond)
-	tx, err := j.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Entry{}, false, err
-	}
-	defer func() { _ = tx.Rollback() }()
+	return f, nil
+}
+
+// appendTx writes a fact that prepareFact returned, inside the caller's transaction. The
+// caller commits. CompleteRefundLeg uses it so a refund leg's fact and its
+// completion commit together or not at all (TKT-525, ADR-087 §13).
+func (j *Journal) appendTx(ctx context.Context, tx *sql.Tx, f Fact, settlement []SettlementEntry) (Entry, bool, error) {
 	existing, found, err := loadExistingFact(ctx, tx, f)
 	if err != nil {
 		return Entry{}, false, err
 	}
 	if found {
-		return existing, true, tx.Commit()
+		return existing, true, nil
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO journal_heads(organizer_id) VALUES($1) ON CONFLICT DO NOTHING`, f.OrganizerID)
 	if err != nil {
@@ -301,7 +321,7 @@ func (j *Journal) AppendWithSettlement(ctx context.Context, f Fact, settlement [
 		return Entry{}, false, err
 	}
 	if found {
-		return existing, true, tx.Commit()
+		return existing, true, nil
 	}
 	seq++
 	canon, err := canonical(f, seq)
@@ -329,7 +349,7 @@ func (j *Journal) AppendWithSettlement(ctx context.Context, f Fact, settlement [
 	if err = insertSettlement(ctx, tx, f, settlement); err != nil {
 		return Entry{}, false, err
 	}
-	return Entry{Fact: f, Sequence: seq, PreviousHash: prev, EntryHash: sum, KeyID: j.keys.ActiveKeyID(), Signature: sig}, false, tx.Commit()
+	return Entry{Fact: f, Sequence: seq, PreviousHash: prev, EntryHash: sum, KeyID: j.keys.ActiveKeyID(), Signature: sig}, false, nil
 }
 
 func (j *Journal) Verify(ctx context.Context) error {

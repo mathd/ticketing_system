@@ -10,7 +10,10 @@
 // same organizer submits that saved retry after the abandonment. Commerce
 // compares the actor-bound fingerprint and answers a generic 409, so the page
 // asks commerce's staff order detail, retires the saved retry, and B's
-// replacement goes through under B's identity and a fresh key.
+// replacement goes through under B's identity and a fresh key. Both staff
+// members type the order UUID in uppercase; commerce stores and answers it in
+// canonical lowercase, so the abandonment read compares it case-insensitively
+// (R3-2).
 //
 // Run through ./scripts/browser.sh (make browser) with host Chrome.
 
@@ -143,9 +146,9 @@ try {
   const retryForm = () => page.locator('form.refund:has(h2:text("Retry this refund"))');
 
   // Submit a fresh refund that payments cannot resolve, so the page saves it.
-  async function saveUnresolvedRefund(o, label) {
+  async function saveUnresolvedRefund(o, label, typedOrder = o.order) {
     await page.goto(PATH, { waitUntil: 'domcontentloaded' });
-    await page.fill('#order_id', o.order);
+    await page.fill('#order_id', typedOrder);
     await submitForm(page, page.getByRole('button', { name: 'Look it up' }));
     const form = freshForm();
     check(`${label}: the completed order renders the refund form`, (await form.count()) === 1);
@@ -232,8 +235,11 @@ try {
     ) === 'bound,refunded',
   );
 
-  // ---- Staff handoff (R2-1). Staff A saves an unresolved refund.
-  const handoffKey = await saveUnresolvedRefund(handoffOrder, 'handoff');
+  // ---- Staff handoff (R2-1). Staff A saves an unresolved refund, typing the
+  // order UUID in uppercase (R3-2).
+  const handoffTyped = handoffOrder.order.toUpperCase();
+  check('handoff: the typed order UUID differs from commerce\'s lowercase form', handoffTyped !== handoffOrder.order, handoffTyped);
+  const handoffKey = await saveUnresolvedRefund(handoffOrder, 'handoff', handoffTyped);
   const handoffRefund = sql(PG, 'commerce', `SELECT id FROM order_refunds WHERE order_id='${handoffOrder.order}'`);
   const staffA = staffId(identifier);
   const staffB = staffId(identifierB);
@@ -247,7 +253,7 @@ try {
   const freshFormB = () => pageB.locator('form.refund:has(h2:text("Refund this order"))');
   const retryFormB = () => pageB.locator('form.refund:has(h2:text("Retry this refund"))');
   await pageB.goto(PATH, { waitUntil: 'domcontentloaded' });
-  await pageB.fill('#order_id', handoffOrder.order);
+  await pageB.fill('#order_id', handoffTyped);
   await submitForm(pageB, pageB.getByRole('button', { name: 'Look it up' }));
   check('handoff: staff B is offered the saved retry', (await retryFormB().count()) === 1);
   check(
@@ -261,6 +267,10 @@ try {
   check(
     'handoff: staff B\'s retry sends the saved key',
     new URLSearchParams(submitted.postData() ?? '').get('idempotency_key') === handoffKey,
+  );
+  check(
+    'handoff: staff B\'s retry sends the uppercase order UUID',
+    new URLSearchParams(submitted.postData() ?? '').get('order_id') === handoffTyped,
   );
   const handoffStatus = (await pageB.getByRole('status').innerText()).trim();
   check('handoff: the page says the refund was abandoned', handoffStatus.includes('abandoned'), handoffStatus);

@@ -90,32 +90,39 @@ func TestStripeProveRefundFailureFindsTheMatchOnALaterPage(t *testing.T) {
 	}
 }
 
-// A provider that answers a cursor with a page ending on the same cursor cannot reach the rest
-// of the listing (R2-2). The third page would end the listing with nothing more, but the proof
-// must already have refused: the listing never advanced past re_a.
+// A provider that answers a cursor with a page that holds the same cursor cannot reach the rest
+// of the listing (R2-2). The proof must refuse that page before it accepts any of its entries:
+// when the page says more follow (a third page would end the listing with nothing more), and
+// when it says it is the last one (RA3-2). Either way the listing never advanced past re_a.
 func TestStripeProveRefundFailureRefusesACursorThatDoesNotAdvance(t *testing.T) {
 	foreign := `{"id":"re_a","object":"refund","amount":5,"currency":"eur","status":"succeeded","payment_intent":"pi_proof","metadata":{}}`
-	pages := []string{
-		proofList(true, proofRefund("re_ours", "failed", proofPI, proofKey, 1000, "eur"), foreign),
-		proofList(true, foreign),
-		proofList(false),
-	}
-	var queries []url.Values
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/v1/refunds" {
-			t.Errorf("the proof made a %s %s; it may only list refunds", r.Method, r.URL.Path)
-		}
-		queries = append(queries, r.URL.Query())
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(pages[min(len(queries), len(pages))-1]))
-	}))
-	t.Cleanup(srv.Close)
-	got, err := NewStripe("sk_test_dummy", srv.URL, srv.Client()).ProveRefundFailure(context.Background(), proofPI, proofKey, 1000, "EUR")
-	if !errors.Is(err, ErrRefundProofInconclusive) || got.ProviderRef != "" {
-		t.Fatalf("proof = %+v err=%v, want inconclusive for a repeated cursor", got, err)
-	}
-	if len(queries) != 2 || queries[1].Get("starting_after") != "re_a" {
-		t.Fatalf("listing queries = %v, want two pages, the second after re_a", queries)
+	first := proofList(true, proofRefund("re_ours", "failed", proofPI, proofKey, 1000, "eur"), foreign)
+	for _, c := range []struct {
+		name  string
+		pages []string
+	}{
+		{"the repeated page says more follow", []string{first, proofList(true, foreign), proofList(false)}},
+		{"the repeated page is the last one", []string{first, proofList(false, foreign)}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var queries []url.Values
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/v1/refunds" {
+					t.Errorf("the proof made a %s %s; it may only list refunds", r.Method, r.URL.Path)
+				}
+				queries = append(queries, r.URL.Query())
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(c.pages[min(len(queries), len(c.pages))-1]))
+			}))
+			t.Cleanup(srv.Close)
+			got, err := NewStripe("sk_test_dummy", srv.URL, srv.Client()).ProveRefundFailure(context.Background(), proofPI, proofKey, 1000, "EUR")
+			if !errors.Is(err, ErrRefundProofInconclusive) || got.ProviderRef != "" {
+				t.Fatalf("proof = %+v err=%v, want inconclusive for a repeated cursor", got, err)
+			}
+			if len(queries) != 2 || queries[1].Get("starting_after") != "re_a" {
+				t.Fatalf("listing queries = %v, want two pages, the second after re_a", queries)
+			}
+		})
 	}
 }
 

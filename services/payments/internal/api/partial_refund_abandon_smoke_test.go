@@ -4,11 +4,13 @@ package api
 
 import (
 	"bytes"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -428,5 +430,156 @@ func TestPartialRefundDispatchRecordsNothingWhenTheMarkerCommitsDuringTheProvide
 	assertLegStillBound(t, f.db, f.ctx, f.org)
 	if m := f.marker(t); m != (markerRow{1, "re_failed_ours"}) {
 		t.Fatalf("marker = %+v", m)
+	}
+}
+
+// waitForLockWaiters waits until n backends of this test database wait on a lock, or until
+// stop has a value (the request finished without waiting). It fails after ten seconds.
+func (f *proofFixture) waitForLockWaiters(t *testing.T, n int, stop ...chan *httptest.ResponseRecorder) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := f.db.QueryRowContext(f.ctx, `
+			SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting >= n {
+			return
+		}
+		for _, c := range stop {
+			if len(c) > 0 {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("lock waiters = %d after 10s, want %d", waiting, n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func (f *proofFixture) refundFacts(t *testing.T) int {
+	t.Helper()
+	var n int
+	if err := f.db.QueryRowContext(f.ctx, `SELECT count(*) FROM journal_entries WHERE organizer_id=$1 AND fact_type='payment.refunded'`, f.org).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// D34, ADR-087 §13 (R3-1). The marker transaction starts during the provider call and takes the
+// locks AbandonRefundLeg takes, in its order: the operation row, then the leg row, then the
+// marker insert. The provider answers Refunded while that transaction is still open. Dispatch
+// then waits for the operation lock, and the marker commits only after dispatch waits: after
+// the Refunded answer and before dispatch holds the leg lock. Dispatch must read the marker
+// under the lock: 409, the leg still bound, zero refund facts.
+func TestPartialRefundDispatchRecordsNothingWhenTheMarkerCommitsAfterTheProviderAnswer(t *testing.T) {
+	f := newProofFixture(t, nil)
+	f.peer.list = emptyRefundList
+	opened := make(chan *sql.Tx, 1)
+	f.peer.submit = func() (int, string) {
+		tx, err := f.db.BeginTx(f.ctx, nil)
+		if err != nil {
+			t.Errorf("begin marker transaction: %v", err)
+			close(opened)
+			return 500, `{"error":{"message":"fixture","type":"api_error"}}`
+		}
+		for _, q := range []string{
+			`SELECT 1 FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2 FOR UPDATE`,
+			`SELECT 1 FROM payment_refund_legs WHERE organizer_id=$1 AND source_idempotency_key=$2 AND refund_idempotency_key=$3 FOR UPDATE`,
+			`INSERT INTO payment_refund_leg_abandonments(organizer_id,source_idempotency_key,refund_idempotency_key,provider_ref)
+			 VALUES($1,$2,$3,'re_failed_ours')`,
+		} {
+			args := []any{f.org, f.sourceKey, f.refundKey}
+			if strings.Contains(q, "payment_operations") {
+				args = args[:2]
+			}
+			if _, err := tx.ExecContext(f.ctx, q, args...); err != nil {
+				t.Errorf("marker transaction: %v", err)
+			}
+		}
+		opened <- tx
+		return 200, f.succeededRefund("re_late")
+	}
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- f.dispatch(t) }()
+
+	tx, ok := <-opened
+	if !ok {
+		t.Fatal("the marker transaction did not open")
+	}
+	f.waitForLockWaiters(t, 1, done)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	res := <-done
+
+	if res.Code != 409 || res.Body.String() != `{"error":"refund leg abandoned"}`+"\n" {
+		t.Fatalf("status=%d body=%s, want 409 refund leg abandoned", res.Code, res.Body.String())
+	}
+	if len(f.peer.posts) != 1 {
+		t.Fatalf("refund POSTs = %d, want the one admitted before the marker", len(f.peer.posts))
+	}
+	assertLegStillBound(t, f.db, f.ctx, f.org)
+	if n := f.refundFacts(t); n != 0 {
+		t.Fatalf("payment.refunded facts = %d, want 0", n)
+	}
+	if m := f.marker(t); m != (markerRow{1, "re_failed_ours"}) {
+		t.Fatalf("marker = %+v", m)
+	}
+}
+
+// The reverse order (D34). Dispatch holds the operation and leg locks in its completion
+// transaction; the test holds the organizer's journal head, so dispatch pauses there before its
+// append. The abandonment's lock-free proof then finds the stamped failed refund, and its marker
+// transaction waits for the operation lock. Dispatch commits first: one fact, the leg
+// refunded. The abandonment then finds a completed leg: 409 and no marker.
+func TestAbandonIsRefusedWhenDispatchCommitsFirst(t *testing.T) {
+	f := newProofFixture(t, nil)
+	f.peer.list = emptyRefundList
+	f.peer.submit = func() (int, string) { return 200, f.succeededRefund("re_ok") }
+	if _, err := f.db.ExecContext(f.ctx, `INSERT INTO journal_heads(organizer_id) VALUES($1) ON CONFLICT DO NOTHING`, f.org); err != nil {
+		t.Fatal(err)
+	}
+	head, err := f.db.BeginTx(f.ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = head.Rollback() })
+	if _, err := head.ExecContext(f.ctx, `SELECT 1 FROM journal_heads WHERE organizer_id=$1 FOR UPDATE`, f.org); err != nil {
+		t.Fatal(err)
+	}
+
+	dispatched := make(chan *httptest.ResponseRecorder, 1)
+	go func() { dispatched <- f.dispatch(t) }()
+	f.waitForLockWaiters(t, 1, dispatched)
+
+	f.peer.mu.Lock()
+	f.peer.list = f.listWith("re_failed_ours", "failed")
+	f.peer.mu.Unlock()
+	abandoned := make(chan *httptest.ResponseRecorder, 1)
+	go func() { abandoned <- f.abandonValid(t) }()
+	f.waitForLockWaiters(t, 2, dispatched, abandoned)
+
+	if err := head.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	d, a := <-dispatched, <-abandoned
+
+	if d.Code != 200 || !strings.Contains(d.Body.String(), `"status":"refunded"`) {
+		t.Fatalf("dispatch: status=%d body=%s, want 200 refunded", d.Code, d.Body.String())
+	}
+	assertProofResponse(t, a, 409, `{"error":"refund leg completed"}`)
+	if m := f.marker(t); m != (markerRow{0, ""}) {
+		t.Fatalf("marker = %+v, want none", m)
+	}
+	if n := f.refundFacts(t); n != 1 {
+		t.Fatalf("payment.refunded facts = %d, want 1", n)
+	}
+	var status string
+	if err := f.db.QueryRowContext(f.ctx, `SELECT status FROM payment_refund_legs WHERE organizer_id=$1`, f.org).Scan(&status); err != nil || status != "refunded" {
+		t.Fatalf("leg status = %q err=%v, want refunded", status, err)
 	}
 }

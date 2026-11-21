@@ -781,7 +781,7 @@ type StaffOrderLine struct {
 
 // StaffOrderRefund defines model for StaffOrderRefund.
 type StaffOrderRefund struct {
-	// Abandoned True when an operator recorded this refund as abandoned (TKT-525, ADR-087) and the abandonment committed. Nothing will ever move money under its idempotency key, so a saved retry of that key can be retired; the refund itself stays pending. A pending abandonment reservation reads false.
+	// Abandoned True when an operator recorded this refund as abandoned (TKT-525, ADR-087) and the abandonment committed. The platform will not submit or record a refund under its idempotency key again, so a saved retry of that key can be retired; the refund itself stays pending. A provider request already admitted before the abandonment is deduplicated by the provider only within its key retention, so this is not a promise that no money moves (ADR-087 §13). A pending abandonment reservation reads false.
 	Abandoned bool `json:"abandoned"`
 
 	// Actor Who asked for it. Staff attribution, mirroring the operational-hold conversion path: an operation that moves money cannot be less attributable than one that moves a seat.
