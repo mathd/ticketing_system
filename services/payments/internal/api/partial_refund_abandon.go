@@ -9,7 +9,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"ticketing/services/payments/internal/psp"
 	"ticketing/services/payments/internal/store"
 )
 
@@ -89,30 +88,12 @@ func (s *Server) pspPartialRefundAbandon(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if state.ProviderPaymentRef == "" {
-		write(w, 502, map[string]string{"error": "refund failure proof unavailable"})
-		return
-	}
-	prover, ok := s.psp.(psp.RefundFailureProver)
+	providerRef, ok := s.proveTerminalFailure(w, r, state)
 	if !ok {
-		write(w, 502, map[string]string{"error": "refund failure proof unavailable"})
-		return
-	}
-	proof, err := prover.ProveRefundFailure(r.Context(), state.ProviderPaymentRef, state.ProviderKey, state.Amount, state.Currency)
-	switch {
-	case errors.Is(err, psp.ErrRefundProofContradicted):
-		write(w, 409, map[string]string{"error": "provider evidence contradicts a failed refund"})
-		return
-	case err != nil:
-		write(w, 502, map[string]string{"error": "refund failure proof unavailable"})
-		return
-	}
-	if !strings.HasPrefix(proof.ProviderRef, "re_") || len(proof.ProviderRef) <= len("re_") || len(proof.ProviderRef) > 255 {
-		write(w, 502, map[string]string{"error": "refund failure proof unavailable"})
 		return
 	}
 
-	m, _, err := s.journal.AbandonRefundLeg(r.Context(), in.OrganizerID, sourceKey, refundKey, state, proof.ProviderRef)
+	m, _, err := s.journal.AbandonRefundLeg(r.Context(), in.OrganizerID, sourceKey, refundKey, state, providerRef)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		write(w, 404, map[string]string{"error": "refund leg not found"})

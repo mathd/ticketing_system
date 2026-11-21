@@ -52,26 +52,8 @@ func (s *Server) pspPartialRefundFailureProof(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
-	if before.ProviderPaymentRef == "" {
-		write(w, 502, map[string]string{"error": "refund failure proof unavailable"})
-		return
-	}
-	prover, ok := s.psp.(psp.RefundFailureProver)
+	providerRef, ok := s.proveTerminalFailure(w, r, before)
 	if !ok {
-		write(w, 502, map[string]string{"error": "refund failure proof unavailable"})
-		return
-	}
-	proof, err := prover.ProveRefundFailure(r.Context(), before.ProviderPaymentRef, before.ProviderKey, before.Amount, before.Currency)
-	switch {
-	case errors.Is(err, psp.ErrRefundProofContradicted):
-		write(w, 409, map[string]string{"error": "provider evidence contradicts a failed refund"})
-		return
-	case err != nil:
-		write(w, 502, map[string]string{"error": "refund failure proof unavailable"})
-		return
-	}
-	if !strings.HasPrefix(proof.ProviderRef, "re_") || len(proof.ProviderRef) <= len("re_") || len(proof.ProviderRef) > 255 {
-		write(w, 502, map[string]string{"error": "refund failure proof unavailable"})
 		return
 	}
 
@@ -85,7 +67,34 @@ func (s *Server) pspPartialRefundFailureProof(w http.ResponseWriter, r *http.Req
 		write(w, 409, map[string]string{"error": "refund leg changed during the proof"})
 		return
 	}
-	write(w, 200, map[string]any{"provider_ref": proof.ProviderRef, "amount": before.Amount, "currency": before.Currency})
+	write(w, 200, map[string]any{"provider_ref": providerRef, "amount": before.Amount, "currency": before.Currency})
+}
+
+// proveTerminalFailure asks the provider, with no lock held, for the terminal-failure proof of
+// the leg in `state`. It is the one proof path of the failure-proof GET and the abandon POST,
+// so both answer the same evidence the same way: 409 for a contradiction, 502 for anything
+// else that is not a usable `re_` reference. ok=false means a response was written.
+func (s *Server) proveTerminalFailure(w http.ResponseWriter, r *http.Request, state store.RefundLegProofState) (string, bool) {
+	unavailable := func() (string, bool) {
+		write(w, 502, map[string]string{"error": "refund failure proof unavailable"})
+		return "", false
+	}
+	prover, ok := s.psp.(psp.RefundFailureProver)
+	if state.ProviderPaymentRef == "" || !ok {
+		return unavailable()
+	}
+	proof, err := prover.ProveRefundFailure(r.Context(), state.ProviderPaymentRef, state.ProviderKey, state.Amount, state.Currency)
+	switch {
+	case errors.Is(err, psp.ErrRefundProofContradicted):
+		write(w, 409, map[string]string{"error": "provider evidence contradicts a failed refund"})
+		return "", false
+	case err != nil:
+		return unavailable()
+	}
+	if !strings.HasPrefix(proof.ProviderRef, "re_") || len(proof.ProviderRef) <= len("re_") || len(proof.ProviderRef) > 255 {
+		return unavailable()
+	}
+	return proof.ProviderRef, true
 }
 
 // proofState reads the leg with its charge and marker and answers every state that refuses.

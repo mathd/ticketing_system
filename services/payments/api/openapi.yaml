@@ -230,10 +230,13 @@ paths:
 
 
         404 = no such charge or leg in this organizer. 409 = conclusive refusal: the leg completed,
-        it carries an abandonment marker, the provider evidence says the refund did not fail, or the
+        it carries an abandonment marker, the provider evidence says the refund did not fail (a
+        corroborated `succeeded` refund, or more than one corroborated stamped refund), or the
         stored evidence changed during the lookup. 502 = no proof could be established: pending or
         absent provider refund, incomplete or malformed listing, provider unavailable, or a provider
-        without a proof implementation. Error bodies are static. The provider idempotency key never
+        without a proof implementation. A stamped refund that does not corroborate the leg (no id,
+        another PaymentIntent, amount or currency) makes the answer 502, also beside a corroborated
+        match. Error bodies are static. The provider idempotency key never
         crosses this boundary. Behind `PAYMENTS_INTERNAL_TOKEN` only (ADR-071 §5).
       parameters:
         - {name: organizer_id, in: query, required: true, schema: {type: string, format: uuid}}
@@ -253,8 +256,8 @@ paths:
       summary: Mark one post-purchase refund leg abandoned after a proven provider failure (internal)
       description: >-
         The payments half of the operator outcome `abandoned` (TKT-525 S2, ADR-087). Commerce's
-        `record-refund-outcome ... abandoned` operator command calls it BEFORE it records its own
-        outcome. It writes one append-only marker for the exact leg addressed by (organizer, charge
+        `record-refund-outcome ... abandoned` operator command calls it after it commits its own
+        exclusive abandonment reservation and BEFORE it records its outcome. It writes one append-only marker for the exact leg addressed by (organizer, charge
         `idempotency_key`, `refund_key`). The marker releases ONLY that leg's allowance in the
         captured-money ceiling; the leg stays bound with its provider key, the whole-refund
         exclusion still counts it, and ordinary partial-refund dispatch refuses it with 409 before

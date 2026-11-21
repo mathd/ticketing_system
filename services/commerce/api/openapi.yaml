@@ -444,8 +444,9 @@ paths:
         '200': {description: Refunded (or replay of a completed refund), content: {application/json: {schema: {$ref: '#/components/schemas/Refund'}}}}
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
-        # 409 with `code: refund_abandoned` (TKT-525 S2) when this key's refund was recorded
-        # abandoned by an operator; nothing reaches payments. Other 409s carry no code.
+        # 409 with `code: refund_abandoned` (TKT-525 S2) when this key's refund has a finalized
+        # `abandoned` outcome; nothing reaches payments. A refund whose abandonment is only
+        # reserved still reaches payments. Other 409s carry no code.
         '409': {$ref: '#/components/responses/Error'}
         '422': {description: Payments definitively refused the provider refund, content: {application/json: {schema: {$ref: '#/components/schemas/ProviderRefundFailed'}}}}
         '500': {$ref: '#/components/responses/Error'}

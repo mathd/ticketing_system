@@ -16,8 +16,9 @@ attempts count against both ceilings): a refund with a recorded `abandoned` outc
 [ADR-040](ADR-040-event-cancellation-bulk-refund-runs.md) §3 the same way.
 
 Delivery: TKT-525 is one PR in two slices. Slice S1 is `refunded_outside` (§1–§9). Slice S2 is
-`abandoned`: the Payments abandonment endpoint and marker write, the two ceiling exclusions, the
-dispatch refusal, the Commerce outcome, the bulk skip and the Back Office replacement (§10–§16).
+`abandoned`: the Commerce abandonment reservation, the Payments abandonment endpoint and marker
+write, the two ceiling exclusions, the dispatch refusal, the Commerce outcome, the bulk rules and
+the Back Office replacement (§10–§16).
 
 ## Context
 
@@ -51,7 +52,10 @@ Commerce migration 0027 adds `refund_outcomes`, keyed by `(organizer_id, subject
 TKT-525 writes only `subject_kind='order_refund'`. The table has no foreign key to `order_refunds`,
 so TKT-532 and TKT-533 can add their own subject kinds. Row and statement triggers refuse `UPDATE`,
 `DELETE` and `TRUNCATE`. Amount and currency are copied from the refund row; the operator never types
-them, so an outcome covers the whole stored refund or nothing.
+them, so an outcome covers the whole stored refund or nothing. The external reference is at most 200
+bytes for `refunded_outside`, which the operator types, and at most 255 bytes for `abandoned`, which
+is the provider reference and the limit Payments accepts. A shorter Commerce limit would let Payments
+release its allowance for a reference that Commerce cannot store.
 
 ### 2. An outside completion is linked to its evidence
 
@@ -71,8 +75,10 @@ referenced columns, and stops unless exactly one matches. `order_refunds` gets:
   outside kind; and a completed row with no Payments fact and the kind `refunded_outside`. An
   `abandoned` outcome cannot complete a refund.
 
-The Down locks `order_refunds` and then `refund_outcomes`, then refuses while any outcome exists.
-An empty Down restores the 0007 rule under the name `order_refunds_completion_check`.
+The Down locks `order_refunds`, `refund_outcomes`, then `order_refund_abandonment_dispositions`
+(§10), and only then refuses while any outcome or any reservation exists. A pending reservation can
+be the only local record that Payments released an allowance. An empty Down restores the 0007 rule
+under the name `order_refunds_completion_check`.
 
 ### 3. `refunded_outside` requires a read-only Payments proof first
 
@@ -90,17 +96,25 @@ GET /internal/psp/partial-refund/failure-proof?organizer_id=&idempotency_key=&re
 - The provider lookup only lists and reads. `psp.RefundFailureProver` is an interface separate from
   `psp.PSP`; the Stripe adapter implements it with the same listing loop, match rule (`classify`)
   and status mapping (`mapRefundStatus`) that `resolveRefund` uses. The proof scans the whole
-  listing. One corroborated stamped refund in `failed` or `canceled` is a proof and returns its
-  `re_` reference. A matching `succeeded` refund, or more than one stamped refund, contradicts the
-  failure (409). A pending refund, no stamped refund, a stamped refund that does not corroborate
-  (other PaymentIntent, amount or currency), an incomplete or malformed listing, an unavailable
-  provider, and a provider with no prover are inconclusive (502).
+  listing. Precedence, in order:
+  1. Any stamped refund that does not corroborate (no id, another PaymentIntent, amount or
+     currency) makes the proof inconclusive (502), also beside a corroborated match. The adapter
+     counts such refunds; it does not rely on their id.
+  2. More than one corroborated stamped refund, or a corroborated `succeeded` refund, contradicts
+     the failure (409).
+  3. One corroborated stamped refund in `failed` or `canceled` is a proof and returns its `re_`
+     reference.
+  A pending refund, no stamped refund, an incomplete or malformed listing, an unavailable provider,
+  and a provider with no prover are inconclusive (502).
 - The fake PSP (offline and smoke stacks) proves only a refund failure that it recorded itself:
   a charge captured with the `fake-refund-fail-once` token fails its first refund terminally and
-  keeps that refund in memory, and its proof follows the same rule as the Stripe adapter. Every
-  other fake charge keeps its stateless refund and stays inconclusive (502). A Payments restart
-  loses the fake's memory, so the proof then answers inconclusive. The fake invents no evidence:
-  it is the provider, and it proves only its own recorded failure.
+  keeps that refund in memory. The proof looks that refund up by charge reference and key; the fake
+  records at most one refund per key, so the ambiguity cases exist only for Stripe. Every other fake
+  charge keeps its stateless refund and stays inconclusive (502). The guarantee holds only for a
+  capture whose provider reference Payments persisted: a capture that status recovery confirmed
+  without a stored reference takes the stateless refund path. A Payments restart loses the fake's
+  memory, so the proof then answers inconclusive. The fake invents no evidence: it is the provider,
+  and it proves only its own recorded failure.
 - After the provider answers, Payments reads the leg, its charge and its marker again. Any change
   refuses (409).
 - Error bodies are static. The provider idempotency key never crosses the boundary.
@@ -121,14 +135,21 @@ The command inspects the refund in the organizer with no lock, asks Payments wit
 §4), then writes in one transaction. It locks the refund row and then the order row, the order
 `CompleteOrderRefund` uses. Under those locks it rechecks the source reservation's organizer, the
 order's charge key, and the refund's order, amount and currency against what it inspected. It
-decides replay or conflict against any outcome committed in the meantime, refuses a refund that
-Payments completed, appends the outcome, sets the outside completion evidence, and advances the
-order projection with the same arithmetic as `CompleteOrderRefund` (one shared helper).
-`CompleteOrderRefund`, the ordinary `order.refunded` append and fact forwarding are unchanged.
+decides replay or conflict against any outcome committed in the meantime, refuses a refund with an
+abandonment reservation in either state (§10), refuses a refund that Payments completed, appends the
+outcome, sets the outside completion evidence, and advances the order projection with the same
+arithmetic as `CompleteOrderRefund` (one shared helper). `CompleteOrderRefund`, the ordinary
+`order.refunded` append and fact forwarding are unchanged.
 
-0027 locks only `order_refunds` (and `refund_outcomes` on Down). Locking `orders` first could
-deadlock with a live completion that holds a refund row and waits for its order. So the rollout
-needs no Commerce writer drain.
+Lock invariant (stated in 0027). Every transaction that touches `refund_outcomes` or the reservation
+table takes its relation lock on `order_refunds` first. The command writes lock the scoped refund
+row, then its order row, then read or write the two new tables. Ordinary reads and the cancellation
+bind read `order_refunds` before the outcome evidence, with no refund row lock. 0027 Up locks only
+`order_refunds`; Down locks the three tables in that order. Locking `orders` first could deadlock
+with a live completion that holds a refund row and waits for its order. So the rollout needs no
+Commerce writer drain. While 0027 Up holds `ACCESS EXCLUSIVE`, it validates the new CHECK and
+foreign key over every refund row, so writers queue for that time; at the current table size that
+is acceptable.
 
 ### 6. Replay, conflict and scope
 
@@ -136,7 +157,9 @@ A missing refund and a refund outside the organizer, on either the refund row or
 reservation, give the same refusal. An exact repeat (same kind, operator name, external reference
 and reason) returns the original record with its original time and attribution, and calls nothing.
 Any other repeat is a conflict. A refund that Payments completed is ineligible. All four are
-answered from Commerce alone, with no Payments call.
+answered from Commerce alone, with no Payments call. An outside completion of a refund with an
+abandonment reservation is refused before the proof read, also with no Payments call, and again
+under the locks for a reservation that committed while the proof was in flight.
 
 ### 7. Attribution is honest-operator evidence (ADR-003, ADR-021)
 
@@ -165,7 +188,7 @@ proof refuses a marked leg, so an outside completion cannot follow an abandonmen
 committed. The Down locks `payment_operations`, then `payment_refund_legs`, then the marker table, and
 refuses while a marker exists.
 
-### 10. `abandoned`: Payments first, then Commerce
+### 10. `abandoned`: reserve in Commerce, then Payments, then finish in Commerce
 
 ```
 commerce record-refund-outcome <organizer-id> <refund-id> abandoned <operator> <reason>
@@ -174,19 +197,36 @@ commerce record-refund-outcome <organizer-id> <refund-id> abandoned <operator> <
 The operator confirms that no outside transfer occurred and none is in flight. The command takes no
 reference: Payments supplies the provider's `re_` for the failed refund.
 
-1. Commerce inspects the refund in the organizer with no lock. It answers a missing or foreign
-   refund, an exact replay, a conflicting outcome and a completed refund from Commerce alone, with
-   no Payments call.
-2. Commerce calls `POST /internal/psp/partial-refund/abandon` with the organizer, the order's stored
-   charge key, the refund id as the refund key, and the refund's stored amount and currency. No
-   Commerce lock is held.
-3. After a valid 200 for exactly the refund's money, Commerce appends the `abandoned` outcome, with
-   the returned `re_` as its external reference, in one short transaction. It takes the same locks
-   and rechecks as §5 (one shared helper) and writes only the outcome. The refund stays `pending`.
-   The order projection, the tickets, the capacity and the reversal state do not change.
+Commerce migration 0027 adds `order_refund_abandonment_dispositions`, one row per
+`(organizer_id, refund_id)` with a composite foreign key to `order_refunds`. A row holds its state
+(`pending` or `finalized`), the refund's charge key, amount and currency, the operator name and
+reason, and the reservation time. A trigger admits only the change from `pending` to `finalized`
+with every other column kept, and refuses `DELETE` and `TRUNCATE`. The reservation is in its own
+table so that the append-only outcome stays evidence of a completed disposition.
 
-The first committed Commerce outcome supplies the recorded operator name and reason. An exact replay
-(same kind, operator name and reason) returns that record; the reference is not part of the command.
+1. **Inspect.** Commerce reads the refund in the organizer with no lock. It answers a missing or
+   foreign refund, an exact replay of a finalized abandonment, a conflicting outcome and a
+   completed refund from Commerce alone, with no Payments call.
+2. **Reserve.** In one short transaction, under the §5 locks and rechecks, Commerce refuses an
+   outside outcome (conflict) and a refund that is no longer pending (ineligible). It returns an
+   exact finalized replay. It inserts a `pending` reservation, or resumes a `pending` one when the
+   operator name and reason match exactly; a mismatch is a conflict. The reservation commits
+   **before** any Payments call. If the commit returns an error, the command stops before HTTP, and
+   an exact retry finds out whether the row committed.
+3. **Call.** With no Commerce lock held, Commerce calls `POST /internal/psp/partial-refund/abandon`
+   with the organizer, the reserved charge key, the refund id as the refund key, and the reserved
+   amount and currency.
+4. **Finish.** After a valid 200 for exactly the reserved money, one short transaction under the
+   same locks rechecks the target, the reservation and the refund state, appends the `abandoned`
+   outcome with the reserved operator name and reason and the returned `re_`, and sets the
+   reservation to `finalized`. Only this commit releases the quantity. If a concurrent run of the
+   same command already finalized the reservation, the finish returns that original outcome. The
+   refund stays `pending`. The order projection, the tickets, the capacity and the reversal state do
+   not change.
+
+From step 2, an outside completion of the refund is refused (§5, §6), so the two dispositions cannot
+both commit, also when another order shares the Payments charge. An exact replay (same kind,
+operator name and reason) returns the finalized record; the reference is not part of the command.
 
 ### 11. The Payments abandonment endpoint and its marker transaction
 
@@ -216,7 +256,8 @@ No database lock spans a provider call (ADR-037 §4 is unchanged).
   get a whole refund. The marked leg stays `bound` with its provider key.
 - **Commerce.** `BindOrderRefund`'s quantity sum excludes a refund with a matching `abandoned`
   outcome: same organizer, subject kind `order_refund` and subject id. An outside completion and an
-  ordinary pending refund still count. The release happens when the Commerce outcome commits.
+  ordinary pending refund still count. A pending reservation alone releases nothing. The release
+  happens when the finish (§10) commits the outcome.
 
 This is the only exception to ADR-037 §4. A pending refund with no outcome still consumes both
 ceilings, and so does a `refunded_outside` refund.
@@ -234,20 +275,25 @@ existing provider idempotency key covers overlapping submissions under the provi
 contract. `TestPartialRefundDispatchRefusesAnAbandonedLeg` pins the 409 with no provider call. With
 the marker read removed, the same fixture answers 422 after one listing GET, and still makes no POST.
 
-### 14. Recovery after an uncertain answer
+### 14. Recovery, and the cost of starting an abandonment
 
-There is no request table. A conclusive Payments 404 or 409 on a new abandonment leaves both
-services without a new record; the operator corrects the target, or reconciles the original leg, and
-can retry an eligible command. A timeout, a 5xx, an invalid answer, or a Commerce commit failure after
-Payments accepted leaves the stricter ceiling: Payments has released its allowance and Commerce keeps
-the quantity reserved. The same command run again converges: Payments answers from its marker and
-Commerce records once. An outside-completion command whose proof starts after the marker commits is
-refused (§3), even while Commerce has no outcome yet. The remaining window is an outside command that
-has its proof while a concurrent abandonment is about to commit. Concurrent contradictory commands for
-one refund are outside scope; the runbook requires operators to agree the disposition before any
-command or outside transfer, and to investigate a detected conflict before any further money action.
+Any non-200 answer, a transport failure, unusable evidence or a failed Commerce finish leaves the
+reservation `pending`, unless another run already finalized it. A 404 or 409 describes one abandon
+request: an overlapping request for the same leg can still commit the marker. The next run uses the
+same command. Payments answers from a committed marker without asking the provider (§11), and
+Commerce finishes once. While the reservation is pending and Payments has no marker, both allowances
+stay reserved. After a marker and before the finish, Payments has released its allowance and
+Commerce still counts the quantity: the stricter ceiling.
 
-### 15. Bulk runs skip an abandoned refund (owner decision of 2026-10-12)
+An operator who starts an abandonment commits to that disposition for the refund. An outside
+completion is refused from then on. If the refusal clears, the operator finishes the abandonment
+with the original operator name and reason, and staff submit a fresh refund where appropriate. A
+resume attributes the outcome to the operator who started it. A pending reservation on a refund
+that an ordinary completion has since completed is inert. A pending reservation whose proof never
+becomes conclusive, such as an unstamped leg, stays pending. An outside outcome together with a
+marker on the same leg is an invariant violation: stop further money actions and investigate.
+
+### 15. Bulk runs and abandoned refunds (owner decision of 2026-10-12)
 
 `LookupRefundByID` (and `BindOrderRefund`'s replay) carry the abandoned flag, scoped to the refund's
 own organizer. The bulk runner checks it in **both** quantity branches, before it uses a fixed
@@ -263,7 +309,19 @@ projection and the reversal state, which the abandonment did not change:
 If the abandonment commits between the runner's lookup and the Commerce bind, the shared refund unit
 refuses (`refunds.ErrRefundAbandoned`) before any Payments call, and the runner applies the same
 classification. If it commits after the bind, Payments' marker has committed first and dispatch
-answers 409. The `(slot, order)` key, attempt charges and terminal report snapshots are unchanged.
+answers 409.
+
+**A fresh cancellation bind on an order with an abandoned refund is refused.** A runner requests the
+sold quantity minus the completed quantity, and a later staff refund does not say which abandoned
+units it replaced. So `BindOrderRefund` refuses a new key in the reserved `cancel:` namespace when any
+refund of the scoped order has an `abandoned` outcome, whoever bound it, also after staff completed a
+replacement. The check runs under the order lock, before the quantity ceiling, and reads
+`order_refunds` first. The finish (§10) holds the same order lock, so the bind sees an abandonment
+entirely or not at all. A pending reservation alone does not trigger it. The runner classifies the
+refusal like the own-key skip: `refund_refused` at positive remaining quantity, and at zero
+`already_refunded` after discharge or `reversal_outstanding` while an obligation remains. It makes
+zero Payments calls. Valid same-key replays keep their behavior. Staff own any further refund of the
+order. The `(slot, order)` key, attempt charges and terminal report snapshots are unchanged.
 
 ### 16. Staff replacement through the Back Office (owner decision of 2026-10-12)
 
@@ -271,7 +329,9 @@ After a recorded `abandoned` outcome, staff can submit a new refund under a new 
 Office. The platform never re-submits automatically, and no operator command re-submits.
 
 A valid staff replay of the abandoned refund's key answers Commerce 409 with `code: refund_abandoned`
-and sends nothing to Payments. A mismatched fingerprint and an ordinary Payments 409 stay generic
+and sends nothing to Payments. "Abandoned" here means a finalized `abandoned` outcome: while a
+reservation is only pending, a staff replay still reaches Payments, so an ordinary completion can
+still settle the refund and leave the reservation inert. A mismatched fingerprint and an ordinary Payments 409 stay generic
 409s with no code. The handwritten Back Office client (`web/backoffice/src/lib/commerce.ts`) reads the
 code only on a 409. `unresolvedRefund` (`order-console.ts`) then settles the saved retry, and the page
 clears only the saved retry with the same organizer, order and key, and renders a blank refund form
@@ -299,36 +359,26 @@ with a fresh key. A generic refusal and a different saved key keep the existing 
   and its leg stays `bound`: both are history, not work.
 - A lost answer after Payments committed its marker leaves Payments' allowance released and
   Commerce's quantity reserved until the same command is run again. Find such a case with the
-  runbook's leg query: a marker with no Commerce outcome.
-- Like the outcome, the marker is honest-operator evidence (ADR-003, ADR-021), not tamper-evidence.
+  runbook's query: a pending reservation with a marker and no Commerce outcome.
+- Like the outcome, the marker and the reservation are honest-operator evidence (ADR-003, ADR-021),
+  not tamper-evidence. The shared `commerce` login is session provenance; the typed name is the
+  personal attribution.
+- Checkout accepts the synthetic `exchange:<id>` key spelling, so two Commerce orders with their own
+  quantity ceilings can store the same Payments charge key. The reservation keeps an outside
+  completion and an abandonment of one refund from both committing, so this alias cannot release a
+  captured-money allowance that another order then spends. The alias itself is pre-existing and is
+  deferred to TKT-586.
 
 ## Verification
 
-- Commerce migration: `services/commerce/internal/store/migration_0027_smoke_test.go`.
-- Payments migration: `services/payments/internal/store/migration_0007_smoke_test.go`.
-- Proof adapter: `services/payments/internal/psp/stripe_refund_proof_test.go`.
-- Proof endpoint, real router and Stripe adapter against a recording peer:
-  `services/payments/internal/api/partial_refund_failure_proof_smoke_test.go`.
-- Commerce store, scope, rechecks, lock order and ceiling:
-  `services/commerce/internal/store/refund_outcomes_smoke_test.go`.
-- Command coordinator, proof client, reversal and bulk replay:
-  `services/commerce/internal/refundoutcome/`.
-- CLI validation before any connection: `services/commerce/cmd/commerce/refund_outcomes_test.go`.
-- Same-key pins after a terminal 422: `TestStaffRefundRepeatAfterTerminal422ReusesTheOriginalKeys`,
-  `TestDowngradeRepeatAfterTerminal422ReusesTheOriginalKeys` and
-  `TestPartialRefundRepeatAfterTerminal422ReusesTheStoredProviderKey`.
-- S2, Payments ceilings and marker scope: `services/payments/internal/store/refund_leg_abandonments_smoke_test.go`.
-- S2, Payments abandonment endpoint, recheck and dispatch refusal, real router and Stripe adapter:
-  `services/payments/internal/api/partial_refund_abandon_smoke_test.go`.
-- S2, Commerce ceiling, flag, write, replay, refusals and lock order:
-  `services/commerce/internal/store/refund_abandoned_smoke_test.go`.
-- S2, coordinator recovery (lost answer, commit failure, refused proof after the marker) and the
-  abandon client: `services/commerce/internal/refundoutcome/abandon_smoke_test.go`, `client_test.go`.
-- S2, bulk skip in both branches and the late abandonment:
-  `services/commerce/internal/bulkrefund/runner_abandoned_smoke_test.go`.
-- S2, staff `refund_abandoned`: `services/commerce/internal/api/refund_abandoned_smoke_test.go`.
-- S2, Back Office: `web/backoffice/test/` (`api`, `order-console`, `mutation-pages`) and the browser
-  spec `test/browser/refund-abandoned.mjs` (`make browser`, host Chrome).
+The rules above are pinned by the service suites under `services/commerce/internal/` (`store`,
+`refundoutcome`, `bulkrefund`, `api`) and `services/payments/internal/` (`psp`, `api`, `store`), the
+CLI test in `services/commerce/cmd/commerce/`, the running-stack journeys in
+`smoke/refund_outcome_test.go`, the Back Office tests in `web/backoffice/test/` and the browser spec
+`test/browser/refund-abandoned.mjs`. The cross-service recovery and shared-charge cases run the
+Commerce coordinator against the smoke stack's real Payments
+(`services/commerce/internal/refundoutcome/realpayments_smoke_test.go`). The TKT-525 ticket records
+the mutation evidence for each guard.
 
 ## References
 

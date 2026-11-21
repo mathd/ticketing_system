@@ -132,13 +132,23 @@ func seedAbandonedCancellation(t *testing.T, ctx context.Context, db *sql.DB, ab
 
 func recordAbandonedOutcome(t *testing.T, ctx context.Context, db *sql.DB, o abandonedOrder) {
 	t.Helper()
-	in := store.RefundOutcomeRequest{OrganizerID: o.org, RefundID: o.bulkRefund, Kind: store.OutcomeAbandoned,
+	abandonRefund(t, ctx, db, o.org, o.bulkRefund)
+}
+
+// abandonRefund records an `abandoned` outcome the way the command does, with payments' answer
+// assumed: reserve, then finish.
+func abandonRefund(t *testing.T, ctx context.Context, db *sql.DB, org, refund uuid.UUID) {
+	t.Helper()
+	in := store.RefundOutcomeRequest{OrganizerID: org, RefundID: refund, Kind: store.OutcomeAbandoned,
 		OperatorName: "Ada Operator", Reason: "nobody will refund this attempt"}
-	target, err := store.InspectRefundOutcomeTarget(ctx, db, o.org, o.bulkRefund)
+	target, err := store.InspectRefundOutcomeTarget(ctx, db, org, refund)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.RecordAbandoned(ctx, db, in, target, "re_failed_bulk"); err != nil {
+	if _, _, err := store.ReserveAbandonment(ctx, db, in, target); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.FinishAbandonment(ctx, db, in, target, "re_failed_bulk"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -297,4 +307,138 @@ func TestBulkRunClassifiesAnAbandonmentThatLandsAfterItsLookup(t *testing.T) {
 			}
 		})
 	}
+}
+
+// staffOrder is a two-unit order at 1000 with no cancellation refund.
+func staffOrder(t *testing.T, ctx context.Context, db *sql.DB) abandonedOrder {
+	t.Helper()
+	o := abandonedOrder{org: uuid.New(), slot: uuid.New(), order: uuid.New()}
+	res := uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status)
+		VALUES($1,$2,$3,$4,$5,$6,2,1000,2000,2000,'EUR','completed')`,
+		res, o.org, uuid.New(), o.slot, uuid.New(), uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO orders(id,reservation_id,status,idempotency_key,request_fingerprint,guest_order_ref)
+		VALUES($1,$2,'completed',$3,'fp',$4)`, o.order, res, "checkout-"+o.order.String(), uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	return o
+}
+
+func staffRefund(t *testing.T, ctx context.Context, db *sql.DB, o abandonedOrder, key string, quantity int32) uuid.UUID {
+	t.Helper()
+	r, err := store.BindOrderRefund(ctx, db, store.RefundRequest{
+		OrderID: o.order, OrganizerID: o.org, Quantity: quantity, IdempotencyKey: key,
+		Actor: "support@example.test", Reason: "staff refund",
+	})
+	if err != nil {
+		t.Fatalf("staff refund %s: %v", key, err)
+	}
+	return r.ID
+}
+
+func completeStaffRefund(t *testing.T, ctx context.Context, db *sql.DB, o abandonedOrder, refund uuid.UUID, discharge bool) {
+	t.Helper()
+	if err := store.CompleteOrderRefund(ctx, db, o.org, refund, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if discharge {
+		if err := store.MarkRefundTicketsVoided(ctx, db, o.org, refund); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.MarkRefundCapacityReturned(ctx, db, o.org, refund); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// R1-1 and the owner's staff-only rule: an order with ANY abandoned refund gets no fresh
+// cancellation bind, also when the abandoned refund was a staff refund and the run has no leg
+// of its own, and also after staff completed a replacement. Through the real runner and refund
+// service: the runner reaches the shared refund unit, the bind refuses under the order lock,
+// and the row is classified like the own-key skip, with zero payments calls and no new
+// cancellation refund.
+func TestBulkRunRefusesAFreshBindOnAnOrderWithAnAbandonedStaffRefund(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		setup func(t *testing.T, ctx context.Context, db *sql.DB, o abandonedOrder)
+		want  verdict
+	}{
+		{"staff R1 abandoned, R2 replaced, one unit left", func(t *testing.T, ctx context.Context, db *sql.DB, o abandonedOrder) {
+			abandonRefund(t, ctx, db, o.org, staffRefund(t, ctx, db, o, "staff-r1", 1))
+			completeStaffRefund(t, ctx, db, o, staffRefund(t, ctx, db, o, "staff-r2", 1), true)
+		}, verdict{outcome: "failed", failureCode: "refund_refused"}},
+		{"staff refund abandoned, no cancellation leg, no replacement", func(t *testing.T, ctx context.Context, db *sql.DB, o abandonedOrder) {
+			abandonRefund(t, ctx, db, o.org, staffRefund(t, ctx, db, o, "staff-r1", 2))
+		}, verdict{outcome: "failed", failureCode: "refund_refused"}},
+		{"zero left, reversal discharged", func(t *testing.T, ctx context.Context, db *sql.DB, o abandonedOrder) {
+			abandonRefund(t, ctx, db, o.org, staffRefund(t, ctx, db, o, "staff-r1", 1))
+			completeStaffRefund(t, ctx, db, o, staffRefund(t, ctx, db, o, "staff-r2", 2), true)
+		}, verdict{outcome: "already_refunded", money: true, voided: true, returned: true, refundedQuantity: 2, refundedAmount: 2000}},
+		{"zero left, reversal outstanding", func(t *testing.T, ctx context.Context, db *sql.DB, o abandonedOrder) {
+			abandonRefund(t, ctx, db, o.org, staffRefund(t, ctx, db, o, "staff-r1", 1))
+			completeStaffRefund(t, ctx, db, o, staffRefund(t, ctx, db, o, "staff-r2", 2), false)
+		}, verdict{outcome: "failed", failureCode: "reversal_outstanding", money: true, refundedQuantity: 2, refundedAmount: 2000}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			db, ctx := runnerDB(t)
+			o := staffOrder(t, ctx, db)
+			c.setup(t, ctx, db, o)
+			startRun(t, ctx, db, o, false)
+
+			transport := &recordingTransport{}
+			refunder := &countingRefunder{Service: refunds.New(db, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")}
+			New(DBStore{DB: db}, refunder, time.Minute, 10, time.Minute).RunOnce(ctx)
+
+			if n := transport.payments(); n != 0 {
+				t.Fatalf("the run made %d payments calls", n)
+			}
+			got := readVerdict(t, ctx, db, o)
+			want := c.want
+			want.attempts = 1
+			want.requestedQuantity = got.requestedQuantity
+			if got != want {
+				t.Fatalf("verdict = %+v, want %+v", got, want)
+			}
+			assertNoCancellationRefund(t, ctx, db, o)
+		})
+	}
+}
+
+func assertNoCancellationRefund(t *testing.T, ctx context.Context, db *sql.DB, o abandonedOrder) {
+	t.Helper()
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM order_refunds WHERE order_id=$1 AND idempotency_key LIKE 'cancel:%'`, o.order).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("cancellation refunds = %d err=%v, want none", n, err)
+	}
+}
+
+// A staff refund is abandoned after the runner's lookup and before its locked bind. The bind
+// sees the abandonment under the order lock and refuses; the row is refund_refused.
+func TestBulkRunRefusesAStaffAbandonmentThatLandsBeforeItsBind(t *testing.T) {
+	db, ctx := runnerDB(t)
+	o := staffOrder(t, ctx, db)
+	staff := staffRefund(t, ctx, db, o, "staff-r1", 1)
+	startRun(t, ctx, db, o, false)
+	s := &lateAbandonStore{DBStore: DBStore{DB: db}, ctx: ctx}
+	s.abandon = func() { abandonRefund(t, ctx, db, o.org, staff) }
+
+	transport := &recordingTransport{}
+	refunder := &countingRefunder{Service: refunds.New(db, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")}
+	New(s, refunder, time.Minute, 10, time.Minute).RunOnce(ctx)
+
+	if n := transport.payments(); n != 0 {
+		t.Fatalf("the run made %d payments calls", n)
+	}
+	if n := refunder.count(); n != 1 {
+		t.Fatalf("refund unit calls = %d, want 1 (the refused bind)", n)
+	}
+	got := readVerdict(t, ctx, db, o)
+	if got.outcome != "failed" || got.failureCode != "refund_refused" || got.money || got.attempts != 1 {
+		t.Fatalf("verdict = %+v, want a terminal refund_refused", got)
+	}
+	assertNoCancellationRefund(t, ctx, db, o)
 }

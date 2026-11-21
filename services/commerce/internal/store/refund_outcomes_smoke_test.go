@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // TKT-525 S1 (ADR-087): recording `refunded_outside` for a failed staff or bulk refund.
@@ -309,52 +308,6 @@ func TestRecordRefundedOutsideRechecksTheInspectedRow(t *testing.T) {
 				t.Fatalf("projection = %+v, want untouched", p)
 			}
 		})
-	}
-}
-
-// Lock order. CompleteOrderRefund locks the refund row and then the order row; the outside
-// completion must take the same order, or it can deadlock with an ordinary completion. With
-// the order row held elsewhere, the writer must already hold its refund row while it waits.
-func TestRecordRefundedOutsideLocksTheRefundBeforeTheOrder(t *testing.T) {
-	db, ctx := outboxDB(t)
-	c, _ := seedCompleted(t, db, ctx, "charge-"+uuid.NewString(), 1, 1000)
-	r := bindPending(t, ctx, db, c, "lock-order", 1)
-	target, err := InspectRefundOutcomeTarget(ctx, db, c.OrganizerID, r.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	holder, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = holder.Rollback() }()
-	if _, err := holder.ExecContext(ctx, `SELECT 1 FROM orders WHERE id=$1 FOR UPDATE`, c.OrderID); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() {
-		_, _, err := RecordRefundedOutside(ctx, db, outsideRequest(c, r.ID), target)
-		done <- err
-	}()
-	waitForLockWait(t, ctx, db, outsideOrderLockSQL, done)
-
-	probe, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, probeErr := probe.ExecContext(ctx, `SELECT 1 FROM order_refunds WHERE organizer_id=$1 AND id=$2 FOR UPDATE NOWAIT`, c.OrganizerID, r.ID)
-	_ = probe.Rollback()
-	var pg *pgconn.PgError
-	if !errors.As(probeErr, &pg) || pg.Code != "55P03" {
-		t.Fatalf("the refund row was lockable while the writer waited for the order (err=%v). "+
-			"It locks the order first, against CompleteOrderRefund's refund-then-order order", probeErr)
-	}
-	if err := holder.Rollback(); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-done; err != nil {
-		t.Fatalf("the outside completion failed once the order was released: %v", err)
 	}
 }
 

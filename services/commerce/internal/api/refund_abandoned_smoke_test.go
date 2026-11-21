@@ -30,6 +30,7 @@ func TestStaffReplayOfAnAbandonedRefundAnswersRefundAbandoned(t *testing.T) {
 		body   string
 	}{
 		{http.StatusUnprocessableEntity, `{"error":"provider refund failed","code":"provider_refund_failed","provider_ref":"re_terminal"}`},
+		{http.StatusUnprocessableEntity, `{"error":"provider refund failed","code":"provider_refund_failed","provider_ref":"re_terminal"}`},
 		{http.StatusConflict, `{"error":"refund legs would exceed the captured amount"}`},
 	}
 	payments := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -76,10 +77,24 @@ func TestStaffReplayOfAnAbandonedRefundAnswersRefundAbandoned(t *testing.T) {
 		t.Fatalf("first attempt: %d %v, want the terminal 422", code, body)
 	}
 	refundID := commercestore.RefundID(f.organizer, key)
+	// A PENDING reservation is not a local abandonment: the staff replay still reaches
+	// payments, so an ordinary completion can still settle the refund.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO order_refund_abandonment_dispositions(organizer_id,refund_id,state,charge_key,amount,currency,operator_name,reason)
+		SELECT organizer_id, id, 'pending', 'checkout-key', amount, currency, 'Ada Operator', 'nobody will refund this attempt'
+		FROM order_refunds WHERE organizer_id=$1 AND id=$2`, f.organizer, refundID); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := post(key, original); code != http.StatusUnprocessableEntity || body["code"] != "provider_refund_failed" {
+		t.Fatalf("replay while the reservation is pending: %d %v, want the payments answer", code, body)
+	}
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO refund_outcomes(organizer_id,subject_kind,subject_id,kind,amount,currency,external_ref,operator_name,session_user_name,reason)
 		VALUES($1,'order_refund',$2,'abandoned',1000,'EUR','re_terminal','Ada Operator',session_user,'nobody will refund this attempt')`,
 		f.organizer, refundID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE order_refund_abandonment_dispositions SET state='finalized' WHERE organizer_id=$1 AND refund_id=$2`, f.organizer, refundID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -88,8 +103,8 @@ func TestStaffReplayOfAnAbandonedRefundAnswersRefundAbandoned(t *testing.T) {
 	if code != http.StatusConflict || body["error"] != "refund abandoned" || body["code"] != "refund_abandoned" || len(body) != 2 {
 		t.Fatalf("replay of the abandoned refund: %d %v, want 409 refund_abandoned", code, body)
 	}
-	if got := seen(); len(got) != 1 {
-		t.Fatalf("payments calls = %v, want only the first attempt's", got)
+	if got := seen(); len(got) != 2 {
+		t.Fatalf("payments calls = %v, want only the first attempt's and the pending replay's", got)
 	}
 
 	// The same key with a different request is the generic idempotency conflict.
@@ -103,7 +118,7 @@ func TestStaffReplayOfAnAbandonedRefundAnswersRefundAbandoned(t *testing.T) {
 	if code != http.StatusConflict || body["code"] != "" || body["error"] != "refund unresolved" {
 		t.Fatalf("ordinary payments 409: %d %v, want the generic 409", code, body)
 	}
-	if got := seen(); len(got) != 2 || got[1] != "POST /internal/psp/partial-refund" {
+	if got := seen(); len(got) != 3 || got[2] != "POST /internal/psp/partial-refund" {
 		t.Fatalf("payments calls = %v, want the fresh key's one partial refund", got)
 	}
 	var status string

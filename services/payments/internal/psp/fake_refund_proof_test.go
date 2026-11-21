@@ -127,9 +127,8 @@ func TestFakeProveRefundFailureRefusesASucceededRefund(t *testing.T) {
 	}
 }
 
-// The remaining predicates, from recorded state. Two of them (two refunds under one stamp, and
-// a corroborated match beside an uncorroborated one) cannot be reached through Refund, which
-// replays a recorded key; the proof still refuses them, as the Stripe adapter does.
+// The remaining predicates, from recorded state. Refund records at most one refund per key, so
+// the ambiguity cases (two stamped refunds, mixed evidence) exist only in the Stripe suite.
 func TestFakeProveRefundFailureRefusesEverythingElse(t *testing.T) {
 	const pi = failOnceRefPrefix + "proof"
 	ours := fakeRefund{id: "re_fake_ours", key: "leg-1", amount: 1000, currency: "EUR", failed: true}
@@ -150,9 +149,6 @@ func TestFakeProveRefundFailureRefusesEverythingElse(t *testing.T) {
 		{"a different amount", []fakeRefund{ours}, pi, "leg-1", 999, "EUR", ErrRefundProofInconclusive},
 		{"a different currency", []fakeRefund{ours}, pi, "leg-1", 1000, "USD", ErrRefundProofInconclusive},
 		{"a non-positive amount", []fakeRefund{{id: "re_fake_zero", key: "leg-1", amount: 0, currency: "EUR", failed: true}}, pi, "leg-1", 0, "EUR", ErrRefundProofInconclusive},
-		{"two refunds carry the stamp", []fakeRefund{ours, {id: "re_fake_second", key: "leg-1", amount: 1000, currency: "EUR", failed: true}}, pi, "leg-1", 1000, "EUR", ErrRefundProofContradicted},
-		{"a corroborated match beside an uncorroborated one", []fakeRefund{ours, {id: "re_fake_odd", key: "leg-1", amount: 5, currency: "EUR", failed: true}}, pi, "leg-1", 1000, "EUR", ErrRefundProofInconclusive},
-		{"the stamped refund succeeded", []fakeRefund{{id: "re_fake_ok", key: "leg-1", amount: 1000, currency: "EUR"}}, pi, "leg-1", 1000, "EUR", ErrRefundProofContradicted},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := &Fake{refunds: map[string][]fakeRefund{pi: c.recorded}}

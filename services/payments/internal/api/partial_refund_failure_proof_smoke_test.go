@@ -321,11 +321,17 @@ func TestFailureProofRefusesProviderEvidenceThatIsNotAProof(t *testing.T) {
 		assertProofResponse(t, f.getValid(t), 502, `{"error":"refund failure proof unavailable"}`)
 		f.assertNothingWritten(t)
 	})
-	// The fake PSP proves only refunds it itself failed (TKT-525); it never recorded this one.
-	t.Run("the fake PSP never recorded the refund", func(t *testing.T) {
-		f := newProofFixture(t, func(*stripePeer) psp.PSP { return psp.NewFake() })
+	// A provider without the RefundFailureProver capability cannot prove anything (RA1-3).
+	// countingPSP embeds only the PSP interface. The fake's own unrecorded-history case is in
+	// the psp package's fake suite.
+	t.Run("the provider has no proof capability", func(t *testing.T) {
+		provider := &countingPSP{PSP: psp.NewFake()}
+		f := newProofFixture(t, func(*stripePeer) psp.PSP { return provider })
 		assertProofResponse(t, f.getValid(t), 502, `{"error":"refund failure proof unavailable"}`)
 		f.assertNothingWritten(t)
+		if n := provider.count(); n != 0 {
+			t.Fatalf("the proof submitted %d provider refunds", n)
+		}
 	})
 	t.Run("the charge has no provider reference", func(t *testing.T) {
 		f := newProofFixture(t, nil)

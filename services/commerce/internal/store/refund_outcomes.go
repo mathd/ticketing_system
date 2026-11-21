@@ -47,6 +47,10 @@ var (
 	// ErrRefundOutcomeStale reports that the refund or its order changed between the scoped
 	// inspection and the locked write. Nothing was written; run the command again.
 	ErrRefundOutcomeStale = errors.New("refund changed since it was inspected")
+	// ErrAbandonmentReserved reports an abandonment reservation for the refund, pending or
+	// finalized. An operator started to abandon this refund; an outside completion of it is
+	// refused, so the two dispositions cannot both commit (ADR-087).
+	ErrAbandonmentReserved = errors.New("an abandonment is reserved for this refund")
 )
 
 // RefundOutcomeRequest is one operator command. Amount and currency are NOT here: they are
@@ -138,6 +142,34 @@ type RefundOutcomeTarget struct {
 	ChargeKey string
 	// Outcome is the outcome already recorded for this refund, or nil.
 	Outcome *RefundOutcome
+	// Disposition is the abandonment reservation for this refund, or nil.
+	Disposition *AbandonmentDisposition
+}
+
+// Abandonment disposition states. A reservation moves only from pending to finalized.
+const (
+	DispositionPending   = "pending"
+	DispositionFinalized = "finalized"
+)
+
+// AbandonmentDisposition is the Commerce abandonment reservation for one refund (ADR-087). It
+// is committed before payments is asked to release the leg's allowance, and it finalizes in the
+// same transaction that appends the `abandoned` outcome.
+type AbandonmentDisposition struct {
+	State string
+	// ChargeKey, Amount and Currency are the refund's stored charge key and money, copied when
+	// the row was reserved. The payments call uses these.
+	ChargeKey    string
+	Amount       int64
+	Currency     string
+	OperatorName string
+	Reason       string
+	ReservedAt   time.Time
+}
+
+// resumes reports whether a repeated abandonment command is the command that reserved the row.
+func (d AbandonmentDisposition) resumes(in RefundOutcomeRequest) bool {
+	return in.Kind == OutcomeAbandoned && d.OperatorName == in.OperatorName && d.Reason == in.Reason
 }
 
 // Completed reports a refund already completed, by either evidence source.
@@ -181,7 +213,30 @@ func InspectRefundOutcomeTarget(ctx context.Context, db *sql.DB, org, refundID u
 	if found {
 		t.Outcome = &o
 	}
+	d, found, err := lookupAbandonmentDisposition(ctx, db, org, refundID)
+	if err != nil {
+		return RefundOutcomeTarget{}, err
+	}
+	if found {
+		t.Disposition = &d
+	}
 	return t, nil
+}
+
+func lookupAbandonmentDisposition(ctx context.Context, q rowQuerier, org, refundID uuid.UUID) (AbandonmentDisposition, bool, error) {
+	var d AbandonmentDisposition
+	err := q.QueryRowContext(ctx, `
+		SELECT state, charge_key, amount, currency, operator_name, reason, reserved_at
+		FROM order_refund_abandonment_dispositions WHERE organizer_id=$1 AND refund_id=$2`, org, refundID).
+		Scan(&d.State, &d.ChargeKey, &d.Amount, &d.Currency, &d.OperatorName, &d.Reason, &d.ReservedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AbandonmentDisposition{}, false, nil
+	}
+	if err != nil {
+		return AbandonmentDisposition{}, false, err
+	}
+	d.ReservedAt = d.ReservedAt.UTC()
+	return d, true, nil
 }
 
 func lookupRefundOutcome(ctx context.Context, q rowQuerier, org, refundID uuid.UUID) (RefundOutcome, bool, error) {
@@ -231,12 +286,23 @@ func RecordRefundedOutside(ctx context.Context, db *sql.DB, in RefundOutcomeRequ
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	locked, existing, err := lockOutcomeTarget(ctx, tx, in, inspected)
+	locked, err := lockOutcomeTarget(ctx, tx, in, inspected)
 	if err != nil {
 		return RefundOutcome{}, false, err
 	}
-	if existing != nil {
+	if existing, err := locked.replay(in); err != nil || existing != nil {
+		if err != nil {
+			return RefundOutcome{}, false, err
+		}
 		return *existing, true, tx.Commit()
+	}
+	// Under the refund lock, so a reservation committed while the proof was in flight is seen
+	// here: the abandonment owns this refund (ADR-087).
+	if locked.disposition != nil {
+		return RefundOutcome{}, false, ErrAbandonmentReserved
+	}
+	if locked.status != "pending" {
+		return RefundOutcome{}, false, ErrRefundOutcomeIneligible
 	}
 	out, err := appendRefundOutcome(ctx, tx, in, locked, in.ExternalRef)
 	if err != nil {
@@ -258,26 +324,90 @@ func RecordRefundedOutside(ctx context.Context, db *sql.DB, in RefundOutcomeRequ
 	return out, false, tx.Commit()
 }
 
-// RecordAbandoned appends an `abandoned` outcome (TKT-525 S2, ADR-087), in ONE short
-// transaction, after payments has committed its abandonment marker for the refund's leg and
-// returned the provider's reference for the failed refund. That reference becomes the
-// outcome's external reference; the operator never types it.
+// ReserveAbandonment commits the Commerce abandonment reservation for one refund (TKT-525 S2,
+// ADR-087), in ONE short transaction, BEFORE any payments call. The caller must stop if this
+// returns an error, including a commit error: an exact retry finds out whether the row committed.
 //
-// It takes the same locks and rechecks as RecordRefundedOutside and writes ONLY the outcome.
-// The refund stays pending; the order projection, the tickets and the capacity keep their
-// state. The quantity allowance is released because BindOrderRefund's sum excludes a refund
-// with a matching abandoned outcome, so the release happens exactly when this commits.
+// Under the refund-then-order locks it rechecks what the inspection read, then:
 //
-// replay=true returns the ORIGINAL record, with its time, attribution and reference, and
-// writes nothing.
-func RecordAbandoned(ctx context.Context, db *sql.DB, in RefundOutcomeRequest, inspected RefundOutcomeTarget, providerRef string) (RefundOutcome, bool, error) {
+//   - an outcome already recorded answers first: an exact `abandoned` replay is returned in
+//     `existing`, and anything else (an outside outcome, a different command) conflicts;
+//   - a refund that is no longer pending is ineligible;
+//   - with no reservation it inserts a pending one, with the refund's charge key and money and
+//     the command's operator name and reason;
+//   - a pending reservation is resumed when the operator name and reason match exactly, and
+//     conflicts otherwise.
+//
+// The returned reservation carries the stored identities the payments call must use.
+func ReserveAbandonment(ctx context.Context, db *sql.DB, in RefundOutcomeRequest, inspected RefundOutcomeTarget) (AbandonmentDisposition, *RefundOutcome, error) {
 	if in.Kind != OutcomeAbandoned {
-		return RefundOutcome{}, false, fmt.Errorf("RecordAbandoned takes kind %s, got %q", OutcomeAbandoned, in.Kind)
+		return AbandonmentDisposition{}, nil, fmt.Errorf("ReserveAbandonment takes kind %s, got %q", OutcomeAbandoned, in.Kind)
+	}
+	if err := in.Validate(); err != nil {
+		return AbandonmentDisposition{}, nil, err
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return AbandonmentDisposition{}, nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	locked, err := lockOutcomeTarget(ctx, tx, in, inspected)
+	if err != nil {
+		return AbandonmentDisposition{}, nil, err
+	}
+	if existing, err := locked.replay(in); err != nil || existing != nil {
+		if err != nil {
+			return AbandonmentDisposition{}, nil, err
+		}
+		return AbandonmentDisposition{}, existing, tx.Commit()
+	}
+	if locked.status != "pending" {
+		return AbandonmentDisposition{}, nil, ErrRefundOutcomeIneligible
+	}
+	if d := locked.disposition; d != nil {
+		// A finalized reservation always has its outcome (they commit together), which the
+		// replay above answered. A pending one is resumed only by the same command.
+		if d.State != DispositionPending || !d.resumes(in) {
+			return AbandonmentDisposition{}, nil, ErrRefundOutcomeConflict
+		}
+		return *d, nil, tx.Commit()
+	}
+	d := AbandonmentDisposition{State: DispositionPending, ChargeKey: locked.chargeKey, Amount: locked.amount,
+		Currency: locked.currency, OperatorName: in.OperatorName, Reason: in.Reason}
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO order_refund_abandonment_dispositions(organizer_id,refund_id,state,charge_key,amount,currency,operator_name,reason)
+		VALUES($1,$2,'pending',$3,$4,$5,$6,$7) RETURNING reserved_at`,
+		in.OrganizerID, in.RefundID, d.ChargeKey, d.Amount, d.Currency, d.OperatorName, d.Reason).Scan(&d.ReservedAt); err != nil {
+		return AbandonmentDisposition{}, nil, err
+	}
+	d.ReservedAt = d.ReservedAt.UTC()
+	return d, nil, tx.Commit()
+}
+
+// FinishAbandonment appends the `abandoned` outcome and finalizes the reservation, in ONE short
+// transaction, after payments committed its marker for the reserved leg and returned the
+// provider's reference for the failed refund. That reference becomes the outcome's external
+// reference; the operator never types it.
+//
+// Under the refund-then-order locks it rechecks the target, the reservation and the refund
+// state. A concurrent finish of the same reservation is answered with its original outcome. The
+// outcome carries the reserved operator name and reason. The refund stays pending; the order
+// projection, the tickets and the capacity keep their state. The quantity allowance is released
+// because BindOrderRefund's sum excludes a refund with an `abandoned` outcome, so the release
+// happens exactly when this commits.
+//
+// The order row lock is part of the contract: a fresh cancellation bind holds it while it
+// checks for abandoned outcomes and sums the ceiling, so it sees this commit entirely or not at
+// all (TestFinishAbandonmentLocksTheRefundBeforeTheOrder).
+func FinishAbandonment(ctx context.Context, db *sql.DB, in RefundOutcomeRequest, inspected RefundOutcomeTarget, providerRef string) (RefundOutcome, bool, error) {
+	if in.Kind != OutcomeAbandoned {
+		return RefundOutcome{}, false, fmt.Errorf("FinishAbandonment takes kind %s, got %q", OutcomeAbandoned, in.Kind)
 	}
 	if err := in.Validate(); err != nil {
 		return RefundOutcome{}, false, err
 	}
-	if !strings.HasPrefix(providerRef, "re_") || len(providerRef) <= len("re_") || len(providerRef) > 200 {
+	if !strings.HasPrefix(providerRef, "re_") || len(providerRef) <= len("re_") || len(providerRef) > MaxProviderRefundRef {
 		return RefundOutcome{}, false, fmt.Errorf("abandoned outcome needs the provider's refund reference, got %q", providerRef)
 	}
 	tx, err := db.BeginTx(ctx, nil)
@@ -286,83 +416,118 @@ func RecordAbandoned(ctx context.Context, db *sql.DB, in RefundOutcomeRequest, i
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	locked, existing, err := lockOutcomeTarget(ctx, tx, in, inspected)
+	locked, err := lockOutcomeTarget(ctx, tx, in, inspected)
 	if err != nil {
 		return RefundOutcome{}, false, err
 	}
-	if existing != nil {
+	if existing, err := locked.replay(in); err != nil || existing != nil {
+		if err != nil {
+			return RefundOutcome{}, false, err
+		}
 		return *existing, true, tx.Commit()
+	}
+	d := locked.disposition
+	if d == nil || d.State != DispositionPending || !d.resumes(in) ||
+		d.ChargeKey != locked.chargeKey || d.Amount != locked.amount || d.Currency != locked.currency {
+		return RefundOutcome{}, false, ErrRefundOutcomeStale
+	}
+	if locked.status != "pending" {
+		return RefundOutcome{}, false, ErrRefundOutcomeIneligible
 	}
 	out, err := appendRefundOutcome(ctx, tx, in, locked, providerRef)
 	if err != nil {
 		return RefundOutcome{}, false, err
 	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE order_refund_abandonment_dispositions SET state='finalized'
+		WHERE organizer_id=$1 AND refund_id=$2 AND state='pending'`, in.OrganizerID, in.RefundID); err != nil {
+		return RefundOutcome{}, false, err
+	}
 	return out, false, tx.Commit()
 }
 
-// lockedOutcomeTarget is the refund and order as read under their row locks.
+// MaxProviderRefundRef is the longest provider refund reference payments accepts, and so the
+// longest one an `abandoned` outcome stores. An outside reference is at most 200 bytes.
+const MaxProviderRefundRef = 255
+
+// lockedOutcomeTarget is the refund and order as read under their row locks, with the outcome
+// and reservation read after both locks.
 type lockedOutcomeTarget struct {
-	order    uuid.UUID
-	quantity int32
-	amount   int64
-	currency string
-	sold     int32
+	order       uuid.UUID
+	quantity    int32
+	amount      int64
+	currency    string
+	sold        int32
+	status      string
+	chargeKey   string
+	outcome     *RefundOutcome
+	disposition *AbandonmentDisposition
 }
 
-// lockOutcomeTarget locks the refund row and then its order (CompleteOrderRefund's order, D16),
-// rechecks everything the scoped inspection read before the payments call, and decides a
-// repeated command. existing is non-nil for an exact replay of an outcome already recorded.
+// replay decides a repeated command against an outcome read under the locks: the original
+// record for the same command, a conflict for any other, nil when there is no outcome.
+func (l lockedOutcomeTarget) replay(in RefundOutcomeRequest) (*RefundOutcome, error) {
+	if l.outcome == nil {
+		return nil, nil
+	}
+	if !l.outcome.matches(in) {
+		return nil, ErrRefundOutcomeConflict
+	}
+	return l.outcome, nil
+}
+
+// lockOutcomeTarget locks the refund row and then its order (CompleteOrderRefund's order),
+// rechecks everything the scoped inspection read before the payments call, and reads the
+// outcome and the reservation under those locks. The callers decide.
 //
-// Under those locks: the source reservation still belongs to the organizer; the order's charge
-// key and the refund's order, amount and currency are what was inspected; any outcome that
-// committed in the meantime is a replay or a conflict; and only a pending refund is eligible.
-func lockOutcomeTarget(ctx context.Context, tx *sql.Tx, in RefundOutcomeRequest, inspected RefundOutcomeTarget) (lockedOutcomeTarget, *RefundOutcome, error) {
+// Under those locks: the source reservation still belongs to the organizer, and the order's
+// charge key and the refund's order, amount and currency are what was inspected.
+func lockOutcomeTarget(ctx context.Context, tx *sql.Tx, in RefundOutcomeRequest, inspected RefundOutcomeTarget) (lockedOutcomeTarget, error) {
 	var l lockedOutcomeTarget
-	var status string
 	err := tx.QueryRowContext(ctx, `
 		SELECT order_id, quantity, amount, currency, status FROM order_refunds
 		WHERE organizer_id=$1 AND id=$2 FOR UPDATE`, in.OrganizerID, in.RefundID).
-		Scan(&l.order, &l.quantity, &l.amount, &l.currency, &status)
+		Scan(&l.order, &l.quantity, &l.amount, &l.currency, &l.status)
 	if errors.Is(err, sql.ErrNoRows) {
-		return l, nil, ErrRefundOutcomeNotFound
+		return l, ErrRefundOutcomeNotFound
 	}
 	if err != nil {
-		return l, nil, err
+		return l, err
 	}
 
-	var chargeKey string
 	var sourceOrg uuid.UUID
-	err = tx.QueryRowContext(ctx, outsideOrderLockSQL, l.order).Scan(&chargeKey, &sourceOrg, &l.sold)
+	err = tx.QueryRowContext(ctx, outsideOrderLockSQL, l.order).Scan(&l.chargeKey, &sourceOrg, &l.sold)
 	if errors.Is(err, sql.ErrNoRows) {
-		return l, nil, ErrRefundOutcomeNotFound
+		return l, ErrRefundOutcomeNotFound
 	}
 	if err != nil {
-		return l, nil, err
+		return l, err
 	}
 	// The source reservation is the organizer's, checked again under the lock: the
 	// inspection's answer is not evidence about the row this transaction is about to write.
 	if sourceOrg != in.OrganizerID {
-		return l, nil, ErrRefundOutcomeNotFound
+		return l, ErrRefundOutcomeNotFound
 	}
-	if l.order != inspected.OrderID || chargeKey != inspected.ChargeKey ||
+	if l.order != inspected.OrderID || l.chargeKey != inspected.ChargeKey ||
 		l.amount != inspected.Amount || l.currency != inspected.Currency {
-		return l, nil, ErrRefundOutcomeStale
+		return l, ErrRefundOutcomeStale
 	}
 
-	existing, found, err := lookupRefundOutcome(ctx, tx, in.OrganizerID, in.RefundID)
+	o, found, err := lookupRefundOutcome(ctx, tx, in.OrganizerID, in.RefundID)
 	if err != nil {
-		return l, nil, err
+		return l, err
 	}
 	if found {
-		if !existing.matches(in) {
-			return l, nil, ErrRefundOutcomeConflict
-		}
-		return l, &existing, nil
+		l.outcome = &o
 	}
-	if status != "pending" {
-		return l, nil, ErrRefundOutcomeIneligible
+	d, found, err := lookupAbandonmentDisposition(ctx, tx, in.OrganizerID, in.RefundID)
+	if err != nil {
+		return l, err
 	}
-	return l, nil, nil
+	if found {
+		l.disposition = &d
+	}
+	return l, nil
 }
 
 // appendRefundOutcome inserts the outcome row. Amount and currency come from the locked refund.

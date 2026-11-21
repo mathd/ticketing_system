@@ -220,12 +220,18 @@ func TestAbandonRefusesProviderEvidenceThatIsNotAProof(t *testing.T) {
 			t.Fatalf("marker without a proof: %+v", m)
 		}
 	})
-	// The fake PSP proves only refunds it itself failed (TKT-525); it never recorded this one.
-	t.Run("the fake PSP never recorded the refund", func(t *testing.T) {
-		f := newProofFixture(t, func(*stripePeer) psp.PSP { return psp.NewFake() })
+	// A provider without the RefundFailureProver capability (RA1-3): countingPSP embeds only
+	// the PSP interface.
+	t.Run("the provider has no proof capability", func(t *testing.T) {
+		provider := &countingPSP{PSP: psp.NewFake()}
+		f := newProofFixture(t, func(*stripePeer) psp.PSP { return provider })
 		assertProofResponse(t, f.abandonValid(t), 502, `{"error":"refund failure proof unavailable"}`)
 		if m := f.marker(t); m.count != 0 {
 			t.Fatalf("marker without a proof: %+v", m)
+		}
+		f.assertLegUntouched(t)
+		if n := provider.count(); n != 0 {
+			t.Fatalf("the abandon submitted %d provider refunds", n)
 		}
 	})
 }
@@ -308,6 +314,43 @@ func TestPartialRefundDispatchRefusesAnAbandonedLeg(t *testing.T) {
 	}
 	if len(after) != len(before) {
 		t.Fatalf("dispatch of an abandoned leg reached the provider: %v", after[len(before):])
+	}
+	f.assertLegUntouched(t)
+}
+
+// A failed marker read fails closed (RA1-4). The leg is already bound, so the replay bind
+// succeeds without reading the marker table; the dispatch read then fails. The answer is 500
+// and the provider is not asked: no listing and no POST.
+func TestPartialRefundDispatchFailsClosedWhenTheMarkerReadFails(t *testing.T) {
+	f := newProofFixture(t, nil)
+	if _, err := f.db.ExecContext(f.ctx, `ALTER TABLE payment_refund_leg_abandonments RENAME TO payment_refund_leg_abandonments_hidden`); err != nil {
+		t.Fatal(err)
+	}
+	restored := false
+	restore := func() {
+		if !restored {
+			restored = true
+			if _, err := f.db.ExecContext(f.ctx, `ALTER TABLE payment_refund_leg_abandonments_hidden RENAME TO payment_refund_leg_abandonments`); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Cleanup(restore)
+
+	body := fmt.Sprintf(`{"organizer_id":%q,"idempotency_key":%q,"refund_key":%q,"amount":1000,"currency":"EUR"}`,
+		f.org, f.sourceKey, f.refundKey)
+	req := httptest.NewRequest(http.MethodPost, "/internal/psp/partial-refund", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Token", refundCredential)
+	res := httptest.NewRecorder()
+	f.h.ServeHTTP(res, req)
+	restore()
+
+	if res.Code != 500 || res.Body.String() != `{"error":"lookup refund leg abandonment"}`+"\n" {
+		t.Fatalf("status=%d body=%s, want 500 lookup refund leg abandonment", res.Code, res.Body.String())
+	}
+	if calls, _ := f.peer.snapshot(); len(calls) != 0 {
+		t.Fatalf("a failed marker read reached the provider: %v", calls)
 	}
 	f.assertLegUntouched(t)
 }

@@ -162,7 +162,9 @@ docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
   -c "CREATE DATABASE commerce_api_smoke OWNER commerce" >/dev/null
 # A FIFTH, for ./internal/refundoutcome (TKT-525): the operator-outcome coordinator drives
 # the store, the refund service, the reversal reconciler and the bulk runner together, so it
-# migrates its own database by the same rule as the four above.
+# migrates its own database by the same rule as the four above. Its cross-service tests also
+# reach this stack's REAL payments service, through COMMERCE_REFUNDOUTCOME_PAYMENTS_URL and
+# _TOKEN below (TestCommerceSmokeReachesRealPayments fails when they are missing).
 docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
   -c "DROP DATABASE IF EXISTS commerce_refundoutcome_smoke" \
   -c "CREATE DATABASE commerce_refundoutcome_smoke OWNER commerce" >/dev/null
@@ -180,6 +182,8 @@ COMMERCE_MAILER_TEST_DATABASE_URL="postgres://commerce:${COMMERCE_DB_PASSWORD}@l
 COMMERCE_MIGRATION_TEST_DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/postgres" \
 COMMERCE_API_TEST_DATABASE_URL="postgres://commerce:${COMMERCE_DB_PASSWORD}@localhost:${POSTGRES_PORT}/commerce_api_smoke" \
 COMMERCE_REFUNDOUTCOME_TEST_DATABASE_URL="postgres://commerce:${COMMERCE_DB_PASSWORD}@localhost:${POSTGRES_PORT}/commerce_refundoutcome_smoke" \
+COMMERCE_REFUNDOUTCOME_PAYMENTS_URL="http://localhost:${PAYMENTS_PORT}" \
+COMMERCE_REFUNDOUTCOME_PAYMENTS_TOKEN="$SMOKE_PAYMENTS_INTERNAL_TOKEN" \
 go test -tags smoke -count=1 ./internal/...
 
 cd "$ROOT/services/access"

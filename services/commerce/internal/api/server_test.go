@@ -453,7 +453,6 @@ func TestRefundProblemMapsEveryStoreError(t *testing.T) {
 		{"no money", commercestore.ErrRefundNoMoney, http.StatusConflict},
 		{"key reused", commercestore.ErrRefundConflict, http.StatusConflict},
 		{"provider terminal refusal", refunds.ErrProviderRefundFailed, http.StatusUnprocessableEntity},
-		{"abandoned by an operator", refunds.ErrRefundAbandoned, http.StatusConflict},
 		{"unknown order", sql.ErrNoRows, http.StatusNotFound},
 		{"anything else", errors.New("connection reset"), http.StatusInternalServerError},
 	}

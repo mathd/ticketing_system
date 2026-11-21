@@ -118,7 +118,14 @@ type seeded struct {
 
 func seedOrder(t *testing.T, ctx context.Context, db *sql.DB, org, slot uuid.UUID, quantity int32, unit int64) seeded {
 	t.Helper()
-	s := seeded{org: org, order: uuid.New(), hold: uuid.New(), slot: slot, chargeKey: "checkout-" + uuid.NewString()}
+	return seedOrderWithChargeKey(t, ctx, db, org, slot, quantity, unit, "checkout-"+uuid.NewString())
+}
+
+// seedOrderWithChargeKey seeds a completed order whose stored checkout key is chargeKey. Two
+// orders can store the same key (TKT-586's checkout and exchange alias).
+func seedOrderWithChargeKey(t *testing.T, ctx context.Context, db *sql.DB, org, slot uuid.UUID, quantity int32, unit int64, chargeKey string) seeded {
+	t.Helper()
+	s := seeded{org: org, order: uuid.New(), hold: uuid.New(), slot: slot, chargeKey: chargeKey}
 	res := uuid.New()
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO reservations(id,organizer_id,hold_id,slot_id,ticket_type_id,buyer_id,quantity,unit_amount,total_amount,face_value_amount,currency,status)

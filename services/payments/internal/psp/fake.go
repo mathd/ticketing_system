@@ -128,10 +128,8 @@ func (f *Fake) Refund(_ context.Context, providerRef, idempotencyKey string, amo
 		f.refunds = map[string][]fakeRefund{}
 	}
 	recorded := f.refunds[providerRef]
-	for _, rf := range recorded {
-		if rf.key == idempotencyKey {
-			return rf.result()
-		}
+	if rf, ok := findFakeRefund(recorded, idempotencyKey); ok {
+		return rf.result()
 	}
 	rf := fakeRefund{id: "re_fake_" + fakeDigest(providerRef, idempotencyKey), key: idempotencyKey,
 		amount: amount, currency: currency, failed: len(recorded) == 0}
@@ -146,15 +144,21 @@ func (rf fakeRefund) result() (Result, error) {
 	return Result{Outcome: Refunded, ProviderRef: rf.id, Confirmed: &ConfirmedMoney{Amount: rf.amount, Currency: rf.currency}}, nil
 }
 
-// ProveRefundFailure is the fake's read-only proof (TKT-525, ADR-087). It proves only a
-// refund that the fake itself recorded as failed, and it uses the Stripe adapter's rule:
-//
-//   - It scans every refund recorded against the charge reference.
-//   - A refund under another stamp is somebody else's and is ignored.
-//   - A refund under this stamp whose amount or currency differs does not corroborate it:
-//     inconclusive.
-//   - No stamped refund is inconclusive. More than one is a contradiction.
-//   - The one stamped refund is a proof when it failed, and a contradiction when it succeeded.
+// findFakeRefund returns the one refund recorded under a key. Refund replays a recorded key
+// instead of recording it again, so a key has at most one entry.
+func findFakeRefund(recorded []fakeRefund, key string) (fakeRefund, bool) {
+	for _, rf := range recorded {
+		if rf.key == key {
+			return rf, true
+		}
+	}
+	return fakeRefund{}, false
+}
+
+// ProveRefundFailure is the fake's read-only proof (TKT-525, ADR-087). It proves only a refund
+// that the fake itself recorded as failed. It looks the refund up by charge reference and key;
+// a refund whose amount or currency differs does not corroborate it (inconclusive), a refund
+// that succeeded is a contradiction, and no recorded refund is inconclusive.
 //
 // A fake charge with no reference (every token except fake-refund-fail-once) has nothing
 // recorded, so it can never be proven. It never moves money and records nothing.
@@ -163,33 +167,17 @@ func (f *Fake) ProveRefundFailure(_ context.Context, providerRef, idempotencyKey
 		return RefundFailureProof{}, fmt.Errorf("%w: no provider charge reference or refund key to look under", ErrRefundProofInconclusive)
 	}
 	f.mu.Lock()
-	recorded := append([]fakeRefund(nil), f.refunds[providerRef]...)
+	rf, ok := findFakeRefund(f.refunds[providerRef], idempotencyKey)
 	f.mu.Unlock()
-	var matches []fakeRefund
-	uncorroborated := ""
-	for _, rf := range recorded {
-		switch {
-		case rf.key != idempotencyKey:
-		case amount <= 0 || rf.amount != amount || rf.currency != currency:
-			uncorroborated = rf.id
-		default:
-			matches = append(matches, rf)
-		}
-	}
-	if uncorroborated != "" {
-		return RefundFailureProof{}, fmt.Errorf("%w: fake refund %q carries this key with evidence that does not corroborate it", ErrRefundProofInconclusive, uncorroborated)
-	}
-	switch len(matches) {
-	case 0:
+	switch {
+	case !ok:
 		return RefundFailureProof{}, fmt.Errorf("%w: no refund carries this key", ErrRefundProofInconclusive)
-	case 1:
-	default:
-		return RefundFailureProof{}, fmt.Errorf("%w: %d refunds carry this key", ErrRefundProofContradicted, len(matches))
+	case amount <= 0 || rf.amount != amount || rf.currency != currency:
+		return RefundFailureProof{}, fmt.Errorf("%w: fake refund %q carries this key with evidence that does not corroborate it", ErrRefundProofInconclusive, rf.id)
+	case !rf.failed:
+		return RefundFailureProof{}, fmt.Errorf("%w: fake refund %q succeeded", ErrRefundProofContradicted, rf.id)
 	}
-	if !matches[0].failed {
-		return RefundFailureProof{}, fmt.Errorf("%w: fake refund %q succeeded", ErrRefundProofContradicted, matches[0].id)
-	}
-	return RefundFailureProof{ProviderRef: matches[0].id}, nil
+	return RefundFailureProof{ProviderRef: rf.id}, nil
 }
 
 // Status resolves an operation deterministically from the replayed token — the same

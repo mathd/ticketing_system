@@ -111,7 +111,12 @@ func TestStripeProveRefundFailureRefusesEverythingElse(t *testing.T) {
 		{"a different amount", 200, proofList(false, proofRefund("re_ours", "failed", proofPI, proofKey, 999, "eur")), ErrRefundProofInconclusive},
 		{"a different currency", 200, proofList(false, proofRefund("re_ours", "failed", proofPI, proofKey, 1000, "usd")), ErrRefundProofInconclusive},
 		{"a stamped refund with no id", 200, proofList(false, proofRefund("", "failed", proofPI, proofKey, 1000, "eur")), ErrRefundProofInconclusive},
+		// Uncorroborated stamped evidence takes precedence over a corroborated match: 502, not
+		// a proof and not a 409. The id-less object must count even though it has no id (R1-2),
+		// in either position.
 		{"a corroborated match beside an uncorroborated one", 200, proofList(false, ok, proofRefund("re_odd", "failed", proofPI, proofKey, 5, "eur")), ErrRefundProofInconclusive},
+		{"a corroborated match beside a stamped refund with no id", 200, proofList(false, ok, proofRefund("", "failed", proofPI, proofKey, 1000, "eur")), ErrRefundProofInconclusive},
+		{"a stamped refund with no id before a corroborated match", 200, proofList(false, proofRefund("", "failed", proofPI, proofKey, 1000, "eur"), ok), ErrRefundProofInconclusive},
 		{"an incomplete page", 200, `{"object":"list","data":[` + ok + `]}`, ErrRefundProofInconclusive},
 		{"a malformed page", 200, `{"object":"list",`, ErrRefundProofInconclusive},
 		{"more pages but none returned", 200, proofList(true), ErrRefundProofInconclusive},

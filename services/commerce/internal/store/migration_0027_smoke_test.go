@@ -321,6 +321,24 @@ func TestMigration0027OutcomeRowConstraints(t *testing.T) {
 		})
 	}
 
+	// The reference limit depends on the kind: 200 bytes for an outside reference typed by an
+	// operator, 255 for a provider reference payments returned.
+	for _, c := range []struct {
+		kind   string
+		length int
+		want   string
+	}{
+		{"refunded_outside", 200, ""},
+		{"refunded_outside", 201, "refund_outcomes_external_ref_check"},
+		{"abandoned", 255, ""},
+		{"abandoned", 256, "refund_outcomes_external_ref_check"},
+	} {
+		ref := "'re_" + strings.Repeat("x", c.length-3) + "'"
+		if got := violated(insert(map[string]string{"kind": "'" + c.kind + "'", "external_ref": ref})); got != c.want {
+			t.Fatalf("%s with a %d-byte reference violated %q, want %q", c.kind, c.length, got, c.want)
+		}
+	}
+
 	// One outcome per subject, whatever its kind.
 	org, subject := uuid.New(), uuid.New()
 	if err := insertOutcome(ctx, db, org, "order_refund", subject, "abandoned"); err != nil {
@@ -361,6 +379,71 @@ func TestMigration0027OutcomesAreAppendOnly(t *testing.T) {
 	var reason string
 	if err := db.QueryRowContext(ctx, `SELECT reason FROM refund_outcomes WHERE organizer_id=$1 AND subject_id=$2`, org, subject).Scan(&reason); err != nil || reason != "paid by bank transfer" {
 		t.Fatalf("the outcome did not survive intact: reason=%q err=%v", reason, err)
+	}
+}
+
+// insertDisposition writes one pending abandonment reservation, as ReserveAbandonment would.
+func insertDisposition(ctx context.Context, db execer, org, refund uuid.UUID) error {
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO order_refund_abandonment_dispositions(organizer_id,refund_id,state,charge_key,amount,currency,operator_name,reason)
+		VALUES($1,$2,'pending','checkout-key',1000,'EUR','Ada Operator','nobody will refund this attempt')`, org, refund)
+	return err
+}
+
+// The reservation table: scoped to an existing refund of the same organizer, one row per refund,
+// and the only admitted change is pending -> finalized with every other column kept. No delete
+// and no truncate.
+func TestMigration0027DispositionRules(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("apply all migrations: %v", err)
+	}
+	org := uuid.New()
+	order := seedV4OrderForOrganizer(t, ctx, db, org)
+	refund := seedRefundAt(t, ctx, db, org, order, "pending", uuid.NullUUID{})
+
+	if got := violated(insertDisposition(ctx, db, uuid.New(), refund)); got != "order_refund_abandonment_dispositions_refund_fkey" {
+		t.Fatalf("a reservation under another organizer violated %q, want the refund foreign key", got)
+	}
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO order_refund_abandonment_dispositions(organizer_id,refund_id,state,charge_key,amount,currency,operator_name,reason)
+		VALUES($1,$2,'abandoned','k',1000,'EUR','Ada','r')`, org, refund)
+	if got := violated(err); got != "order_refund_abandonment_dispositions_state_check" {
+		t.Fatalf("an unknown state violated %q, want the state check", got)
+	}
+	if err := insertDisposition(ctx, db, org, refund); err != nil {
+		t.Fatalf("the valid reservation was refused: %v", err)
+	}
+	if got := violated(insertDisposition(ctx, db, org, refund)); got != "order_refund_abandonment_dispositions_pkey" {
+		t.Fatalf("a second reservation violated %q, want the primary key", got)
+	}
+
+	const guard = "abandonment dispositions move only from pending to finalized"
+	for name, stmt := range map[string]string{
+		"change the reason":    `UPDATE order_refund_abandonment_dispositions SET reason='rewritten' WHERE refund_id=$1`,
+		"finalize and rewrite": `UPDATE order_refund_abandonment_dispositions SET state='finalized', operator_name='Grace' WHERE refund_id=$1`,
+		"delete":               `DELETE FROM order_refund_abandonment_dispositions WHERE refund_id=$1`,
+		"truncate":             `TRUNCATE order_refund_abandonment_dispositions`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var err error
+			if strings.Contains(stmt, "$1") {
+				_, err = db.ExecContext(ctx, stmt, refund)
+			} else {
+				_, err = db.ExecContext(ctx, stmt)
+			}
+			if err == nil || !strings.Contains(err.Error(), guard) {
+				t.Fatalf("%s was not refused by the guard (err=%v)", name, err)
+			}
+		})
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE order_refund_abandonment_dispositions SET state='finalized' WHERE refund_id=$1`, refund); err != nil {
+		t.Fatalf("pending -> finalized was refused: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE order_refund_abandonment_dispositions SET state='pending' WHERE refund_id=$1`, refund); err == nil || !strings.Contains(err.Error(), guard) {
+		t.Fatalf("finalized -> pending was not refused (err=%v)", err)
 	}
 }
 
@@ -479,6 +562,81 @@ func TestMigration0027DownLocksBeforeItChecksHistory(t *testing.T) {
 	var n int
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM refund_outcomes WHERE organizer_id=$1`, org).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("the committed outcome is gone: n=%d err=%v", n, err)
+	}
+}
+
+// The Down refuses with ONLY reservation history: a pending reservation can be the only local
+// record that payments released its allowance. Without it the Down removes the table.
+func TestMigration0027DownRefusesOverDispositionHistory(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("apply all migrations: %v", err)
+	}
+	org := uuid.New()
+	refund := seedRefundAt(t, ctx, db, org, seedV4OrderForOrganizer(t, ctx, db, org), "pending", uuid.NullUUID{})
+	if err := insertDisposition(ctx, db, org, refund); err != nil {
+		t.Fatal(err)
+	}
+	_, err := provider.DownTo(ctx, 26)
+	if err == nil || !strings.Contains(err.Error(), "abandonment disposition history exists") {
+		t.Fatalf("0027 rolled back over a reservation (err=%v)", err)
+	}
+	if v := schemaVersion(t, ctx, db); v < 27 {
+		t.Fatalf("a refused Down left the schema at %d", v)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE order_refund_abandonment_dispositions DISABLE TRIGGER USER; DELETE FROM order_refund_abandonment_dispositions; ALTER TABLE order_refund_abandonment_dispositions ENABLE TRIGGER USER`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.DownTo(ctx, 26); err != nil {
+		t.Fatalf("0027 down with no history: %v", err)
+	}
+	var left int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='order_refund_abandonment_dispositions'`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("Down left the reservation table: %d err=%v", left, err)
+	}
+	if _, err := provider.UpTo(ctx, 27); err != nil {
+		t.Fatalf("re-apply 0027 after Down: %v", err)
+	}
+}
+
+// The reservation check runs after the Down's lock, like the outcome check. A reservation insert
+// open when the Down starts holds a key-share lock on its refund row, so the Down waits at its
+// LOCK; when the insert commits, the check must see it and refuse.
+func TestMigration0027DownLocksBeforeItChecksDispositions(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	db, provider := schemaDB(t, ctx)
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("apply all migrations: %v", err)
+	}
+	org := uuid.New()
+	refund := seedRefundAt(t, ctx, db, org, seedV4OrderForOrganizer(t, ctx, db, org), "pending", uuid.NullUUID{})
+	writer, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = writer.Rollback() }()
+	if err := insertDisposition(ctx, writer, org, refund); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := provider.DownTo(ctx, 26)
+		done <- err
+	}()
+	waitForLockWait(t, ctx, db, "LOCK TABLE order_refunds, refund_outcomes", done)
+	if err := writer.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "abandonment disposition history exists") {
+			t.Fatalf("0027 rolled back over a reservation that committed while it waited (err=%v)", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("the Down never finished")
 	}
 }
 

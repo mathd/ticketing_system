@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -179,5 +180,39 @@ func TestAbandonRefundLegIsScopedToTheOrganizer(t *testing.T) {
 	// Their leg still counts in their ceiling.
 	if _, err := j.BindRefundLeg(ctx, theirs, key, uuid.NewString(), 1, "EUR"); !errors.Is(err, ErrRefundExceedsCapture) {
 		t.Fatalf("our marker released their leg: err = %v", err)
+	}
+}
+
+// The marker transaction locks ITS organizer's operation row (RA1-4). Two organizers hold the
+// same charge key; a transaction that holds the other organizer's operation row must not block
+// this organizer's abandonment. A lock taken without the organizer filter waits on that row.
+func TestAbandonRefundLegLocksOnlyItsOrganizersOperation(t *testing.T) {
+	db, ctx := journalDB(t)
+	j := New(db, fullRing(t))
+	ours, theirs := uuid.New(), uuid.New()
+	key, refundKey := "charge-abandon-lock-scope-"+uuid.NewString(), uuid.NewString()
+	seedCapturedKeepingMarkedLegs(t, db, ctx, ours, key, 1000)
+	seedCapturedKeepingMarkedLegs(t, db, ctx, theirs, key, 1000)
+	if _, err := j.BindRefundLeg(ctx, ours, key, refundKey, 1000, "EUR"); err != nil {
+		t.Fatal(err)
+	}
+	state, found, err := j.LookupRefundLegProofState(ctx, ours, key, refundKey)
+	if err != nil || !found {
+		t.Fatalf("proof state: found=%v err=%v", found, err)
+	}
+
+	holder, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Rollback() }()
+	if _, err := holder.ExecContext(ctx, `SELECT 1 FROM payment_operations WHERE organizer_id=$1 AND idempotency_key=$2 FOR UPDATE`, theirs, key); err != nil {
+		t.Fatal(err)
+	}
+
+	bounded, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if _, replay, err := j.AbandonRefundLeg(bounded, ours, key, refundKey, state, "re_ours"); err != nil || replay {
+		t.Fatalf("abandon while another organizer's operation is locked: replay=%v err=%v, want a new marker without waiting", replay, err)
 	}
 }

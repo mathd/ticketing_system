@@ -311,15 +311,10 @@ Before you run it:
 3. Type your own name as `<operator name>`. It is the only personal attribution. The record also
    stores PostgreSQL `session_user`, which on this access path is always the shared `commerce` login.
 
-What the command does:
-
-1. It reads the refund in the organizer. A missing refund and another organizer's refund give the
-   same refusal.
-2. It asks Payments, read-only, to prove the failure: the leg is still bound, it has no abandonment
-   marker, and the provider's own stamped refund for it is `failed` or `canceled` for the same amount
-   and currency. It makes no writing HTTP call.
-3. In one short transaction it appends the outcome to `refund_outcomes`, completes the refund with
-   that outcome as its evidence, and advances the order's refund totals once.
+What the command does (ADR-087 §3–§6): it asks Payments, read-only, to prove that the leg is still
+bound and unmarked and that the provider's stamped refund is `failed` or `canceled` for the stored
+money. Then, in one short transaction, it appends the outcome, completes the refund with that outcome
+as its evidence, and advances the order's refund totals once. It makes no writing HTTP call.
 
 The result line shows `amount`, `currency`, `external_ref`, `operator`, `session_user`,
 `recorded_at` and `replay`.
@@ -343,6 +338,7 @@ A command that differs in kind, operator name, reference or reason is refused as
 | `payments refused the failure proof` (404 or 409) | No such leg, the leg completed, it has an abandonment marker, or the provider says the refund did not fail | Reconcile the original refund first. Do not transfer money. |
 | `payments could not prove` (502, timeout, malformed answer, or different money) | No proof now | Nothing changed and both allowances stay reserved. Fix the cause and run the same command again. |
 | `changed while the command ran` | The refund or its order changed between the read and the write | Run the same command again. |
+| `an abandonment is reserved` | An operator started `abandoned` for this refund | Do not record it as outside. Finish the abandonment with the original command. |
 
 **A refund whose provider refund has no stamp can never be proven.** A leg bound before the adapter
 added the `compensation_key` stamp, or one the provider never answered, has no refund the proof can
@@ -369,17 +365,17 @@ Before you run it, confirm that **no outside transfer occurred and none is in fl
 refund. If one did, use `refunded_outside` instead. `abandoned` releases the allowance, so running it
 after an outside transfer opens the way to a second refund of the same money.
 
-What the command does:
+**Starting `abandoned` commits you to it.** The first run reserves the abandonment in Commerce
+(`order_refund_abandonment_dispositions`, state `pending`) before it calls Payments. From then on,
+`refunded_outside` is refused for this refund. The reservation keeps the operator name and reason of
+the run that started it, and the outcome is attributed to that operator. To finish it, anyone runs
+the command again with exactly that operator name and reason.
 
-1. It reads the refund in the organizer, as for `refunded_outside`.
-2. It asks Payments to abandon the leg. Payments proves, with the same read-only provider lookup,
-   that the stamped provider refund is `failed` or `canceled` for the stored money, then writes an
-   append-only marker on the exact leg. The leg stays `bound`. The marker releases that leg's amount
-   in the Payments captured-money ceiling, and ordinary dispatch then refuses the leg (409) before
-   any provider call.
-3. Only after Payments answered 200, Commerce appends the `abandoned` outcome. The refund stays
-   `pending`, and the order totals, the tickets and the capacity do not change. The Commerce quantity
-   ceiling stops counting this refund when the outcome commits.
+What the command does (ADR-087 §10): reserve in Commerce; Payments proves the terminal failure with
+the same read-only lookup and writes an append-only marker on the exact leg, which releases that
+leg's amount in the Payments ceiling; then Commerce appends the `abandoned` outcome and finalizes the
+reservation in one transaction, which releases the quantity. The refund stays `pending`, and the
+order totals, the tickets and the capacity do not change.
 
 After success:
 
@@ -388,45 +384,50 @@ After success:
 - Staff refund the buyer again through the Back Office order console, under a new key. If the Back
   Office still holds a saved retry for the old key, submitting it answers "An operator recorded this
   refund as abandoned", retires that saved retry, and shows a blank refund form with a fresh key.
-  The platform never re-submits automatically, and no operator command re-submits.
-- A bulk cancellation run that reaches this order skips the abandoned refund with no Payments call.
-  It reports `refund_refused` while quantity remains, and at zero quantity `already_refunded`, or
-  `reversal_outstanding` while another refund's reversal is still owed.
+  The platform never re-submits automatically, and no operator command re-submits. While the
+  abandonment is only reserved, a staff retry of the old key still goes to Payments.
+- A bulk cancellation run gets no new cancellation refund for this order, also after a staff
+  replacement. It reports `refund_refused` while quantity remains, and at zero quantity
+  `already_refunded`, or `reversal_outstanding` while a reversal is still owed. Staff own any further
+  refund of the order.
 
-**Run the same command again** after a timeout, a 5xx, a malformed answer, or a Commerce error.
-Payments may already have written its marker; then its allowance is released while Commerce keeps
-the quantity reserved. That is the stricter state, and it is safe. The same command converges:
-Payments answers from its marker without asking the provider (also when the provider is down), and
-Commerce records once. An identical command after success returns the original record
+**Run the same command again** after any refusal, timeout, 5xx, malformed answer or Commerce error.
+The reservation stays `pending` until the run that finishes it; a 404 or 409 describes one request,
+and an overlapping request can still have written the marker. If Payments wrote its marker, its
+allowance is released while Commerce keeps the quantity counted: the stricter state. Payments
+answers the next run from its marker without asking the provider (also when the provider is down),
+and Commerce finishes once. An identical command after success returns the original record
 (`replay=true`). A different operator name or reason is a conflict.
 
 | Refusal | Meaning | What to do |
 |---|---|---|
 | `no refund … for this organizer` | Wrong ids, or another organizer's refund | Check both ids. |
-| `already carries a different outcome` | An outcome is recorded and it is not this one | Stop. Investigate before any money action. |
-| `is completed` | The refund completed, through Payments or outside | Nothing to abandon. |
-| `payments refused to abandon` (404 or 409) | No such leg (wrong target), the leg completed, its money differs, or the provider says the refund did not fail | Nothing was recorded in either service. Correct the target, or reconcile the original refund through ordinary refund reconciliation. |
-| `UNCERTAIN: payments' answer … is unknown` | Timeout, 5xx, provider inconclusive, or an answer for other money | Commerce recorded nothing. Run the same command again. If Payments keeps answering 502, the provider proof is not available: see the unstamped case below. |
+| `already carries a different outcome, or its abandonment was started with another operator name or reason` | An outcome is recorded and it is not this one, or the reservation has another attribution | Repeat the original operator name and reason, or stop and investigate before any money action. |
+| `is completed` | The refund completed, through Payments or outside | Nothing to abandon. A pending reservation on it is inert. |
+| `payments refused this abandon request` (404 or 409) | No such leg, the leg completed, its money differs, or the provider says the refund did not fail | The reservation stays. Correct the cause, or reconcile the original refund; then run the same command again. |
+| `UNCERTAIN: payments' answer … is unknown` | Timeout, 5xx, provider inconclusive, or an answer for other money | Run the same command again. If Payments keeps answering 502, see the unstamped case below. |
 | `changed while the command ran` | The refund or its order changed between the read and the write | Run the same command again. |
 | `FAILED: … was not recorded in Commerce` | A Commerce error after Payments may have accepted | Run the same command again. |
 
-**After an abandonment, an outside completion is refused.** Once the Payments marker exists, the
-`refunded_outside` proof answers 409 (`refund leg abandoned`), even while Commerce has no outcome
-yet. Finish the abandonment with the same command instead.
-
-**A Payments marker with no Commerce outcome** means an abandonment that Payments accepted and
-Commerce has not recorded. Find it with the leg query below (`abandonment_ref` set), then check
-Commerce:
+**Inspect one refund's disposition** in both databases. The Payments leg query is below.
 
 ```sql
 -- commerce database
-SELECT kind, external_ref, operator_name, recorded_at
-FROM refund_outcomes
-WHERE organizer_id = '<organizer-id>' AND subject_kind = 'order_refund' AND subject_id = '<refund-id>';
+SELECT d.state, d.operator_name, d.reason, d.reserved_at, o.kind, o.external_ref, o.recorded_at
+FROM order_refunds r
+LEFT JOIN order_refund_abandonment_dispositions d ON (d.organizer_id, d.refund_id) = (r.organizer_id, r.id)
+LEFT JOIN refund_outcomes o
+  ON (o.organizer_id, o.subject_kind, o.subject_id) = (r.organizer_id, 'order_refund', r.id)
+WHERE r.organizer_id = '<organizer-id>' AND r.id = '<refund-id>';
 ```
 
-No row: run the same `abandoned` command again. Do not transfer money, and do not run
-`refunded_outside`, until it has finished.
+- `pending`, no outcome, and a Payments marker (`abandonment_ref` set): Payments accepted and
+  Commerce did not finish. Run the same `abandoned` command again. Do not transfer money until it
+  has finished.
+- `pending`, no outcome, no marker: nothing released yet. Both allowances stay reserved. If the
+  proof never becomes conclusive (an unstamped leg), it stays pending.
+- An outcome `refunded_outside` together with a Payments marker on the same leg is an invariant
+  violation. Stop all further money actions on the order and its charge, and investigate.
 
 **The unstamped-leg case.** Proof is impossible for a leg whose provider refund has no compensation
 stamp (bound before the adapter added it, or never answered by the provider). Both commands refuse
@@ -448,7 +449,11 @@ WHERE l.organizer_id = '<organizer-id>'
   AND l.refund_idempotency_key = '<refund-id>';
 ```
 
-**Roll forward, not back.** Commerce migration 0027 refuses to roll back while `refund_outcomes`
-holds a row, and Payments migration 0007 refuses while `payment_refund_leg_abandonments` holds a row.
-Both records are honest-operator evidence, not tamper-evidence (ADR-021): a writer with database
-credentials can forge or delete them.
+**Roll forward, not back.** Commerce migration 0027 refuses to roll back while `refund_outcomes` or
+`order_refund_abandonment_dispositions` holds a row, and Payments migration 0007 refuses while
+`payment_refund_leg_abandonments` holds a row. The records are honest-operator evidence, not
+tamper-evidence (ADR-021): a writer with database credentials can forge or delete them, and a
+coordinated rollback can erase them. The `session_user` on an outcome is the shared `commerce` login;
+the typed operator name is the personal attribution. Both migration numbers were unreleased while
+TKT-525 was in review: recreate a disposable database that applied an earlier draft of 0027 or 0007,
+so that goose applies the current definitions from Commerce 26 and Payments 6.

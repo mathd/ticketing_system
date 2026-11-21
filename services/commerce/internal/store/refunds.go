@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,6 +34,12 @@ var (
 	// ErrRefundNoMoney reports an order with nothing to refund. No provider issues a
 	// zero-amount refund, and pretending one happened would fabricate a money fact.
 	ErrRefundNoMoney = errors.New("order has no captured money to refund")
+	// ErrOrderHasAbandonedRefund refuses a FRESH cancellation bind (a new key in the reserved
+	// `cancel:` namespace) on an order with any recorded `abandoned` outcome, including after
+	// staff completed a replacement (TKT-525, ADR-040 §3, ADR-087). The runner cannot tell which
+	// abandoned units a staff refund replaced, so a further refund of the order is a staff
+	// decision.
+	ErrOrderHasAbandonedRefund = errors.New("an operator abandoned a refund of this order; a further refund needs a staff decision")
 )
 
 // RefundRequest is one staff refund instruction.
@@ -169,6 +176,26 @@ func BindOrderRefund(ctx context.Context, db *sql.DB, in RefundRequest) (Refund,
 	}
 	if unit <= 0 {
 		return Refund{}, ErrRefundNoMoney
+	}
+	// Under the order lock, and before the ceiling, so an order with an abandoned refund and a
+	// pending staff replacement answers this terminal refusal rather than a retried ceiling
+	// failure. FinishAbandonment holds the same order lock, so this sees an abandonment entirely
+	// or not at all. order_refunds comes first in FROM (0027's lock invariant). A staff key never
+	// carries the prefix: the staff endpoint rejects it.
+	if strings.HasPrefix(in.IdempotencyKey, CancellationRefundKeyPrefix) {
+		var abandoned bool
+		if err := tx.QueryRowContext(ctx, `
+			SELECT EXISTS (
+			  SELECT 1 FROM order_refunds rf
+			  JOIN refund_outcomes o
+			    ON o.organizer_id = rf.organizer_id AND o.subject_kind = 'order_refund'
+			   AND o.subject_id = rf.id AND o.kind = 'abandoned'
+			  WHERE rf.order_id=$1)`, in.OrderID).Scan(&abandoned); err != nil {
+			return Refund{}, err
+		}
+		if abandoned {
+			return Refund{}, ErrOrderHasAbandonedRefund
+		}
 	}
 	// Every refund of the order counts, pending ones included, EXCEPT one with a matching
 	// `abandoned` operator outcome (TKT-525 S2, ADR-087): payments has proven its provider

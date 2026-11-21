@@ -238,6 +238,16 @@ func TestAbandonedRefundReleasesBothAllowances(t *testing.T) {
 	if status != "pending" || !strings.HasPrefix(externalRef, "re_") {
 		t.Fatalf("abandoned refund status=%q external_ref=%q, want pending with the provider reference", status, externalRef)
 	}
+	// The reservation committed before the payments call finalized with the outcome, under the
+	// attribution of the command that started it.
+	var state, reservedBy string
+	if err := commerce.QueryRow(ctx, `SELECT state, operator_name FROM order_refund_abandonment_dispositions
+		WHERE organizer_id = $1 AND refund_id = $2`, organizerID, f.refundID).Scan(&state, &reservedBy); err != nil {
+		t.Fatalf("read the abandonment reservation: %v", err)
+	}
+	if state != "finalized" || reservedBy != "Ada Operator" {
+		t.Fatalf("reservation state=%q operator=%q, want finalized by Ada Operator", state, reservedBy)
+	}
 
 	// Payments: exactly one marker, on the same provider reference.
 	payments := connectOutcomeDB(t, "payments")

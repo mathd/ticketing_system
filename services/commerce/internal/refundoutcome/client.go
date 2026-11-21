@@ -40,6 +40,20 @@ func NewHTTPPayments(paymentsURL, token string, timeout time.Duration) HTTPPayme
 // maxProofBody bounds the response read. A proof is three short fields.
 const maxProofBody = 64 << 10
 
+// readEvidenceBody reads at most maxProofBody bytes, plus one to detect a longer body. A body
+// longer than the cap is refused before it is decoded: a decoder that reads a truncated body
+// sees its end at the cap and could accept a valid prefix of a malformed response.
+func readEvidenceBody(body io.Reader) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(body, maxProofBody+1))
+	if err != nil {
+		return nil, fmt.Errorf("read response: %v", err)
+	}
+	if len(raw) > maxProofBody {
+		return nil, fmt.Errorf("response is longer than %d bytes", maxProofBody)
+	}
+	return raw, nil
+}
+
 // ProveRefundFailure asks payments for the terminal-failure proof of one leg.
 //
 // 200 with a well-formed body is the only proof. 404 and 409 are payments' conclusive
@@ -61,9 +75,9 @@ func (p HTTPPayments) ProveRefundFailure(ctx context.Context, org uuid.UUID, cha
 		return FailureProof{}, fmt.Errorf("%w: %v", ErrProofUnavailable, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxProofBody))
+	raw, err := readEvidenceBody(resp.Body)
 	if err != nil {
-		return FailureProof{}, fmt.Errorf("%w: read response: %v", ErrProofUnavailable, err)
+		return FailureProof{}, fmt.Errorf("%w: %v", ErrProofUnavailable, err)
 	}
 	switch resp.StatusCode {
 	case http.StatusOK:
@@ -123,10 +137,11 @@ func NewHTTPAbandoner(paymentsURL, token string, timeout time.Duration) HTTPAban
 // AbandonRefundLeg asks payments to mark one leg abandoned after its own terminal-failure proof.
 //
 // 200 with a well-formed body is the only success. 404 and 409 are payments' conclusive
-// refusals: no marker was written. Everything else — a transport error, a timeout, 400, 401,
-// 5xx, or a body that is not exactly the declared shape — is UNCERTAIN: payments may have
-// committed the marker before the answer was lost. Commerce then records nothing and keeps the
-// quantity reserved, and the same command run again finishes from the stored marker.
+// refusals of this request: it wrote no marker. Everything else — a transport error, a timeout,
+// 400, 401, 5xx, or a body that is not exactly the declared shape — is UNCERTAIN: payments may
+// have committed the marker before the answer was lost. In every case Commerce keeps its
+// reservation pending and the quantity reserved, and the same command run again finishes from
+// the stored marker.
 func (p HTTPAbandoner) AbandonRefundLeg(ctx context.Context, org uuid.UUID, chargeKey, refundKey string, amount int64, currency string) (FailureProof, error) {
 	payload, err := json.Marshal(map[string]any{
 		"organizer_id": org, "idempotency_key": chargeKey, "refund_key": refundKey,
@@ -146,9 +161,9 @@ func (p HTTPAbandoner) AbandonRefundLeg(ctx context.Context, org uuid.UUID, char
 		return FailureProof{}, fmt.Errorf("%w: %v", ErrAbandonUncertain, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxProofBody))
+	raw, err := readEvidenceBody(resp.Body)
 	if err != nil {
-		return FailureProof{}, fmt.Errorf("%w: read response: %v", ErrAbandonUncertain, err)
+		return FailureProof{}, fmt.Errorf("%w: %v", ErrAbandonUncertain, err)
 	}
 	switch resp.StatusCode {
 	case http.StatusOK:

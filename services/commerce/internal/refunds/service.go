@@ -96,8 +96,8 @@ func (s *Service) Refund(ctx context.Context, in commercestore.RefundRequest) (R
 	}
 	// Checked before payments, for both callers: a staff replay of the old key, and a bulk
 	// run whose lookup read the refund before the abandonment committed. Payments refuses an
-	// abandoned leg too, and its marker commits first, so a refund abandoned after this read
-	// is refused there.
+	// abandoned leg too, and its marker commits before the Commerce outcome, so a refund
+	// abandoned after this read is refused there.
 	if refund.Abandoned {
 		return Result{}, ErrRefundAbandoned
 	}

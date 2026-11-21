@@ -49,8 +49,6 @@ func refundProblem(err error) (int, string) {
 		return http.StatusConflict, "refund unresolved"
 	case errors.Is(err, refunds.ErrProviderRefundFailed):
 		return http.StatusUnprocessableEntity, "provider refund failed"
-	case errors.Is(err, refunds.ErrRefundAbandoned):
-		return http.StatusConflict, "refund abandoned"
 	case errors.Is(err, refunds.ErrPaymentsUnresolved):
 		return http.StatusBadGateway, "refund unresolved"
 	case errors.Is(err, refunds.ErrJournalUnavailable):

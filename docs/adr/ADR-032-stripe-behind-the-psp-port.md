@@ -26,9 +26,9 @@ re-submitted): the platform never re-submits a refund that the provider marks `f
 Amended by **TKT-525** ([ADR-087](ADR-087-operator-outcomes-for-failed-post-purchase-refunds.md)):
 post-purchase refunds get an operator route. `commerce record-refund-outcome … refunded_outside`
 records an outside refund after a read-only Payments proof that the stamped provider refund failed.
-`commerce record-refund-outcome … abandoned` records that nobody will refund the attempt; Payments
-marks the leg after the same proof, and each service releases only that refund's allowance. Neither
-form re-submits anything. Owner decision of 2026-10-12: after a recorded `abandoned` outcome, staff
+`commerce record-refund-outcome … abandoned` records that nobody will refund the attempt: Commerce
+first commits an exclusive reservation, Payments marks the leg after the same proof, and each service
+releases only that refund's allowance. Neither form re-submits anything. Owner decision of 2026-10-12: after a recorded `abandoned` outcome, staff
 can submit a new refund under a new key through the Back Office. The platform never re-submits
 automatically, and no operator command re-submits.
 
@@ -552,8 +552,10 @@ platform. Then the operator uses the existing surfaces. This is what each one do
   completes the refund with that outcome as its evidence. Both allowances stay consumed, no money
   fact is written, and the reversal reconciler voids the tickets and then returns the capacity.
   When nobody will refund the attempt, `commerce record-refund-outcome <organizer-id> <refund-id>
-  abandoned <operator> <reason>` has Payments prove the failure and mark the leg, then appends an
-  `abandoned` outcome. The refund stays pending, and each service releases only its allowance.
+  abandoned <operator> <reason>` reserves the disposition in Commerce, has Payments prove the failure
+  and mark the leg, then appends an `abandoned` outcome. The refund stays pending, and each service
+  releases only its allowance. A later bulk run gets no fresh bind on that order; staff own any
+  further refund.
 
 **The limit, stated plainly.** *Amended (TKT-525):* for staff and bulk post-purchase refunds,
 `record-refund-outcome … refunded_outside` now records "refunded outside the platform", and

@@ -374,9 +374,10 @@ func (r *Runner) process(ctx context.Context, w store.CancellationWork) bool {
 			// refundable tickets it was meant to rescue.
 			return r.record(ctx, w, failure("ceiling_moved", err.Error()), true)
 		}
-		// The abandonment committed after resolveQuantity read the refund. The shared
+		// An abandonment of this row's own refund committed after resolveQuantity read it, or
+		// the order has an abandoned refund of any key and this is a fresh bind. The shared
 		// refund unit refused before any payments call; classify exactly as the skip does.
-		if errors.Is(err, refunds.ErrRefundAbandoned) {
+		if errors.Is(err, refunds.ErrRefundAbandoned) || errors.Is(err, store.ErrOrderHasAbandonedRefund) {
 			decided := r.abandonedPlan(ctx, w, store.RefundID(w.OrganizerID, key))
 			if decided.terminal {
 				return r.finalize(ctx, w, decided.outcome)

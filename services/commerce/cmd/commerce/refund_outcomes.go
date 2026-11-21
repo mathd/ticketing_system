@@ -153,10 +153,15 @@ func reportRefundOutcomeRefusal(refundID uuid.UUID, err error) {
 			"refund with no provider stamp can never be proven.\n", refundID, err)
 	case errors.Is(err, store.ErrRefundOutcomeStale):
 		fmt.Fprintf(os.Stderr, "REFUSED: refund %s changed while the command ran. Nothing was recorded. Run it again.\n", refundID)
+	case errors.Is(err, store.ErrAbandonmentReserved):
+		fmt.Fprintf(os.Stderr, "REFUSED: an abandonment is reserved for refund %s. Nothing was recorded. An operator "+
+			"started to abandon this refund, so it cannot be recorded as refunded outside. Finish the abandonment "+
+			"with the original command (same operator name and reason).\n", refundID)
 	}
 }
 
-// recordAbandoned is the `abandoned` form. Payments first, then Commerce (ADR-087).
+// recordAbandoned is the `abandoned` form: reserve in Commerce, then Payments, then finish in
+// Commerce (ADR-087).
 func recordAbandoned(ctx context.Context, db *sql.DB, in store.RefundOutcomeRequest, paymentsURL, token string) error {
 	svc := refundoutcome.NewAbandon(db, refundoutcome.NewHTTPAbandoner(paymentsURL, token, paymentsEvidenceTimeout))
 	res, err := svc.RecordAbandoned(ctx, in)
@@ -185,23 +190,26 @@ func reportAbandonedRefusal(refundID uuid.UUID, err error) {
 	case errors.Is(err, store.ErrRefundOutcomeNotFound):
 		fmt.Fprintf(os.Stderr, "REFUSED: no refund %s for this organizer. Nothing was recorded. Check both ids.\n", refundID)
 	case errors.Is(err, store.ErrRefundOutcomeConflict):
-		fmt.Fprintf(os.Stderr, "REFUSED: refund %s already carries a different outcome. Nothing was recorded. "+
-			"An outcome is append-only; investigate before any further money action.\n", refundID)
+		fmt.Fprintf(os.Stderr, "REFUSED: refund %s already carries a different outcome, or its abandonment was started "+
+			"with another operator name or reason. Nothing was recorded. To finish a started abandonment, repeat the "+
+			"original operator name and reason exactly; investigate before any further money action.\n", refundID)
 	case errors.Is(err, store.ErrRefundOutcomeIneligible):
 		fmt.Fprintf(os.Stderr, "REFUSED: refund %s is completed. There is nothing to abandon.\n", refundID)
 	case errors.Is(err, refundoutcome.ErrAbandonRefused):
-		fmt.Fprintf(os.Stderr, "REFUSED: payments refused to abandon refund %s (%v). Nothing was recorded in either "+
-			"service. A missing leg means the target is wrong; a completed leg or a provider success goes through "+
-			"ordinary refund reconciliation.\n", refundID, err)
+		fmt.Fprintf(os.Stderr, "REFUSED: payments refused this abandon request for refund %s (%v). Commerce keeps the "+
+			"abandonment reserved and the quantity counted; an outside completion stays refused. A missing leg means "+
+			"the target is wrong; a completed leg or a provider success goes through ordinary refund reconciliation. "+
+			"Once the cause is cleared, run the SAME command again.\n", refundID, err)
 	case errors.Is(err, refundoutcome.ErrAbandonUncertain):
 		fmt.Fprintf(os.Stderr, "UNCERTAIN: payments' answer for refund %s is unknown (%v). Payments may have released "+
-			"its allowance; Commerce recorded nothing and keeps the quantity reserved. Run the SAME command again. "+
-			"A refund with no provider stamp can never be proven; its allowances stay reserved.\n", refundID, err)
+			"its allowance; Commerce keeps the abandonment reserved and the quantity counted. Run the SAME command "+
+			"again. A refund with no provider stamp can never be proven; its allowances stay reserved.\n", refundID, err)
 	case errors.Is(err, store.ErrRefundOutcomeStale):
-		fmt.Fprintf(os.Stderr, "REFUSED: refund %s changed while the command ran. Commerce recorded nothing. Run the "+
-			"SAME command again.\n", refundID)
+		fmt.Fprintf(os.Stderr, "REFUSED: refund %s changed while the command ran. Commerce recorded no outcome. Run "+
+			"the SAME command again.\n", refundID)
 	default:
-		fmt.Fprintf(os.Stderr, "FAILED: refund %s was not recorded in Commerce (%v). If payments already accepted, its "+
-			"allowance is released and Commerce keeps the quantity reserved. Run the SAME command again.\n", refundID, err)
+		fmt.Fprintf(os.Stderr, "FAILED: refund %s was not recorded in Commerce (%v). If the abandonment was reserved "+
+			"and payments accepted, its allowance is released and Commerce keeps the quantity counted. Run the SAME "+
+			"command again.\n", refundID, err)
 	}
 }

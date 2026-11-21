@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -157,4 +158,27 @@ func TestHTTPAbandonerClassifiesEveryAnswer(t *testing.T) {
 			t.Fatalf("err = %v, want ErrAbandonUncertain", err)
 		}
 	})
+}
+
+// A valid object padded with whitespace past the read cap, then trailing content (R1-5). A
+// client that decodes a truncated body sees only whitespace after the object and accepts it.
+// The padding runs one byte past the cap, so even the one extra byte read to detect an
+// oversized body is whitespace: only the length check refuses it. Both clients must refuse the
+// oversized body before decoding.
+func oversizedEvidence() string {
+	valid := `{"provider_ref":"re_x","amount":2000,"currency":"EUR"}`
+	return valid + strings.Repeat(" ", maxProofBody+1-len(valid)) + `{"trailing":true}`
+}
+
+func TestEvidenceClientsRefuseABodyLongerThanTheCap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(oversizedEvidence()))
+	}))
+	t.Cleanup(srv.Close)
+	if got, err := NewHTTPPayments(srv.URL, "t", time.Second).ProveRefundFailure(context.Background(), uuid.New(), "k", uuid.NewString()); !errors.Is(err, ErrProofUnavailable) {
+		t.Fatalf("proof of an oversized 200 = %+v err=%v, want ErrProofUnavailable", got, err)
+	}
+	if got, err := NewHTTPAbandoner(srv.URL, "t", time.Second).AbandonRefundLeg(context.Background(), uuid.New(), "k", uuid.NewString(), 2000, "EUR"); !errors.Is(err, ErrAbandonUncertain) {
+		t.Fatalf("abandon answered by an oversized 200 = %+v err=%v, want ErrAbandonUncertain", got, err)
+	}
 }

@@ -97,3 +97,15 @@ var errNoDatabaseInDSN = &dsnError{"DSN names no database"}
 type dsnError struct{ msg string }
 
 func (e *dsnError) Error() string { return e.msg }
+
+// TestCommerceSmokeReachesRealPayments fails when scripts/smoke.sh does not hand
+// ./internal/refundoutcome the running stack's payments service (TKT-525). Its cross-service
+// tests skip without it, so the gate would go green having proved nothing; this fails instead,
+// for the same reason as the DSN test above.
+func TestCommerceSmokeReachesRealPayments(t *testing.T) {
+	for _, envVar := range []string{"COMMERCE_REFUNDOUTCOME_PAYMENTS_URL", "COMMERCE_REFUNDOUTCOME_PAYMENTS_TOKEN"} {
+		if os.Getenv(envVar) == "" {
+			t.Errorf("%s is not set: the refund outcome cross-service tests need the stack's payments (see scripts/smoke.sh)", envVar)
+		}
+	}
+}

@@ -520,21 +520,24 @@ func (s *Stripe) ProveRefundFailure(ctx context.Context, providerRef, idempotenc
 	if providerRef == "" || idempotencyKey == "" {
 		return RefundFailureProof{}, fmt.Errorf("%w: no provider charge reference or refund key to look under", ErrRefundProofInconclusive)
 	}
+	// Uncorroborated stamped evidence is tracked by a count, never by its id: an object with no
+	// id is uncorroborated too, and an empty id must not read as "none seen" (R1-2). It takes
+	// precedence over any corroborated match, so mixed stamped evidence is 502, not 409.
 	var matches []stripeRefund
-	uncorroborated := ""
+	uncorroborated := 0
 	if fail := s.listRefunds(ctx, providerRef, func(rf stripeRefund) bool {
 		switch rf.classify(providerRef, idempotencyKey, amount, currency) {
 		case refundMatchYes:
 			matches = append(matches, rf)
 		case refundMatchInconclusive:
-			uncorroborated = rf.ID
+			uncorroborated++
 		}
 		return false
 	}); fail != nil {
 		return RefundFailureProof{}, fmt.Errorf("%w: %v", ErrRefundProofInconclusive, fail.err)
 	}
-	if uncorroborated != "" {
-		return RefundFailureProof{}, fmt.Errorf("%w: stripe refund %q carries this key with evidence that does not corroborate it", ErrRefundProofInconclusive, uncorroborated)
+	if uncorroborated > 0 {
+		return RefundFailureProof{}, fmt.Errorf("%w: %d stripe refunds carry this key with evidence that does not corroborate it", ErrRefundProofInconclusive, uncorroborated)
 	}
 	switch len(matches) {
 	case 0:
