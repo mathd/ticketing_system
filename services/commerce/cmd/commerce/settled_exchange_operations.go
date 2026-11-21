@@ -81,18 +81,18 @@ func printSettledUnswitched(w io.Writer, rows []store.SettledExchange) {
 		case r.AbandonmentStarted:
 			state = "started"
 		}
-		fmt.Fprintf(w, "organizer=%s exchange=%s source_order=%s replacement_order=%s target_hold=%s "+
+		_, _ = fmt.Fprintf(w, "organizer=%s exchange=%s source_order=%s replacement_order=%s target_hold=%s "+
 			"settled_at=%s quantity=%d delta=%s %s abandonment=%s",
 			r.OrganizerID, r.ID, r.SourceOrderID, r.ReplacementOrderID, r.TargetHoldID,
 			r.SettledAt.UTC().Format(time.RFC3339), r.Quantity, signedAmount(r.DeltaAmount), r.Currency, state)
 		if r.AbandonmentStarted {
-			fmt.Fprintf(w, " abandonment_started_at=%s operator=%q",
+			_, _ = fmt.Fprintf(w, " abandonment_started_at=%s operator=%q",
 				r.AbandonmentStartedAt.UTC().Format(time.RFC3339), r.AbandonmentOperator)
 		}
 		if r.AbandonmentRefundFailedRef != "" {
-			fmt.Fprintf(w, " refund_failed_ref=%s", r.AbandonmentRefundFailedRef)
+			_, _ = fmt.Fprintf(w, " refund_failed_ref=%s", r.AbandonmentRefundFailedRef)
 		}
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 	}
 }
 
@@ -187,7 +187,7 @@ func errOrNil(err error) error {
 // branch's money evidence.
 func printAbandoned(w io.Writer, res exchangeabandon.Result) {
 	e := res.Exchange
-	fmt.Fprintf(w, "organizer=%s exchange=%s source_order=%s replacement_order=%s target_hold=%s quantity=%d "+
+	_, _ = fmt.Fprintf(w, "organizer=%s exchange=%s source_order=%s replacement_order=%s target_hold=%s quantity=%d "+
 		"delta=%s %s operator=%q session_user=%q reason=%q started_at=%s target_returned_at=%s abandoned_at=%s",
 		e.OrganizerID, e.ID, e.SourceOrderID, e.ReplacementOrderID, e.TargetHoldID, e.Quantity,
 		signedAmount(e.DeltaAmount), e.Currency, e.AbandonmentOperator, e.AbandonmentSessionUser, e.AbandonmentReason,
@@ -195,11 +195,11 @@ func printAbandoned(w io.Writer, res exchangeabandon.Result) {
 		e.AbandonedAt.UTC().Format(time.RFC3339Nano))
 	switch {
 	case e.DeltaAmount > 0:
-		fmt.Fprintf(w, " refund_fact=%s", e.AbandonmentRefundFactID)
+		_, _ = fmt.Fprintf(w, " refund_fact=%s", e.AbandonmentRefundFactID)
 	case e.DeltaAmount < 0:
-		fmt.Fprintf(w, " written_off=%d", e.AbandonmentWrittenOff)
+		_, _ = fmt.Fprintf(w, " written_off=%d", e.AbandonmentWrittenOff)
 	}
-	fmt.Fprintf(w, " replay=%t\n", res.Replay)
+	_, _ = fmt.Fprintf(w, " replay=%t\n", res.Replay)
 }
 
 // reportAbandonRefusal tells the operator what each refusal means and what to do next. The
@@ -208,27 +208,27 @@ func reportAbandonRefusal(w io.Writer, exchangeID uuid.UUID, e store.SettledExch
 	started := e.AbandonmentStarted
 	switch {
 	case errors.Is(err, store.ErrExchangeNotFound):
-		fmt.Fprintf(w, "REFUSED: no exchange %s for this organizer. Nothing changed. Check both ids.\n", exchangeID)
+		_, _ = fmt.Fprintf(w, "REFUSED: no exchange %s for this organizer. Nothing changed. Check both ids.\n", exchangeID)
 	case errors.Is(err, store.ErrAbandonmentAttributionConflict):
-		fmt.Fprintf(w, "REFUSED: the abandonment of exchange %s belongs to another operator name and reason. Nothing "+
+		_, _ = fmt.Fprintf(w, "REFUSED: the abandonment of exchange %s belongs to another operator name and reason. Nothing "+
 			"changed. Only the first pair can resume or replay it; repeat that pair exactly.\n", exchangeID)
 	case errors.Is(err, store.ErrAbandonmentRefundFailed):
-		fmt.Fprintf(w, "STOPPED: the provider refused the upgrade's delta refund for exchange %s (%s). The buyer is "+
+		_, _ = fmt.Fprintf(w, "STOPPED: the provider refused the upgrade's delta refund for exchange %s (%s). The buyer is "+
 			"still charged and the target is still held. Nothing will re-submit the refund. TKT-588 owns the next step; "+
 			"see docs/runbooks/order-recovery.md.\n", exchangeID, e.AbandonmentRefundFailedRef)
 	case errors.Is(err, store.ErrExchangeNotSettled), errors.Is(err, store.ErrExchangeAlreadySwitched),
 		errors.Is(err, store.ErrExchangeAbandonmentInconsistent), errors.Is(err, store.ErrExchangeGrossFactsInconsistent):
-		fmt.Fprintf(w, "REFUSED: exchange %s is not a candidate (%v). Nothing changed.\n", exchangeID, err)
+		_, _ = fmt.Fprintf(w, "REFUSED: exchange %s is not a candidate (%v). Nothing changed.\n", exchangeID, err)
 	case errors.Is(err, exchangeabandon.ErrSourceNotAdmitted), errors.Is(err, exchangeabandon.ErrReplacementIssued):
-		fmt.Fprintf(w, "REFUSED: Access does not prove an admitted source with an unissued replacement for exchange %s "+
+		_, _ = fmt.Fprintf(w, "REFUSED: Access does not prove an admitted source with an unissued replacement for exchange %s "+
 			"(%v). Nothing changed. A replacement with tickets is a switch whose callback is late: the exchange "+
 			"sweep owns it.\n", exchangeID, err)
 	case errors.Is(err, exchangeabandon.ErrDeltaEvidence), errors.Is(err, exchangeabandon.ErrReplacementRefundLeg),
 		errors.Is(err, store.ErrReplacementRefundCompleted):
-		fmt.Fprintf(w, "REFUSED: payments evidence for exchange %s needs reconciliation first (%v). started=%t.\n",
+		_, _ = fmt.Fprintf(w, "REFUSED: payments evidence for exchange %s needs reconciliation first (%v). started=%t.\n",
 			exchangeID, err, started)
 	default:
-		fmt.Fprintf(w, "INCOMPLETE: exchange %s was not abandoned (%v). started=%t. Every recorded step stays; run "+
+		_, _ = fmt.Fprintf(w, "INCOMPLETE: exchange %s was not abandoned (%v). started=%t. Every recorded step stays; run "+
 			"the SAME command again (same operator name and reason) once the cause is cleared.\n", exchangeID, err, started)
 	}
 }

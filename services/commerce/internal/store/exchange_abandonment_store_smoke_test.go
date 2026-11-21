@@ -647,6 +647,9 @@ func readFacts(t *testing.T, db *sql.DB, ctx context.Context, id uuid.UUID) []fa
 		}
 		out = append(out, r)
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	return out
 }
 
@@ -730,7 +733,7 @@ func TestFinishRefusesAFactTheRowDoesNotDescribe(t *testing.T) {
 			bad := fact
 			mutate(&bad)
 			_, _, err := FinishExchangeAbandonment(ctx, db, bad)
-			if !errors.Is(err, ErrAbandonmentFactMismatch) && !(name == "organizer" && errors.Is(err, ErrExchangeNotFound)) {
+			if !errors.Is(err, ErrAbandonmentFactMismatch) && (name != "organizer" || !errors.Is(err, ErrExchangeNotFound)) {
 				t.Fatalf("err=%v, want ErrAbandonmentFactMismatch", err)
 			}
 		})
