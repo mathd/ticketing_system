@@ -114,7 +114,11 @@ func (s *Server) pspPartialRefund(w http.ResponseWriter, r *http.Request) {
 		write(w, 502, map[string]string{"error": "provider refund unresolved"})
 		return
 	}
-	if err := result.Validate(); err != nil {
+	// An invalid result that does not claim Refunded is refused at once. An invalid Refunded
+	// result (for example a confirmed amount with no currency) still claims money came back, so it
+	// reaches the locked marker read below before its refusal (R5-1).
+	invalid := result.Validate()
+	if invalid != nil && result.Outcome != psp.Refunded {
 		write(w, 500, map[string]string{"error": "invalid provider result"})
 		return
 	}
@@ -133,10 +137,11 @@ func (s *Server) pspPartialRefund(w http.ResponseWriter, r *http.Request) {
 	// first and refusing after would put an unretractable claim into an append-only journal
 	// that money came back when it did not.
 	//
-	// A marker that committed during the provider call answers first (RA4-2, ADR-087 §13): read
-	// under the locks abandonment takes, it turns a mismatch into the same 409 and
-	// reconciliation log as a matching answer. Without a marker the mismatch refusal stands.
-	if !result.Confirmed.Agrees(leg.Amount, leg.Currency) {
+	// A marker that committed during the provider call answers first (RA4-2, R5-1, ADR-087 §13):
+	// read under the locks abandonment takes, it turns an invalid or mismatched confirmation into
+	// the same 409 and reconciliation log as a matching answer. Without a marker the existing
+	// refusal stands: 500 for an invalid result, 502 for a mismatch.
+	if invalid != nil || !result.Confirmed.Agrees(leg.Amount, leg.Currency) {
 		m, abandoned, err := s.journal.LookupRefundLegAbandonmentLocked(r.Context(), in.OrganizerID, key, refundKey)
 		if err != nil {
 			write(w, 500, map[string]string{"error": "lookup refund leg abandonment"})
@@ -144,6 +149,10 @@ func (s *Server) pspPartialRefund(w http.ResponseWriter, r *http.Request) {
 		}
 		if abandoned {
 			abandonedLegRefunded(w, in.OrganizerID, refundKey, m, result.ProviderRef)
+			return
+		}
+		if invalid != nil {
+			write(w, 500, map[string]string{"error": "invalid provider result"})
 			return
 		}
 		write(w, 502, map[string]string{"error": "provider confirmed a different refund amount than requested"})

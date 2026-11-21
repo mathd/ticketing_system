@@ -294,7 +294,10 @@ Operator runbook: `docs/development.md` §Journal signing key rotation.
      re-submits automatically, and no operator command re-submits. The failed leg stays bound and
      carries an abandonment marker; dispatch refuses it with 409 before any provider call. A
      dispatch admitted before the marker committed can still POST once under the stored key, and
-     its Refunded answer is never recorded (ADR-087 §13).
+     its Refunded answer is never recorded (ADR-087 §13). *Amended (TKT-525, ADR-087 §13):* a POST
+     that answers `succeeded` is not accepted from its body, which a same-key replay can return
+     after the refund failed. The adapter re-reads that refund by its id, and the current refund
+     decides the result and the confirmed money.
   Bound: refunds created before this amendment carry no stamp and therefore do not resolve. That is
   the pre-existing behaviour, not a regression — and not a fix.
 - `Status`: retrieve the known provider object. If the process timed out **before** persisting the

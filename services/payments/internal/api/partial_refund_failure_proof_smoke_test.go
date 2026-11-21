@@ -5,10 +5,12 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 
@@ -25,7 +27,9 @@ import (
 
 // stripePeer is a recording Stripe. It answers the refund listing with `list`. A refund POST is
 // answered by `submit` when a test sets it; every other route fails, so any submit is both
-// recorded and visible.
+// recorded and visible. A refund retrieve (GET /v1/refunds/{id}) is answered by `retrieve` when a
+// test sets it, and otherwise with the body of the 200 POST that created that id: a peer that
+// keeps the state it answered with.
 type stripePeer struct {
 	srv    *httptest.Server
 	mu     sync.Mutex
@@ -40,6 +44,10 @@ type stripePeer struct {
 	submit func() (int, string)
 	// posts records each refund POST: its Idempotency-Key header and its form.
 	posts []stripePost
+	// retrieve answers GET /v1/refunds/{id}. It runs inside the provider call.
+	retrieve func(id string) (int, string)
+	// created holds the body of each 200 refund POST by refund id.
+	created map[string]string
 }
 
 type stripePost struct {
@@ -54,7 +62,7 @@ func newStripePeer(t *testing.T) *stripePeer {
 		p.mu.Lock()
 		p.calls = append(p.calls, r.Method+" "+r.URL.Path)
 		p.query = append(p.query, r.URL.Query())
-		status, list, hook, submit := p.status, p.list, p.beforeAnswer, p.submit
+		status, list, hook, submit, retrieve := p.status, p.list, p.beforeAnswer, p.submit, p.retrieve
 		p.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		if submit != nil && r.Method == http.MethodPost && r.URL.Path == "/v1/refunds" {
@@ -65,6 +73,33 @@ func newStripePeer(t *testing.T) *stripePeer {
 			p.posts = append(p.posts, stripePost{idempotencyKey: r.Header.Get("Idempotency-Key"), form: r.PostForm})
 			p.mu.Unlock()
 			code, body := submit()
+			if code == 200 {
+				var created struct {
+					ID string `json:"id"`
+				}
+				if json.Unmarshal([]byte(body), &created) == nil && created.ID != "" {
+					p.mu.Lock()
+					if p.created == nil {
+						p.created = map[string]string{}
+					}
+					p.created[created.ID] = body
+					p.mu.Unlock()
+				}
+			}
+			w.WriteHeader(code)
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		if id, ok := strings.CutPrefix(r.URL.Path, "/v1/refunds/"); ok && r.Method == http.MethodGet && id != "" {
+			code, body := 404, `{"error":{"message":"peer: no such refund","type":"invalid_request_error"}}`
+			p.mu.Lock()
+			if stored, ok := p.created[id]; ok {
+				code, body = 200, stored
+			}
+			p.mu.Unlock()
+			if retrieve != nil {
+				code, body = retrieve(id)
+			}
 			w.WriteHeader(code)
 			_, _ = w.Write([]byte(body))
 			return

@@ -183,8 +183,9 @@ func TestStripeCaptureWithoutAnAmountReportsAbsentNotZero(t *testing.T) {
 func TestStripeRefundCarriesReturnedMoney(t *testing.T) {
 	const refundOK = `{"id":"re_test_1","object":"refund","amount":1250,"currency":"eur","status":"succeeded","payment_intent":"pi_test_authonly","charge":"ch_test_1"}`
 	stub := newStripeStub(t, map[string]stubResp{
-		"GET /v1/refunds":  {200, refundListEmpty},
-		"POST /v1/refunds": {200, refundOK},
+		"GET /v1/refunds":           {200, refundListEmpty},
+		"POST /v1/refunds":          {200, refundOK},
+		"GET /v1/refunds/re_test_1": {200, refundOK},
 	})
 	s := newStripeForStub(stub)
 	got, err := s.Refund(context.Background(), "pi_test_authonly", "psp-comp-v1:deadbeef", 1250, "EUR")

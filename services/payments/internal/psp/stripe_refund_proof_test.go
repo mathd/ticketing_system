@@ -226,6 +226,11 @@ func pagedStripe(t *testing.T, pages []string) (*Stripe, *[]url.Values, *int) {
 			_, _ = w.Write([]byte(proofRefund("re_posted", "succeeded", proofPI, proofKey, 1000, "eur")))
 			return
 		}
+		// The adapter re-reads a POSTed success before it accepts it (RA5-2).
+		if r.URL.Path == "/v1/refunds/re_posted" {
+			_, _ = w.Write([]byte(proofRefund("re_posted", "succeeded", proofPI, proofKey, 1000, "eur")))
+			return
+		}
 		queries = append(queries, r.URL.Query())
 		_, _ = w.Write([]byte(pages[min(len(queries), len(pages))-1]))
 	}))
@@ -262,6 +267,38 @@ func TestStripeListingRefusesAMalformedListingForProofAndDispatch(t *testing.T) 
 			"a null stamp (beside a valid failed match for the proof, alone for dispatch)",
 			[]string{proofList(false, ours, nullStamp)},
 			[]string{proofList(false, nullStamp)},
+		},
+		// RA5-1: a page can claim the listing is complete while it contradicts the page before
+		// it. An empty page after a page that promised more holds nothing the cursor led to.
+		{
+			"an empty final page after a page that promised more",
+			[]string{proofList(true, ours), proofList(false)},
+			[]string{proofList(true, foreign("re_a")), proofList(false)},
+		},
+		{
+			"an empty continuation page that promises more",
+			[]string{proofList(true, ours), proofList(true)},
+			[]string{proofList(true, foreign("re_a")), proofList(true)},
+		},
+		{
+			"an empty first page that promises more",
+			[]string{proofList(true)},
+			[]string{proofList(true)},
+		},
+		{
+			"a continuation page with no has_more",
+			[]string{proofList(true, ours), `{"object":"list","data":[` + foreign("re_b") + `]}`},
+			[]string{proofList(true, foreign("re_a")), `{"object":"list","data":[` + foreign("re_b") + `]}`},
+		},
+		{
+			"a continuation page with null data",
+			[]string{proofList(true, ours), `{"object":"list","has_more":false,"data":null}`},
+			[]string{proofList(true, foreign("re_a")), `{"object":"list","has_more":false,"data":null}`},
+		},
+		{
+			"a continuation page that is not a list",
+			[]string{proofList(true, ours), `{"object":"search_result","has_more":false,"data":[` + foreign("re_b") + `]}`},
+			[]string{proofList(true, foreign("re_a")), `{"object":"search_result","has_more":false,"data":[` + foreign("re_b") + `]}`},
 		},
 		{
 			"an entry whose object is a charge",
@@ -318,6 +355,25 @@ func TestStripeListingAcceptsAnUnstampedRefundWithEmptyMetadata(t *testing.T) {
 		t.Fatalf("proof = %+v err=%v posts=%d, want re_ours and no POST", got, err, *posts)
 	}
 	d, _, dposts := pagedStripe(t, []string{proofList(false, foreign)})
+	res, err := d.Refund(context.Background(), proofPI, proofKey, 1000, "EUR")
+	if err != nil || res.Outcome != Refunded || *dposts != 1 {
+		t.Fatalf("dispatch = %+v err=%v posts=%d, want one POST", res, err, *dposts)
+	}
+}
+
+// The control for RA5-1: an empty FIRST page that says it is the last one is a valid empty
+// listing. Dispatch submits once; the proof finds no stamped refund, which is inconclusive for
+// that reason and not because the listing was refused.
+func TestStripeListingAcceptsAnEmptyFirstAndFinalPage(t *testing.T) {
+	s, queries, posts := pagedStripe(t, []string{proofList(false)})
+	got, err := s.ProveRefundFailure(context.Background(), proofPI, proofKey, 1000, "EUR")
+	if !errors.Is(err, ErrRefundProofInconclusive) || err.Error() != ErrRefundProofInconclusive.Error()+": no refund carries this key" || got.ProviderRef != "" || *posts != 0 {
+		t.Fatalf("proof = %+v err=%v posts=%d, want inconclusive because no refund carries the key", got, err, *posts)
+	}
+	if len(*queries) != 1 {
+		t.Fatalf("listing pages = %d, want 1", len(*queries))
+	}
+	d, _, dposts := pagedStripe(t, []string{proofList(false)})
 	res, err := d.Refund(context.Background(), proofPI, proofKey, 1000, "EUR")
 	if err != nil || res.Outcome != Refunded || *dposts != 1 {
 		t.Fatalf("dispatch = %+v err=%v posts=%d, want one POST", res, err, *dposts)

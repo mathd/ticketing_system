@@ -111,9 +111,11 @@ GET /internal/psp/partial-refund/failure-proof?organizer_id=&idempotency_key=&re
   `compensation_key` that is present but null makes the whole listing inconclusive (Stripe sends
   `metadata: {}` on an unstamped refund, which stays a valid foreign refund). A refund id that
   occurs twice anywhere in the listing, the final page included, makes it inconclusive too: the
-  provider did not advance past that id. While `has_more` is true, a page with no entries is
-  inconclusive. The rule is in the shared listing loop, so `resolveRefund` does not submit on such
-  a listing either.
+  provider did not advance past that id. A page with no entries is inconclusive unless it is the
+  first page and also the last one: a later page exists only because the page before it said more
+  entries follow, so an empty later page contradicts that page, whatever its own `has_more` says.
+  The rule is in the shared listing loop, so `resolveRefund` does not submit on such a listing
+  either.
 - The fake PSP (offline and smoke stacks) proves only a refund failure that it recorded itself:
   a charge captured with the `fake-refund-fail-once` token fails its first refund terminally and
   keeps that refund in memory. The proof looks that refund up by charge reference and key; the fake
@@ -294,8 +296,10 @@ transaction takes (§11), in the same order: the `payment_operations` row, then 
 scoped by organizer. Under those locks it reads the marker in a separate statement. On a marker it
 appends no fact, completes nothing, and dispatch answers the same 409 and logs both refund
 references, the marker's and the answer's. A Refunded answer whose confirmed money differs from the
-leg, or carries none, reads the marker under the same locks before it is refused: on a marker the
-answer is the same 409 with both references in the log; without one it is the money-mismatch 502. Without a marker, the `payment.refunded` journal fact and
+leg, carries none, or fails the port's validation (for example an amount with no currency) reads the
+marker under the same locks before it is refused: on a marker the answer is the same 409 with both
+references in the log; without one it is the existing refusal, the money-mismatch 502 or the
+invalid-result 500. Without a marker, the `payment.refunded` journal fact and
 the leg completion commit in that same transaction. The marker's foreign key to the leg row cannot be
 satisfied while that row is locked, so no marker commits between the read and the commit. No lock is
 held across the provider call. A completed replay keeps its existing answer. A succeeded refund on a
@@ -314,8 +318,20 @@ refund under the stored key. Nothing records it. Reconciliation finds it from th
 
 **The same window applies to `refunded_outside`.** The outside path writes no Payments marker: its
 proof (§3) only reads. A dispatch admitted before the proof can still send one POST under the stored
-key after Commerce records the outside outcome. Within the provider's key retention the provider
-replays the original refund, which the proof found failed, so Payments records nothing. A stall past
+key after Commerce records the outside outcome. Within the provider's key retention, provider
+deduplication stops that POST from creating a second refund: Stripe answers it with the original
+response body. That body is not current evidence. It can say `succeeded` for the refund that the
+proof found failed. **The local journal records only a success that the current provider state
+confirms.** The Stripe adapter re-reads a POST that answered `succeeded`, by its refund id, before it
+returns Refunded. The retrieved refund decides the result and carries the confirmed money. A refund
+that is now `failed` or `canceled` is the terminal 422, a `pending` one is unresolved (502), and a
+failed re-read or a different refund is unresolved too. In each case Payments records nothing and the
+leg stays bound. The re-read is one more provider GET on every successful refund POST, the ordinary
+path included; it adds no new state and holds no database lock. **Remaining in-flight risk:** the
+re-read and the journal transaction are separate steps, and no lock spans a provider call. A refund
+that is `succeeded` at the re-read and fails before the journal commits is recorded as refunded; the
+detection below finds it. That the refund retrieve and the refund listing show the same state at the
+same time is not verified live. A stall past
 the 24 h retention can create a new refund. Because the leg has no marker, Payments can then journal
 `payment.refunded` and complete the leg, and an in-flight Commerce request can append and forward
 `order.refunded` before `CompleteOrderRefund` finds the refund already completed. This is the
@@ -336,8 +352,13 @@ for the operation lock: 409, the leg still bound, zero refund facts.
 `TestAbandonIsRefusedWhenDispatchCommitsFirst` pins the reverse order: dispatch commits one fact and
 the completion, and the abandonment then refuses a completed leg with no marker.
 `TestPartialRefundLateMarkerWinsOverAConfirmedMoneyMismatch` pins the 409, both references in the
-log, the bound leg and zero refund facts for a different or absent confirmed amount, with the marker
-committed during the provider call and with the marker transaction still holding the locks.
+log, the bound leg and zero refund facts for a different or absent confirmed amount and for an amount
+with no currency, with the marker committed during the provider call and with the marker transaction
+still holding the locks. `TestPartialRefundRefusesAnInvalidConfirmationWithoutAMarker` pins the
+unchanged 500 without a marker.
+`TestPartialRefundDispatchRecordsNothingWhenTheCachedSuccessIsStale` lets the failure proof find the
+leg's refund failed while the POST is in flight, then answers the POST with the cached `succeeded`
+body: the 422 for the current failed refund, no fact, the leg still bound.
 
 ### 14. Recovery, and the cost of starting an abandonment
 

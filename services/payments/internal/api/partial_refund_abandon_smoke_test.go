@@ -562,10 +562,12 @@ func captureLog(t *testing.T) *lockedBuffer {
 }
 
 // RA4-2 (D34, ADR-087 §13). The marker commits during the provider call, and the provider then
-// answers Refunded with money the leg did not bind: a different amount, or no confirmed money at
-// all. The marker answers first: 409, both references in the log, the leg still bound and zero
-// refund facts. The money-mismatch 502 is only for a leg with no marker; the provider
-// confirmation tests keep that case.
+// answers Refunded with money the leg did not bind: a different amount, no confirmed money at
+// all, or an amount with no currency, which the port's validation rejects (R5-1). The marker
+// answers first: 409, both references in the log, the leg still bound and zero refund facts.
+// The money-mismatch 502 and the invalid-result 500 are only for a leg with no marker; the
+// provider confirmation tests keep the first, TestPartialRefundRefusesAnInvalidConfirmationWithoutAMarker
+// the second.
 //
 // In the "in flight" cases the marker transaction holds the operation and leg locks when the
 // provider answers, and commits only after dispatch waits for them: a marker read that does not
@@ -576,11 +578,15 @@ func TestPartialRefundLateMarkerWinsOverAConfirmedMoneyMismatch(t *testing.T) {
 		amount   int64
 		cur      string
 		inFlight bool
+		// body, when set, replaces the refund the provider answers with.
+		body func(f *proofFixture) string
 	}{
-		{"a different confirmed amount", 999, "eur", false},
-		{"no confirmed money", 0, "", false},
-		{"a different confirmed amount, marker in flight", 999, "eur", true},
-		{"no confirmed money, marker in flight", 0, "", true},
+		{"a different confirmed amount", 999, "eur", false, nil},
+		{"no confirmed money", 0, "", false, nil},
+		{"an amount without a currency", 0, "", false, refundWithoutCurrency},
+		{"a different confirmed amount, marker in flight", 999, "eur", true, nil},
+		{"no confirmed money, marker in flight", 0, "", true, nil},
+		{"an amount without a currency, marker in flight", 0, "", true, refundWithoutCurrency},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			logs := captureLog(t)
@@ -614,6 +620,9 @@ func TestPartialRefundLateMarkerWinsOverAConfirmedMoneyMismatch(t *testing.T) {
 					}
 				}
 				opened <- tx
+				if c.body != nil {
+					return 200, c.body(f)
+				}
 				return 200, f.refund("re_late", "succeeded", f.pi, f.legKey, c.amount, c.cur)
 			}
 			done := make(chan *httptest.ResponseRecorder, 1)
@@ -642,6 +651,72 @@ func TestPartialRefundLateMarkerWinsOverAConfirmedMoneyMismatch(t *testing.T) {
 				t.Fatalf("payment.refunded facts = %d, want 0", n)
 			}
 		})
+	}
+}
+
+// refundWithoutCurrency is a succeeded refund re_late for the leg's amount whose `currency` key
+// is absent. The adapter maps it to Refunded with a confirmation that fails the port's validation
+// (R5-1).
+func refundWithoutCurrency(f *proofFixture) string {
+	return fmt.Sprintf(`{"id":"re_late","object":"refund","amount":1000,"status":"succeeded","payment_intent":%q,"metadata":{"compensation_key":%q}}`, f.pi, f.legKey)
+}
+
+// R5-1, the control. Without a marker, a Refunded answer whose confirmation fails validation
+// keeps its existing refusal: 500, nothing recorded, the leg still bound.
+func TestPartialRefundRefusesAnInvalidConfirmationWithoutAMarker(t *testing.T) {
+	f := newProofFixture(t, nil)
+	f.peer.list = emptyRefundList
+	f.peer.submit = func() (int, string) { return 200, refundWithoutCurrency(f) }
+	assertProofResponse(t, f.dispatch(t), 500, `{"error":"invalid provider result"}`)
+	assertLegStillBound(t, f.db, f.ctx, f.org)
+	if n := f.refundFacts(t); n != 0 {
+		t.Fatalf("payment.refunded facts = %d, want 0", n)
+	}
+	if m := f.marker(t); m != (markerRow{0, ""}) {
+		t.Fatalf("marker = %+v, want none", m)
+	}
+}
+
+// RA5-2 (ADR-087 §13). A POST answer is not current evidence: within the key retention Stripe
+// replays the original response body for the same key. The schedule: dispatch lists (nothing
+// yet) and POSTs; while the POST is in flight the refund under the leg's key has failed, and the
+// failure proof finds it failed; then the POST answer arrives, the cached `succeeded` body.
+// Payments must re-read the refund and record nothing: no payment.refunded fact, the leg still
+// bound, and the dispatch answer is the current failed state.
+func TestPartialRefundDispatchRecordsNothingWhenTheCachedSuccessIsStale(t *testing.T) {
+	f := newProofFixture(t, nil)
+	f.peer.list = emptyRefundList
+	var proof *httptest.ResponseRecorder
+	f.peer.submit = func() (int, string) {
+		f.peer.mu.Lock()
+		f.peer.list = f.listWith("re_same", "failed")
+		f.peer.mu.Unlock()
+		proof = f.getValid(t)
+		return 200, f.succeededRefund("re_same")
+	}
+	f.peer.retrieve = func(id string) (int, string) {
+		return 200, f.refund(id, "failed", f.pi, f.legKey, 1000, "eur")
+	}
+
+	res := f.dispatch(t)
+
+	if proof == nil {
+		t.Fatal("the failure proof did not run during the provider call")
+	}
+	assertProofResponse(t, proof, 200, `{"amount":1000,"currency":"EUR","provider_ref":"re_same"}`)
+	assertProofResponse(t, res, 422, `{"code":"provider_refund_failed","error":"provider refund failed","provider_ref":"re_same"}`)
+	if len(f.peer.posts) != 1 {
+		t.Fatalf("refund POSTs = %d, want 1", len(f.peer.posts))
+	}
+	if calls, _ := f.peer.snapshot(); calls[len(calls)-1] != "GET /v1/refunds/re_same" {
+		t.Fatalf("provider calls = %v, want the POST answer re-read last", calls)
+	}
+	assertLegStillBound(t, f.db, f.ctx, f.org)
+	if n := f.refundFacts(t); n != 0 {
+		t.Fatalf("payment.refunded facts = %d, want 0", n)
+	}
+	if m := f.marker(t); m != (markerRow{0, ""}) {
+		t.Fatalf("marker = %+v, want none: the outside path writes no marker", m)
 	}
 }
 
