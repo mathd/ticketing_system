@@ -258,3 +258,50 @@ type ConfirmedRefund struct {
 
 // ErrRefundLegNotCompleted reports that a completion wrote no row.
 var ErrRefundLegNotCompleted = errors.New("payments: refund leg completion wrote no row")
+
+// RefundLegProofState is everything the read-only failure proof (TKT-525, ADR-087) needs about
+// one leg, read in ONE statement so the leg, its charge and its abandonment marker come from
+// the same snapshot.
+type RefundLegProofState struct {
+	// ProviderKey is the leg's provider idempotency key: the stamp the adapter looks for.
+	ProviderKey string
+	Amount      int64
+	Currency    string
+	Completed   bool
+	// ProviderPaymentRef is the charge's provider reference (the Stripe PaymentIntent) that
+	// the provider lists refunds under. Empty when the charge never recorded one.
+	ProviderPaymentRef string
+	// Abandoned reports a committed abandonment marker for this exact leg.
+	Abandoned bool
+}
+
+// LookupRefundLegProofState reads one leg with its charge and marker, scoped by organizer. It
+// binds nothing and writes nothing. found=false when the charge or the leg is missing in this
+// organizer; the caller answers both the same way.
+func (j *Journal) LookupRefundLegProofState(ctx context.Context, org uuid.UUID, sourceKey, refundKey string) (RefundLegProofState, bool, error) {
+	var s RefundLegProofState
+	var status string
+	var piRef sql.NullString
+	err := j.db.QueryRowContext(ctx, `
+		SELECT l.provider_idempotency_key, l.amount, l.currency, l.status, o.provider_payment_ref,
+		       (m.organizer_id IS NOT NULL)
+		FROM payment_refund_legs l
+		JOIN payment_operations o
+		  ON o.organizer_id = l.organizer_id AND o.idempotency_key = l.source_idempotency_key
+		LEFT JOIN payment_refund_leg_abandonments m
+		  ON m.organizer_id = l.organizer_id
+		 AND m.source_idempotency_key = l.source_idempotency_key
+		 AND m.refund_idempotency_key = l.refund_idempotency_key
+		WHERE l.organizer_id=$1 AND l.source_idempotency_key=$2 AND l.refund_idempotency_key=$3`,
+		org, sourceKey, refundKey).
+		Scan(&s.ProviderKey, &s.Amount, &s.Currency, &status, &piRef, &s.Abandoned)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RefundLegProofState{}, false, nil
+	}
+	if err != nil {
+		return RefundLegProofState{}, false, err
+	}
+	s.Completed = status == "refunded"
+	s.ProviderPaymentRef = piRef.String
+	return s, true, nil
+}

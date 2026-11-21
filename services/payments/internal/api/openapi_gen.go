@@ -317,6 +317,13 @@ type ProviderRefundFailedCode string
 // ProviderRefundFailedError defines model for ProviderRefundFailed.Error.
 type ProviderRefundFailedError string
 
+// RefundLegFailureProof defines model for RefundLegFailureProof.
+type RefundLegFailureProof struct {
+	Amount      int64  `json:"amount"`
+	Currency    string `json:"currency"`
+	ProviderRef string `json:"provider_ref"`
+}
+
 // RefundLegState defines model for RefundLegState.
 type RefundLegState struct {
 	Amount            int64   `json:"amount"`
@@ -397,6 +404,13 @@ type GetOperationParams struct {
 // GetOrderSettlementParams defines parameters for GetOrderSettlement.
 type GetOrderSettlementParams struct {
 	OrganizerId openapi_types.UUID `form:"organizer_id" json:"organizer_id"`
+}
+
+// PspPartialRefundFailureProofParams defines parameters for PspPartialRefundFailureProof.
+type PspPartialRefundFailureProofParams struct {
+	OrganizerId    openapi_types.UUID `form:"organizer_id" json:"organizer_id"`
+	IdempotencyKey string             `form:"idempotency_key" json:"idempotency_key"`
+	RefundKey      openapi_types.UUID `form:"refund_key" json:"refund_key"`
 }
 
 // PspStatusParams defines parameters for PspStatus.

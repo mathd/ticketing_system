@@ -366,16 +366,25 @@ func CompleteOrderRefund(ctx context.Context, db *sql.DB, org, refundID, payment
 		WHERE organizer_id=$1 AND id=$2 AND status='pending'`, org, refundID, paymentFactID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `
+	if err := advanceOrderRefundProjection(ctx, tx, order, quantity, amount, sold); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// advanceOrderRefundProjection adds one completed refund to its order's projection. It is the
+// ONE projection arithmetic, shared by CompleteOrderRefund and the operator's outside
+// completion (TKT-525), so the two completion sources cannot drift. The caller holds the order
+// row lock.
+func advanceOrderRefundProjection(ctx context.Context, tx *sql.Tx, order uuid.UUID, quantity int32, amount int64, sold int32) error {
+	_, err := tx.ExecContext(ctx, `
 		UPDATE orders
 		SET refunded_quantity = refunded_quantity + $2,
 		    refunded_amount   = refunded_amount + $3,
 		    refund_status     = CASE WHEN refunded_quantity + $2 >= $4 THEN 'full' ELSE 'partial' END,
 		    updated_at        = now()
-		WHERE id=$1`, order, quantity, amount, sold); err != nil {
-		return err
-	}
-	return tx.Commit()
+		WHERE id=$1`, order, quantity, amount, sold)
+	return err
 }
 
 // MarkRefundTicketsVoided records that a refund's tickets have been voided. Guarded on

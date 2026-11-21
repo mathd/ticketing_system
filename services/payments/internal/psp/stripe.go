@@ -426,57 +426,136 @@ const refundListPages = 10
 // done=false — the only path that licenses a POST — requires a complete, successful
 // listing with no match.
 func (s *Stripe) resolveRefund(ctx context.Context, providerRef, idempotencyKey string, amount int64, currency string) (Result, bool, error) {
+	var res Result
+	var resErr error
+	matched := false
+	if fail := s.listRefunds(ctx, providerRef, func(rf stripeRefund) bool {
+		switch rf.classify(providerRef, idempotencyKey, amount, currency) {
+		case refundMatchYes:
+			// Including a FAILED refund: the money did not come back, so this is not
+			// resolved — but re-submitting would be a fresh money movement chosen by a
+			// heuristic. mapRefundStatus returns the terminal ErrRefundFailed carrying
+			// the re_, which is the evidence a human reconciles from. The platform never
+			// re-submits a failed refund (ADR-032 §Refund rule 3, TKT-347).
+			res, resErr = mapRefundStatus(rf)
+			matched = true
+			return true
+		case refundMatchInconclusive:
+			res, resErr = unknown(fmt.Errorf("stripe refund %q carries this compensation key with evidence that does not corroborate it", rf.ID))
+			matched = true
+			return true
+		}
+		return false
+	}); fail != nil {
+		return fail.res, true, fail.err
+	}
+	if matched {
+		return res, true, resErr
+	}
+	return Result{}, false, nil // conclusively absent: submitting is safe
+}
+
+// refundListFailure is a listing that did not complete: what Refund returns instead of a POST.
+type refundListFailure struct {
+	res Result
+	err error
+}
+
+// listRefunds pages through a PaymentIntent's refunds and calls visit on each, in order, until
+// visit returns true or the listing ends. It is the ONE listing path, shared by resolveRefund
+// (which may lead to a POST) and ProveRefundFailure (which never does), so the two cannot
+// disagree about what a complete listing is.
+//
+// nil means the listing completed or visit stopped it. Anything else is a failure that proves
+// nothing: a transport failure, a provider error, a malformed or incomplete page, a page that
+// cannot advance the cursor, or a listing that does not terminate.
+func (s *Stripe) listRefunds(ctx context.Context, providerRef string, visit func(stripeRefund) bool) *refundListFailure {
+	fail := func(res Result, err error) *refundListFailure { return &refundListFailure{res: res, err: err} }
 	q := url.Values{}
 	q.Set("payment_intent", providerRef)
 	q.Set("limit", "100")
 	for page := 0; page < refundListPages; page++ {
 		status, raw, se, err := s.do(ctx, http.MethodGet, "/v1/refunds?"+q.Encode(), "", nil)
 		if err != nil {
-			res, e := unknown(err)
-			return res, true, e
+			return fail(unknown(err))
 		}
 		if se != nil {
-			res, e := classifyError(status, se)
-			return res, true, e
+			return fail(classifyError(status, se))
 		}
 		var list stripeRefundList
 		if err := json.Unmarshal(raw, &list); err != nil {
-			res, e := unknown(err)
-			return res, true, e
+			return fail(unknown(err))
 		}
 		if !list.complete() {
-			res, e := unknown(errors.New("stripe refund list page is missing object/data/has_more"))
-			return res, true, e
+			return fail(unknown(errors.New("stripe refund list page is missing object/data/has_more")))
 		}
 		data := *list.Data
 		for _, rf := range data {
-			switch rf.classify(providerRef, idempotencyKey, amount, currency) {
-			case refundMatchYes:
-				// Including a FAILED refund: the money did not come back, so this is not
-				// resolved — but re-submitting would be a fresh money movement chosen by a
-				// heuristic. mapRefundStatus returns the terminal ErrRefundFailed carrying
-				// the re_, which is the evidence a human reconciles from. The platform never
-				// re-submits a failed refund (ADR-032 §Refund rule 3, TKT-347).
-				res, e := mapRefundStatus(rf)
-				return res, true, e
-			case refundMatchInconclusive:
-				res, e := unknown(fmt.Errorf("stripe refund %q carries this compensation key with evidence that does not corroborate it", rf.ID))
-				return res, true, e
+			if visit(rf) {
+				return nil
 			}
 		}
 		if !*list.HasMore {
-			return Result{}, false, nil // conclusively absent: submitting is safe
+			return nil
 		}
 		if len(data) == 0 {
 			// More pages exist but this one carries no id to advance the cursor past, so
 			// no further page can be reached: absence is unprovable.
-			res, e := unknown(errors.New("stripe refund list reports more pages but returned none"))
-			return res, true, e
+			return fail(unknown(errors.New("stripe refund list reports more pages but returned none")))
 		}
 		q.Set("starting_after", data[len(data)-1].ID)
 	}
-	res, e := unknown(errors.New("stripe refund list did not terminate"))
-	return res, true, e
+	return fail(unknown(errors.New("stripe refund list did not terminate")))
+}
+
+// ProveRefundFailure implements RefundFailureProver (TKT-525, ADR-087). It lists and reads; it
+// never submits.
+//
+// It shares resolveRefund's listing, its match rule (classify) and its status mapping
+// (mapRefundStatus), with one difference that matters for proof: it scans the WHOLE listing
+// rather than stopping at the first match. resolveRefund only needs to know whether to submit;
+// a proof must also know that no second stamped refund exists, because a second one means the
+// leg's history is not what its row says.
+func (s *Stripe) ProveRefundFailure(ctx context.Context, providerRef, idempotencyKey string, amount int64, currency string) (RefundFailureProof, error) {
+	if providerRef == "" || idempotencyKey == "" {
+		return RefundFailureProof{}, fmt.Errorf("%w: no provider charge reference or refund key to look under", ErrRefundProofInconclusive)
+	}
+	var matches []stripeRefund
+	uncorroborated := ""
+	if fail := s.listRefunds(ctx, providerRef, func(rf stripeRefund) bool {
+		switch rf.classify(providerRef, idempotencyKey, amount, currency) {
+		case refundMatchYes:
+			matches = append(matches, rf)
+		case refundMatchInconclusive:
+			uncorroborated = rf.ID
+		}
+		return false
+	}); fail != nil {
+		return RefundFailureProof{}, fmt.Errorf("%w: %v", ErrRefundProofInconclusive, fail.err)
+	}
+	if uncorroborated != "" {
+		return RefundFailureProof{}, fmt.Errorf("%w: stripe refund %q carries this key with evidence that does not corroborate it", ErrRefundProofInconclusive, uncorroborated)
+	}
+	switch len(matches) {
+	case 0:
+		return RefundFailureProof{}, fmt.Errorf("%w: no refund carries this key", ErrRefundProofInconclusive)
+	case 1:
+	default:
+		return RefundFailureProof{}, fmt.Errorf("%w: %d refunds carry this key", ErrRefundProofContradicted, len(matches))
+	}
+	res, err := mapRefundStatus(matches[0])
+	var failed *RefundFailedError
+	switch {
+	case errors.As(err, &failed):
+		if !strings.HasPrefix(failed.ProviderRef, "re_") || len(failed.ProviderRef) <= len("re_") {
+			return RefundFailureProof{}, fmt.Errorf("%w: failed refund has no usable reference", ErrRefundProofInconclusive)
+		}
+		return RefundFailureProof{ProviderRef: failed.ProviderRef}, nil
+	case err == nil && res.Outcome == Refunded:
+		return RefundFailureProof{}, fmt.Errorf("%w: stripe refund %q succeeded", ErrRefundProofContradicted, matches[0].ID)
+	default:
+		return RefundFailureProof{}, fmt.Errorf("%w: stripe refund %q is not terminal (%q)", ErrRefundProofInconclusive, matches[0].ID, matches[0].Status)
+	}
 }
 
 // classify decides whether a listed refund is the one this compensation created.

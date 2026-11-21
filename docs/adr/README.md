@@ -14,7 +14,7 @@ number; a gap does not imply a missing implementation.
 | Migrations or catalog reads/indexes | ADR-008 with 022, 019, 020 |
 | Event schema or durable consumer | ADR-017, 033, 034, 072, 077 |
 | Slot lifecycle, admission claims, channels, seats | ADR-005, 010, 014, 018, 023–027, 029, 031, 041, 054, 060, 061, 064, 080, 082 |
-| Checkout, recovery, refund, exchange | ADR-011, 016, 032, 037–040, 062, 063, 065, 067, 069–071 |
+| Checkout, recovery, refund, exchange | ADR-011, 016, 032, 037–040, 062, 063, 065, 067, 069–071, 087 |
 | Prices, fees, splits, settlement | ADR-036, 046–048; ADR-084 is proposed |
 | Staff, customer, partner, or credential boundary | ADR-042, 043, 049–053, 056–059, 068 |
 | Ticket issuance, lifecycle, scanner | ADR-003, 012, 021, 025, 066, 074, 083, 085 |
@@ -60,7 +60,7 @@ this register when adding an ADR or changing its status. Preserve existing decis
 | ADR-029 | [Seat-identity pinning contract for safe published-seat-map edits](ADR-029-seat-identity-pinning-contract.md) | Accepted; amended by TKT-318 |
 | ADR-030 | [Catalog stays out of the smoke happy-path coverage gate](ADR-030-catalog-coverage-gate-scope.md) | Accepted |
 | ADR-031 | [Seat-claim ↔ catalog pin coordination (hold-then-pin)](ADR-031-seat-claim-pin-coordination.md) | Accepted |
-| ADR-032 | [Stripe behind a provider-agnostic PSP port](ADR-032-stripe-behind-the-psp-port.md) | Accepted |
+| ADR-032 | [Stripe behind a provider-agnostic PSP port](ADR-032-stripe-behind-the-psp-port.md) | Accepted; post-purchase operator route amended by ADR-087 |
 | ADR-033 | [One domain-event envelope in the shared kernel](ADR-033-shared-domain-event-envelope.md) | Accepted |
 | ADR-034 | [A shared durable-consumer lifecycle primitive — and where it stops](ADR-034-shared-durable-consumer-lifecycle.md) | Accepted |
 | ADR-035 | [Eight Go modules stay; a gate enforces one version per shared dependency](ADR-035-go-module-dependency-declarations.md) | Accepted |
@@ -114,6 +114,7 @@ this register when adding an ADR or changing its status. Preserve existing decis
 | ADR-084 | [Promotion storage and redemption contract](ADR-084-promotion-storage-and-redemption-contract.md) | Proposed; no implementation authority |
 | ADR-085 | [Scanner local outcome model](ADR-085-scanner-local-outcome-model.md) | Accepted model; staged delivery and venue qualification limits |
 | ADR-086 | [Parallel CI gate parts](ADR-086-parallel-ci-gate-parts.md) | Accepted |
+| ADR-087 | [Operator outcomes for failed post-purchase refunds](ADR-087-operator-outcomes-for-failed-post-purchase-refunds.md) | Accepted; slice S1 (`refunded_outside`) delivered, slice S2 (`abandoned`) pending |
 
 Use [the ADR template](<[template].md>) for a new decision. Record current implementation and
 future requirements separately. Historical context inside an ADR is not an operator procedure.

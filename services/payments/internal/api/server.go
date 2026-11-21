@@ -63,6 +63,7 @@ func (s *Server) Router(log *slog.Logger, validateResponses bool) http.Handler {
 	r.Post("/internal/psp/void", s.pspVoid)
 	r.Post("/internal/psp/refund", s.pspRefund)
 	r.Post("/internal/psp/partial-refund", s.pspPartialRefund)
+	r.Get("/internal/psp/partial-refund/failure-proof", s.pspPartialRefundFailureProof)
 	validated, err := contract.RequestValidator(apispec.Spec, r, log, validateResponses)
 	if err != nil {
 		panic(err)

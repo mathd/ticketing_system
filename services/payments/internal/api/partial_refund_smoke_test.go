@@ -207,6 +207,65 @@ func TestPartialRefundTerminalFailureIsDeclared422(t *testing.T) {
 	assertLegStillBound(t, db, ctx, org)
 }
 
+// terminalKeysPSP answers every refund with the provider's terminal failure and records the
+// provider key of EACH call before answering.
+type terminalKeysPSP struct {
+	psp.PSP
+	mu   sync.Mutex
+	keys []string
+}
+
+func (p *terminalKeysPSP) Refund(_ context.Context, _, idempotencyKey string, _ int64, _ string) (psp.Result, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.keys = append(p.keys, idempotencyKey)
+	return psp.Result{Outcome: psp.Unknown, ProviderRef: "re_terminal"}, &psp.RefundFailedError{ProviderRef: "re_terminal"}
+}
+
+// Same-key pin 2 (TKT-525 COS 6). Repeating the original partial-refund request after a
+// terminal 422 answers the declared 422 again, reaches the adapter twice under the provider key
+// stored on the ONE bound leg, and appends no refund journal entry. The Stripe adapter half of
+// the guarantee — a stamped failed refund resolves with one listing and no POST — is
+// TestStripeRefundResolutionFailsClosedOnAFailedRefund in the psp package.
+func TestPartialRefundRepeatAfterTerminal422ReusesTheStoredProviderKey(t *testing.T) {
+	org, sourceKey := uuid.New(), "leg-terminal-repeat"
+	h, _ := refundServer(t, org, sourceKey, 2500)
+	db, ctx := refundDB(t)
+	provider := &terminalKeysPSP{PSP: psp.NewFake()}
+	ring, err := store.NewKeyring("refund-key", []byte("payments-refund-leg-key-0123456"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h = newTestServerWithPSP(store.New(db, ring), refundCredential, provider).Router(nil, true)
+
+	body := `{"organizer_id":"` + org.String() + `","idempotency_key":"` + sourceKey + `","refund_key":"refund-terminal-repeat","amount":1250,"currency":"EUR"}`
+	for attempt := 1; attempt <= 2; attempt++ {
+		res := postRefundLeg(t, h, body)
+		if res.Code != http.StatusUnprocessableEntity || res.Body.String() != `{"code":"provider_refund_failed","error":"provider refund failed","provider_ref":"re_terminal"}`+"\n" {
+			t.Fatalf("attempt %d: status=%d body=%s, want the declared terminal 422", attempt, res.Code, res.Body.String())
+		}
+	}
+	var legs int
+	var storedKey string
+	if err := db.QueryRowContext(ctx, `SELECT count(*), min(provider_idempotency_key) FROM payment_refund_legs WHERE organizer_id=$1`, org).Scan(&legs, &storedKey); err != nil {
+		t.Fatal(err)
+	}
+	if legs != 1 {
+		t.Fatalf("bound legs = %d, want 1", legs)
+	}
+	if len(provider.keys) != 2 || provider.keys[0] != storedKey || provider.keys[1] != storedKey {
+		t.Fatalf("adapter keys = %v, want two calls under the stored leg key %q", provider.keys, storedKey)
+	}
+	assertLegStillBound(t, db, ctx, org)
+	var facts int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM journal_entries WHERE organizer_id=$1 AND fact_type='payment.refunded'`, org).Scan(&facts); err != nil {
+		t.Fatal(err)
+	}
+	if facts != 0 {
+		t.Fatalf("payment.refunded facts = %d, want none", facts)
+	}
+}
+
 // The endpoint is internal: no token, no answer — and it answers 401 like every other
 // payments internal operation, not 404 (that is commerce's convention).
 func TestPartialRefundRequiresInternalToken(t *testing.T) {

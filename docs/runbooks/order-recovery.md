@@ -278,3 +278,94 @@ the exchange at the moment it was removed. That table is the only record the exc
 migration 0024's Down refuses to roll back over it. Like everything else here it is
 **honest-operator evidence, not tamper-evidence** (ADR-021): anyone with commerce's database
 credentials can forge it, or delete an exchange row directly without leaving any.
+
+## Failed post-purchase refund: operator outcome (TKT-525)
+
+A staff refund or an event-cancellation (bulk) refund whose provider refund failed stays `pending`.
+Its Payments leg stays `bound`, and both refund allowances stay reserved. The platform never
+re-submits it (ADR-032, TKT-347). The staff order read shows the refund as `pending`; the bulk report
+shows the order as `refund_refused`. Decision record:
+[ADR-087](../adr/ADR-087-operator-outcomes-for-failed-post-purchase-refunds.md).
+
+**Agree on the disposition first.** Before you transfer money or run a command, agree with the
+other operators what this refund's outcome is. Do not run two different commands for one refund. If
+you find a conflict, stop and investigate before any further money action.
+
+### The buyer was refunded outside the platform
+
+```
+commerce record-refund-outcome <organizer-id> <refund-id> refunded_outside "<operator name>" "<external reference>" "<reason>"
+```
+
+Run it with `docker compose exec commerce /app record-refund-outcome …`, as the other Commerce
+commands. It needs `DATABASE_URL`, `PAYMENTS_URL` and `PAYMENTS_INTERNAL_TOKEN` (or
+`INTERNAL_SERVICE_TOKEN`). It checks every argument and the Payments configuration before it opens
+the database.
+
+Before you run it:
+
+1. Confirm that the outside transfer is **settled** and is for the **full stored amount** of this
+   refund, in its stored currency. The command does not take an amount: it copies the refund's
+   amount and currency, and prints them. Running the command is your confirmation.
+2. Use the transfer's own reference (bank or PSP dashboard) as `<external reference>`.
+3. Type your own name as `<operator name>`. It is the only personal attribution. The record also
+   stores PostgreSQL `session_user`, which on this access path is always the shared `commerce` login.
+
+What the command does:
+
+1. It reads the refund in the organizer. A missing refund and another organizer's refund give the
+   same refusal.
+2. It asks Payments, read-only, to prove the failure: the leg is still bound, it has no abandonment
+   marker, and the provider's own stamped refund for it is `failed` or `canceled` for the same amount
+   and currency. It makes no writing HTTP call.
+3. In one short transaction it appends the outcome to `refund_outcomes`, completes the refund with
+   that outcome as its evidence, and advances the order's refund totals once.
+
+The result line shows `amount`, `currency`, `external_ref`, `operator`, `session_user`,
+`recorded_at` and `replay`.
+
+After success: both allowances stay consumed. No Commerce `order.refunded` fact and no Payments
+journal entry is written, so a report that reads only `order_facts` or the Payments journal does not
+see this refund; read `refund_outcomes`. The reversal reconciler then voids the tickets and, only
+after that, returns the capacity. Follow it in [Refund reversal reconciliation](#refund-reversal-reconciliation).
+A later bulk run over the same slot uses the same refund key and reports `already_refunded` once the
+reversal is complete.
+
+**Run the same command again** after a timeout or a lost reply. An identical command returns the
+original record (`replay=true`) with its original time and attribution, and asks Payments nothing.
+A command that differs in kind, operator name, reference or reason is refused as a conflict.
+
+| Refusal | Meaning | What to do |
+|---|---|---|
+| `no refund … for this organizer` | Wrong ids, or the refund belongs to another organizer | Check both ids. |
+| `already carries a different outcome` | An outcome is recorded and it is not this one | Stop. Outcomes are append-only. Investigate before any money action. |
+| `completed through payments` | The money moved through the platform | Nothing to record. |
+| `payments refused the failure proof` (404 or 409) | No such leg, the leg completed, it has an abandonment marker, or the provider says the refund did not fail | Reconcile the original refund first. Do not transfer money. |
+| `payments could not prove` (502, timeout, malformed answer, or different money) | No proof now | Nothing changed and both allowances stay reserved. Fix the cause and run the same command again. |
+| `changed while the command ran` | The refund or its order changed between the read and the write | Run the same command again. |
+
+**A refund whose provider refund has no stamp can never be proven.** A leg bound before the adapter
+added the `compensation_key` stamp, or one the provider never answered, has no refund the proof can
+find. The command refuses it, and both allowances stay reserved.
+
+**Find the Payments leg** for a refund with the scoped leg key: the organizer, the order's checkout
+idempotency key (`orders.idempotency_key`) and the refund id as the refund key.
+
+```sql
+-- payments database
+SELECT l.status, l.amount, l.currency, l.bound_at, m.provider_ref AS abandonment_ref, m.abandoned_at
+FROM payment_refund_legs l
+LEFT JOIN payment_refund_leg_abandonments m
+  ON (m.organizer_id, m.source_idempotency_key, m.refund_idempotency_key)
+   = (l.organizer_id, l.source_idempotency_key, l.refund_idempotency_key)
+WHERE l.organizer_id = '<organizer-id>'
+  AND l.source_idempotency_key = '<order checkout key>'
+  AND l.refund_idempotency_key = '<refund-id>';
+```
+
+**Roll forward, not back.** Commerce migration 0027 refuses to roll back while `refund_outcomes`
+holds a row, and Payments migration 0007 refuses while `payment_refund_leg_abandonments` holds a row.
+Both records are honest-operator evidence, not tamper-evidence (ADR-021): a writer with database
+credentials can forge or delete them.
+
+The `abandoned` form (TKT-525 S2) is not available in this release; the command refuses it.
