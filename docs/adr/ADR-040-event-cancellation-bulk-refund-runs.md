@@ -482,7 +482,7 @@ consistency, not a guarantee against a writer with access to the commerce databa
 
 **Context.** TKT-498 adds one call before the money for one kind of order: a refund of an exchange
 replacement whose switch Commerce has not recorded. The refund unit asks Access for the replacement's
-admission summary first (TKT-498 D22). That order has the longest path: the Access admission read,
+admission summary first (TKT-498). That order has the longest path: the Access admission read,
 the partial refund, the refund fact, ticket voiding and the capacity return. `MaxCallsPerOrder = 4`
 did not include the first call. At the default batch of 8 and the 30 s call timeout, a batch of such
 orders whose calls all ran to their timeouts took 1,200 s of HTTP against a 1,020 s lease.
