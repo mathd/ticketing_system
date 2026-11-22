@@ -4,7 +4,7 @@ Date: 2026-11-22
 
 ## Status
 
-Accepted (TKT-602; plan approved under `config.gates: autonomous`, decisions D1–D9 on the ticket).
+Accepted (TKT-602; plan approved under `config.gates: autonomous`, decision log on the ticket).
 Closes the S-4 final review finding IMPL2-1.
 
 Scope: the Back Office (`web/backoffice`) only. This ADR is the Back Office counterpart of the
@@ -67,18 +67,18 @@ We adopt Option 4.
 1. **One transport.** Every Back Office upstream request uses `fetchUpstream` in
    `web/backoffice/src/lib/upstream.ts`. It contains the only direct `fetch` in
    `web/backoffice/src`. This includes the public Catalog venue and seat-map reads, the Commerce
-   order-state read and the Access ticket-bundle read (D1).
+   order-state read and the Access ticket-bundle read.
 2. **Manual mode, refusal before the body.** `fetchUpstream` sends `redirect: 'manual'`, set after
    the caller's `init`, so a caller cannot turn following back on. It refuses a response with type
    `opaqueredirect` or a status from 300 to 399 before any code reads the body. It cancels a present
    body and ignores a failed cancel, so the redirect error reaches the caller. On Node 26.13.1,
    manual mode returns the 3xx itself with type `basic`, so the status range is the guard that
-   applies. The `opaqueredirect` check is a low-cost defense against a runtime that returns status 0
-   (D6). All other responses go to the existing decoders under the existing deadline.
+   applies. The `opaqueredirect` check is a low-cost defense against a runtime that returns status 0.
+   All other responses go to the existing decoders under the existing deadline.
 3. **Status-only error.** The refusal is an `UpstreamRedirectError` with a fixed message and a
    numeric `status`. It holds no URL, `Location` value, header or body, so a guest capability in a
-   URL cannot reach a log through this error (D9). `exactcall.RedirectError` is the model.
-4. **Caller outcomes stay with the callers** (D2). A refused redirect is a failure to answer:
+   URL cannot reach a log through this error. `exactcall.RedirectError` is the model.
+4. **Caller outcomes stay with the callers**. A refused redirect is a failure to answer:
     - A read is unavailable. The Catalog and Inventory reads throw into their existing unavailable
       paths. The Access ticket bundle is `unavailable`, never `not-found`.
     - Staff sign-in throws, and the login page shows "temporarily unavailable", never "wrong
@@ -91,7 +91,7 @@ We adopt Option 4.
       retry form. A refused redirect is a failed read in the sense of ADR-087 §16. Only a direct
       Commerce answer can settle the key.
     - The ticket resend is `ambiguous` and keeps its retry key.
-5. **Existing messages** (D7). A redirect shows the call's existing unreachable or ambiguous
+5. **Existing messages**. A redirect shows the call's existing unreachable or ambiguous
    message, for example "Commerce could not be reached." Known limit: the resend message "access did
    not answer in time." names a timeout also when the cause is a redirect.
 6. **Final URLs.** Set `GATEWAY_URL`, `CATALOG_URL`, `COMMERCE_URL`, `INVENTORY_URL` and
