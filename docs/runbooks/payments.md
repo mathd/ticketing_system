@@ -17,8 +17,14 @@ curl -X POST "$COMMERCE_URL/internal/slots/$SLOT_ID/cancellation-refunds" \
   -d '{"organizer_id":"'"$ORGANIZER_ID"'","actor":"ops@example.test","reason":"event cancelled"}'
 
 # read the report (202 while it is still running, with the counts; 200 when complete, with the rows)
-curl "$COMMERCE_URL/internal/cancellation-refunds/$RUN_ID?organizer_id=$ORGANIZER_ID"
+curl -H "X-Internal-Token: $INTERNAL_SERVICE_TOKEN" \
+  "$COMMERCE_URL/internal/cancellation-refunds/$RUN_ID?organizer_id=$ORGANIZER_ID"
 ```
+
+Send the Commerce shared internal credential in `X-Internal-Token`. Read the order rows after the run
+completes. If the page does not contain the order and returns `next_after_order_id`, use that value
+as `after_order_id` in the next request. Repeat until you find the order or the report returns no
+cursor.
 
 Reading the outcomes:
 

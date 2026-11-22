@@ -22,6 +22,7 @@ import type { ChannelAllocationSet } from './allocation-form';
 import {
   decodeMutationResponse,
   fetchMutation,
+  fetchUpstream,
   boolean,
   dateTime,
   nonNegativeWholeNumber,
@@ -211,7 +212,7 @@ export async function getStaffAvailability(
     `${INVENTORY_URL}/internal/slots/${encodeURIComponent(slotId)}/availability` +
     `?organizer_id=${encodeURIComponent(organizerId)}`;
   return withUpstreamDeadline(async (signal) => {
-    const res = await fetch(url, { headers: { [headerName]: credential }, signal });
+    const res = await fetchUpstream(url, { headers: { [headerName]: credential }, signal });
     if (!res.ok) return refuse(res);
     return decodeStaffAvailability(await res.json(), slotId);
   });

@@ -7,6 +7,7 @@ import {
   type Read,
   boolean,
   currency,
+  fetchUpstream,
   nonNegativeWholeNumber,
   positiveWholeNumber,
   readJson,
@@ -123,7 +124,7 @@ export async function refundOrder(req: RefundRequest): Promise<RefundOutcome> {
   const credential = commerceStaffCredential();
   try {
     return await withUpstreamDeadline(async (signal) => {
-      const res = await fetch(
+      const res = await fetchUpstream(
         `${COMMERCE_URL}/internal/orders/${encodeURIComponent(req.orderId)}/refunds`,
         {
           method: 'POST',
@@ -200,7 +201,8 @@ export async function refundOrder(req: RefundRequest): Promise<RefundOutcome> {
     });
   } catch {
     // The request may have reached commerce and been applied. Never "no refund
-    // happened".
+    // happened". A refused redirect lands here too (ADR-088): the first hop
+    // received the POST, and the redirect target's answer is not Commerce's.
     return { ok: false, kind: 'ambiguous', message: 'Commerce could not be reached.' };
   }
 }
@@ -227,7 +229,8 @@ export const ABANDONED_REFUND_MESSAGE =
  *
  * Fails closed. Any answer other than a readable 200 that names this order, this
  * organizer and an abandoned refund under this key is `false`, and the caller
- * keeps the saved retry.
+ * keeps the saved retry. A redirect is refused before its body is read
+ * (ADR-088), so a redirect target cannot confirm anything.
  */
 export async function confirmsAbandonedRefund(req: {
   orderId: string;
@@ -239,7 +242,7 @@ export async function confirmsAbandonedRefund(req: {
   const credential = commerceStaffCredential();
   try {
     return await withUpstreamDeadline(async (signal) => {
-      const res = await fetch(`${COMMERCE_URL}/internal/orders/${encodeURIComponent(req.orderId)}`, {
+      const res = await fetchUpstream(`${COMMERCE_URL}/internal/orders/${encodeURIComponent(req.orderId)}`, {
         headers: {
           'X-Commerce-Staff-Write-Token': credential,
           'X-Catalog-Organizer-Assertion': req.assertion,

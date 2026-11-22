@@ -7,6 +7,7 @@ import {
   readJson,
   boolean,
   dateTime,
+  fetchUpstream,
   positiveWholeNumber,
   required,
   responseObject,
@@ -170,7 +171,7 @@ export async function redeliverOrderTickets(req: RedeliveryRequest): Promise<Red
   const credential = accessStaffCredential();
   try {
     return await withUpstreamDeadline(async (signal) => {
-      const res = await fetch(
+      const res = await fetchUpstream(
         `${ACCESS_URL}/internal/orders/${encodeURIComponent(req.orderId)}/redeliveries`,
         {
           method: 'POST',

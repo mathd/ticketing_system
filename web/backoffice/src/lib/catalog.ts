@@ -12,6 +12,7 @@ import {
   dateTime,
   decodeMutationResponse,
   fetchMutation,
+  fetchUpstream,
   GATEWAY_URL,
   nonNegativeWholeNumber,
   positiveInt32,
@@ -110,7 +111,7 @@ function authenticationHeaders(): Record<string, string> {
 export async function getVenues(organizerId: string): Promise<Venue[]> {
   const url = `${GATEWAY_URL}/api/catalog/public/venues?organizer_id=${encodeURIComponent(organizerId)}`;
   return withUpstreamDeadline(async (signal) => {
-    const res = await fetch(url, { signal });
+    const res = await fetchUpstream(url, { signal });
     if (!res.ok) {
       throw new Error(`catalog venue read failed: ${res.status}`);
     }
@@ -548,7 +549,7 @@ export function addSeatMapSeat(
  */
 export async function listVenueSeatMaps(venueId: string): Promise<SeatMap[]> {
   return withUpstreamDeadline(async (signal) => {
-    const res = await fetch(catalog(`/public/venues/${encodeURIComponent(venueId)}/seat-maps`), {
+    const res = await fetchUpstream(catalog(`/public/venues/${encodeURIComponent(venueId)}/seat-maps`), {
       signal,
     });
     if (!res.ok) {
@@ -567,7 +568,7 @@ export async function listVenueSeatMaps(venueId: string): Promise<SeatMap[]> {
  */
 export async function getSeatMapGeometry(seatMapId: string): Promise<SeatMapGeometry> {
   return withUpstreamDeadline(async (signal) => {
-    const res = await fetch(catalog(`/public/seat-maps/${encodeURIComponent(seatMapId)}`), { signal });
+    const res = await fetchUpstream(catalog(`/public/seat-maps/${encodeURIComponent(seatMapId)}`), { signal });
     if (!res.ok) {
       throw new Error(`seat-map geometry read failed: ${res.status}`);
     }
@@ -625,7 +626,7 @@ export async function listSeatMapVersions(
   venueId: string,
 ): Promise<SeatMapVersionHistory> {
   return withUpstreamDeadline(async (signal) => {
-    const res = await fetch(catalog(`/public/seat-maps/${encodeURIComponent(seatMapId)}/versions`), {
+    const res = await fetchUpstream(catalog(`/public/seat-maps/${encodeURIComponent(seatMapId)}/versions`), {
       signal,
     });
     if (!res.ok) {
@@ -683,7 +684,7 @@ export async function authenticateStaff(
   password: string,
 ): Promise<StaffPrincipalDto | null> {
   return withUpstreamDeadline(async (signal) => {
-    const res = await fetch(catalog('/staff/authenticate'), {
+    const res = await fetchUpstream(catalog('/staff/authenticate'), {
       method: 'POST',
       // Guarded like every other unsafe operation (TKT-191). ADR-042 originally
       // made this endpoint public to avoid putting the SHARED service token in
@@ -953,7 +954,7 @@ export async function listChannelsForOperator(
   // recorded. Catalog takes it from the assertion instead.
   const url = `${CATALOG_URL}/internal/channels`;
   return withUpstreamDeadline(async (signal) => {
-    const res = await fetch(url, {
+    const res = await fetchUpstream(url, {
       headers: {
         'X-Catalog-Staff-Write-Token': staffWriteCredential(),
         'X-Catalog-Organizer-Assertion': assertion,

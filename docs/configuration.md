@@ -100,6 +100,11 @@ and order read take neither that token nor a tenant from the request: they requi
 `COMMERCE_STAFF_WRITE_TOKEN` and the staff session's organizer assertion, which commerce verifies
 with `COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS` (TKT-287).
 
+Set `GATEWAY_URL`, `CATALOG_URL`, `COMMERCE_URL`, `INVENTORY_URL`, and `ACCESS_URL` to their final
+service URLs with no trailing slash, since a `3xx` response fails the call closed as an ambiguous
+write or an unavailable read
+([ADR-088](adr/ADR-088-backoffice-upstream-redirects.md)).
+
 `scripts/smoke.sh` provisions a throwaway account per run and passes it to the test process as
 `SMOKE_STAFF_IDENTIFIER` / `SMOKE_STAFF_PASSWORD`. The password is generated per run and never
 written to a file or the log.

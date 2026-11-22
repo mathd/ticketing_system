@@ -1,6 +1,17 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  type Answer,
+  clearClientUrls,
+  type Hit,
+  jsonAnswer,
+  pointClientsAt,
+  type RedirectPair,
+  redirectAnswer,
+  startRedirectPair,
+} from './redirect-fixture';
+
 const STAFF = '60000000-0000-4000-8000-000000000001';
 const ORGANIZER = '00000000-0000-4000-8000-000000000001';
 const VENUE = '10000000-0000-4000-8000-000000000001';
@@ -393,6 +404,113 @@ describe('another staff member retires a saved retry that an operator abandoned'
     expect(unresolvedRefunds.find(ORGANIZER, ORDER)).toMatchObject({ idempotencyKey: REFUND_KEY, reason: 'original request' });
     expect(html).toContain('Retry the same refund');
     expect(html).toContain(`name="idempotency_key" value="${REFUND_KEY}"`);
+  }, 30_000);
+});
+
+// TKT-602 (COS2, ADR-088). A redirect from Commerce is not an answer from
+// Commerce. Native fetch and the shared loopback fixture: the first hop stands in
+// for COMMERCE_URL and GATEWAY_URL, and the target is another origin whose answer
+// would settle the saved key if fetch followed the redirect. The page must keep
+// the original key K, its terms and the retry form, and must not offer a fresh
+// refund form.
+describe('a redirected Commerce answer keeps the saved refund retry', () => {
+  let pair: RedirectPair | undefined;
+
+  afterEach(async () => {
+    await pair?.close();
+    pair = undefined;
+    clearClientUrls();
+  });
+
+  const orderPath = `/api/commerce/orders/${ORDER}`;
+  const refundPath = `/internal/orders/${ORDER}/refunds`;
+  const staffDetailPath = `/internal/orders/${ORDER}`;
+
+  function staffDetail(abandoned: boolean) {
+    return jsonAnswer({
+      order_id: ORDER,
+      organizer_id: ORGANIZER,
+      status: 'completed',
+      refunds: [{ refund_id: 'b0000000-0000-4000-8000-000000000001', idempotency_key: REFUND_KEY, abandoned }],
+    });
+  }
+
+  async function withSavedRetry(
+    firstHop: (hit: Hit, targetOrigin: string) => Answer,
+    target: (hit: Hit) => Answer,
+    fields: Record<string, string>,
+  ) {
+    pair = await startRedirectPair({ firstHop, target });
+    // Before the page imports its clients: they read their base URLs at import.
+    pointClientsAt(pair.firstHop.origin);
+    const { unresolvedRefunds } = await import('../src/lib/unresolved-refunds');
+    unresolvedRefunds.note(ORGANIZER, {
+      orderId: ORDER,
+      quantity: 2,
+      reason: 'original request',
+      idempotencyKey: REFUND_KEY,
+    });
+    const response = await renderPage('../src/pages/orders.astro', post('/admin/orders', fields));
+    return { html: await response.text(), unresolvedRefunds, p: pair };
+  }
+
+  const ABANDONED_TEXT = 'An operator recorded this refund as abandoned.';
+
+  function expectSavedRetryKept(html: string, saved: unknown) {
+    expect(saved).toMatchObject({ idempotencyKey: REFUND_KEY, quantity: 2, reason: 'original request' });
+    // The order loaded, so the retry is not kept only because nothing rendered.
+    expect(html).toMatch(/Commerce reports this order as <strong[^>]*>completed<\/strong>/);
+    expect(html).toContain('Retry the same refund');
+    expect(html).toContain(`name="idempotency_key" value="${REFUND_KEY}"`);
+    expect(html).toContain('name="quantity" value="2"');
+    expect(html).not.toContain('Refund this order');
+    expect(html).not.toContain(ABANDONED_TEXT);
+  }
+
+  it('keeps K after the saved retry POST is redirected to a coded refund_abandoned', async () => {
+    const { html, unresolvedRefunds, p } = await withSavedRetry(
+      (hit, targetOrigin) => {
+        if (hit.method === 'GET' && hit.path === orderPath) return jsonAnswer({ order_id: ORDER, status: 'completed' });
+        if (hit.method === 'POST' && hit.path === refundPath) return redirectAnswer(targetOrigin, refundPath);
+        // The independent staff read answers directly, without a confirmation.
+        if (hit.method === 'GET' && hit.path === staffDetailPath) return staffDetail(false);
+        return jsonAnswer({ error: 'unexpected' }, 404);
+      },
+      (hit) =>
+        hit.method === 'POST' && hit.path === refundPath
+          ? jsonAnswer({ error: 'refund abandoned', code: 'refund_abandoned' }, 409)
+          : { status: 418 },
+      {
+        _action: 'refund',
+        order_id: ORDER,
+        quantity: '2',
+        reason: 'original request',
+        idempotency_key: REFUND_KEY,
+      },
+    );
+
+    expectSavedRetryKept(html, unresolvedRefunds.find(ORGANIZER, ORDER));
+    expect(p.target.hits).toEqual([]);
+    const refundWrites = p.firstHop.hits.filter((hit) => hit.method === 'POST');
+    expect(refundWrites.map((hit) => hit.headers['idempotency-key'])).toEqual([REFUND_KEY]);
+    expect(p.firstHop.hits.filter((hit) => hit.path === staffDetailPath)).toHaveLength(1);
+  }, 30_000);
+
+  it('keeps K after a plain lookup whose staff detail read is redirected to a matching abandonment', async () => {
+    const { html, unresolvedRefunds, p } = await withSavedRetry(
+      (hit, targetOrigin) => {
+        if (hit.method === 'GET' && hit.path === orderPath) return jsonAnswer({ order_id: ORDER, status: 'completed' });
+        if (hit.method === 'GET' && hit.path === staffDetailPath) return redirectAnswer(targetOrigin, staffDetailPath);
+        return jsonAnswer({ error: 'unexpected' }, 404);
+      },
+      // An exact committed abandonment for this organizer, order and key.
+      (hit) => (hit.method === 'GET' && hit.path === staffDetailPath ? staffDetail(true) : { status: 418 }),
+      { _action: 'lookup', order_id: ORDER, ticket_ref: '' },
+    );
+
+    expectSavedRetryKept(html, unresolvedRefunds.find(ORGANIZER, ORDER));
+    expect(p.target.hits).toEqual([]);
+    expect(p.firstHop.hits.filter((hit) => hit.method === 'POST')).toEqual([]);
   }, 30_000);
 });
 
