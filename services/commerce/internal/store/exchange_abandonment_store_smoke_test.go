@@ -1046,6 +1046,64 @@ func TestBindOrderVoidRefusesOnlyAStartedMarkerOfItsOwnOrganizer(t *testing.T) {
 	}
 }
 
+// TKT-598. A void bound BEFORE the abandonment started cannot be replayed after it (D23): the
+// marker check runs under the order lock and before the existing-row return, so a replay is
+// refused like a fresh bind, and the existing void row stays as history, unchanged.
+//
+// The fixture is a settled, unswitched, fee-free downgrade to a zero-gross replacement, so the
+// replacement is a comped order that the void path accepts and every exchange amount is
+// consistent.
+func TestBindOrderVoidRefusesAReplayOnAnAbandoningReplacement(t *testing.T) {
+	db, ctx := outboxDB(t)
+	f := seedAbandonable(t, db, ctx, abandonSeedOpts{})
+	// Registered after the seed, so it runs before the seed deletes the orders.
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM order_voids WHERE organizer_id=$1 AND order_id=$2`, f.Org, f.ReplacementOrder)
+	})
+	mustExec(t, db, ctx, `UPDATE reservations SET total_amount=face_value_amount WHERE organizer_id=$1 AND id=$2`,
+		f.Org, f.SourceReservation)
+	mustExec(t, db, ctx, `UPDATE reservations SET unit_amount=0, total_amount=0, face_value_amount=0
+		WHERE organizer_id=$1 AND id=$2`, f.Org, f.ReplacementReservation)
+	mustExec(t, db, ctx, `
+		UPDATE order_exchanges
+		SET source_gross_total=source_total, target_total=0, target_unit_amount=0, delta_amount=-source_total
+		WHERE organizer_id=$1 AND id=$2`, f.Org, f.ExchangeID)
+
+	in := VoidRequest{OrderID: f.ReplacementOrder, OrganizerID: f.Org,
+		IdempotencyKey: "staff-void", Actor: "support@example.test", Reason: "comp withdrawn"}
+	v, err := BindOrderVoid(ctx, db, in)
+	if err != nil {
+		t.Fatalf("void before the abandonment started: %v", err)
+	}
+	if v.ID != VoidID(f.Org, f.ReplacementOrder) || v.Quantity != f.Quantity || v.TicketsVoided || v.CapacityReturned {
+		t.Fatalf("void = %+v, want id %s, quantity %d and both obligations open",
+			v, VoidID(f.Org, f.ReplacementOrder), f.Quantity)
+	}
+	readVoid := func() string {
+		t.Helper()
+		var row string
+		if err := db.QueryRowContext(ctx, `SELECT to_jsonb(v)::text FROM order_voids v WHERE organizer_id=$1 AND order_id=$2`,
+			f.Org, f.ReplacementOrder).Scan(&row); err != nil {
+			t.Fatalf("read the void row: %v", err)
+		}
+		return row
+	}
+	bound := readVoid()
+
+	reserveAbandonment(t, db, ctx, f)
+	if started := readStarted(t, db, ctx, f.Org, f.ExchangeID); !started.StartedAt.Valid {
+		t.Fatal("the reservation did not persist abandonment_started_at")
+	}
+
+	_, err = BindOrderVoid(ctx, db, in)
+	if !errors.Is(err, ErrExchangeReplacementVoidAbandoned) || !errors.Is(err, ErrOrderNotVoidable) {
+		t.Fatalf("replay after the reservation: err=%v, want ErrExchangeReplacementVoidAbandoned wrapping ErrOrderNotVoidable", err)
+	}
+	if after := readVoid(); after != bound {
+		t.Fatalf("the refused replay changed the void row:\n before %s\n after  %s", bound, after)
+	}
+}
+
 func countAbandonRows(t *testing.T, db *sql.DB, ctx context.Context, query string, args ...any) int {
 	t.Helper()
 	var n int

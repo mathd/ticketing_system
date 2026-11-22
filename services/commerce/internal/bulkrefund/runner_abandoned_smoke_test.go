@@ -426,9 +426,18 @@ func TestBulkRunRetriesWhenTheReadAfterAPaymentsRefusalFails(t *testing.T) {
 			st := &failOneLookup{DBStore: DBStore{DB: db}}
 			transport := &refusingTransport{}
 			first := true
+			// The claim and lease as the drive saw them. A charged hand-back in place of the
+			// charge releases the claim, and the same RunOnce can claim the row again with a new
+			// claim and a new lease. Only these exact values show that the drive's claim stayed.
+			var claimAtDrive uuid.NullUUID
+			var leaseAtDrive sql.NullTime
 			transport.during = func() {
 				if first {
 					first = false
+					if err := db.QueryRowContext(ctx, `SELECT claim_id, lease_until FROM cancellation_refund_orders WHERE organizer_id=$1 AND order_id=$2`,
+						o.org, o.order).Scan(&claimAtDrive, &leaseAtDrive); err != nil {
+						t.Errorf("read the claim during the payments call: %v", err)
+					}
 					c.during(t, ctx, db, o)
 					st.arm()
 				}
@@ -440,13 +449,25 @@ func TestBulkRunRetriesWhenTheReadAfterAPaymentsRefusalFails(t *testing.T) {
 			if n := transport.payments(); n != 1 {
 				t.Fatalf("first pass: payments calls = %d, want the refused one", n)
 			}
+			if !claimAtDrive.Valid || !leaseAtDrive.Valid {
+				t.Fatalf("during the payments call: claim %v, lease %v, want both set", claimAtDrive, leaseAtDrive)
+			}
 			got := readVerdict(t, ctx, db, o)
 			if got.outcome != "" || got.failureCode != "" || got.attempts != 1 {
 				t.Fatalf("first pass: verdict = %+v, want no verdict and one charged attempt", got)
 			}
-			var leased bool
-			if err := db.QueryRowContext(ctx, `SELECT lease_until > now() FROM cancellation_refund_orders WHERE organizer_id=$1 AND order_id=$2`, o.org, o.order).Scan(&leased); err != nil || !leased {
-				t.Fatalf("first pass: lease kept = %v err=%v, want the lease kept as the backoff", leased, err)
+			var claimAfter uuid.NullUUID
+			var leaseAfter sql.NullTime
+			var leased sql.NullBool
+			if err := db.QueryRowContext(ctx, `SELECT claim_id, lease_until, lease_until > now() FROM cancellation_refund_orders WHERE organizer_id=$1 AND order_id=$2`,
+				o.org, o.order).Scan(&claimAfter, &leaseAfter, &leased); err != nil {
+				t.Fatal(err)
+			}
+			if claimAfter != claimAtDrive || !leaseAfter.Valid || !leaseAfter.Time.Equal(leaseAtDrive.Time) {
+				t.Fatalf("first pass: claim/lease = %v/%v, want the drive's %v/%v unchanged", claimAfter, leaseAfter, claimAtDrive, leaseAtDrive)
+			}
+			if !leased.Valid || !leased.Bool {
+				t.Fatalf("first pass: lease live = %v, want the lease kept as the backoff", leased)
 			}
 
 			if _, err := db.ExecContext(ctx, `UPDATE cancellation_refund_orders SET lease_until=now()-interval '1 minute' WHERE organizer_id=$1 AND order_id=$2`, o.org, o.order); err != nil {

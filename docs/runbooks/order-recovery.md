@@ -514,24 +514,55 @@ The abandonment record is **honest-operator evidence, not tamper-evidence** (ADR
 
 A staff refund or an event-cancellation (bulk) refund whose provider refund failed stays `pending`.
 Its Payments leg stays `bound`, and both refund allowances stay reserved. The platform never
-re-submits it (ADR-032, TKT-347). The staff order read shows the refund as `pending`; the bulk report
-shows the order as `refund_refused`. Decision record:
+re-submits it (ADR-032, TKT-347). The staff order read shows the refund as `pending`. The bulk report
+row shows `outcome` `failed` with `failure.code` `refund_refused`. Decision record:
 [ADR-087](../adr/ADR-087-operator-outcomes-for-failed-post-purchase-refunds.md).
+
+Find the exact refund under the intended organizer. Commerce staff order detail is
+`GET /internal/orders/<order-id>` on Commerce. The request needs the Commerce staff credential and an
+organizer assertion for the intended organizer. Commerce takes the organizer from the assertion, not
+from the request. An order of another organizer returns `404`.
+
+For a staff refund, open staff order detail, identify the refund attempt, and read its `refund_id`,
+stored `amount` in minor units, and `currency`.
+
+For a bulk refund, use the procedure below only for a money refund that the provider failed:
+
+1. Read the organizer's cancellation report with
+   `GET /internal/cancellation-refunds/<run-id>?organizer_id=<organizer-id>`. Report rows are
+   available only after the run completes. Record the run's `slot_id`.
+2. Find the row of the order. A row can include `refund_id`. A row with `outcome` `failed` and
+   `failure.code` `reversal_outstanding` has a refund whose money moved and whose ticket or capacity
+   reversal is outstanding. Do not record an outcome for it. Use
+   [refund reversal reconciliation](#refund-reversal-reconciliation) instead.
+3. Continue only for a row with `outcome` `failed` and `failure.code` `refund_refused`. This code also
+   covers other refusals. For example, Payments refused the refund for a different cause, an operator
+   already recorded the refund as `abandoned`, or the refund did not return the whole order. Thus the
+   row alone does not prove a provider failure.
+4. Open staff order detail for the row's `order_id`. Select the refund whose `idempotency_key` is
+   `cancel:<slot_id>:<order_id>`, with the run's `slot_id` and the row's `order_id`. Its `actor` must
+   also be `system:event-cancellation`. Use the actor only to confirm the selection. A staff refund
+   can have the same actor text under a different key.
+5. Continue only if that refund has `status` `pending` and `abandoned` `false`. If no such refund
+   exists, stop. This procedure does not apply to the order.
+6. Read the `refund_id`, stored `amount` in minor units, and `currency` of that refund.
 
 **Agree on the disposition first.** Before you transfer money or run a command, agree with the
 other operators what this refund's outcome is. Do not run two different commands for one refund. If
 you find a conflict, stop and investigate before any further money action.
+
+Run either command with `docker compose exec commerce /app record-refund-outcome …`. Set
+`DATABASE_URL` to the intended Commerce database. Set `PAYMENTS_URL` to a usable Payments URL. Set
+`PAYMENTS_INTERNAL_TOKEN` to the dedicated credential accepted by that Payments service. The command
+validates its arguments, checks that the Payments URL and selected credential have values, and
+passes `DATABASE_URL` to the database driver. If a migration fails, follow
+[ADR-087's rollout recovery](../adr/ADR-087-operator-outcomes-for-failed-post-purchase-refunds.md#consequences).
 
 ### The buyer was refunded outside the platform
 
 ```
 commerce record-refund-outcome <organizer-id> <refund-id> refunded_outside "<operator name>" "<external reference>" "<reason>"
 ```
-
-Run it with `docker compose exec commerce /app record-refund-outcome …`, as the other Commerce
-commands. It needs `DATABASE_URL`, `PAYMENTS_URL` and `PAYMENTS_INTERNAL_TOKEN` (or
-`INTERNAL_SERVICE_TOKEN`). It checks every argument and the Payments configuration before it opens
-the database.
 
 Before you run it:
 
@@ -582,25 +613,30 @@ A nonzero `parked` for this refund needs a human, as for any completed refund.
 
 ### Nobody will refund this attempt: `abandoned`
 
-Use it when the buyer still has the money owed, no outside transfer occurred, and none is in flight.
-Then staff can refund the buyer again under a **new** key through the Back Office.
+Use `abandoned` when the buyer is still owed the refund, no outside transfer occurred, and none is in
+flight. If an outside transfer is in flight, wait for a definitive result before recording either
+outcome. Use `refunded_outside` only after the full stored amount settles in the stored currency.
+After `abandoned`, staff can refund the buyer again under a **new** key through the Back Office.
 
 ```
 commerce record-refund-outcome <organizer-id> <refund-id> abandoned "<operator name>" "<reason>"
 ```
 
-Run it the same way, with the same configuration. It takes no reference: Payments supplies the
-provider's `re_` for the failed refund, and the command records it as `external_ref`.
+It takes no reference: Payments supplies the provider's `re_` for the failed refund, and the command
+records it as `external_ref`.
 
-Before you run it, confirm that **no outside transfer occurred and none is in flight** for this
-refund. If one did, use `refunded_outside` instead. `abandoned` releases the allowance, so running it
-after an outside transfer opens the way to a second refund of the same money.
+`abandoned` releases the allowance, so running it after an outside transfer opens the way to a second
+refund of the same money.
 
 **Starting `abandoned` commits you to it.** The first run reserves the abandonment in Commerce
 (`order_refund_abandonment_dispositions`, state `pending`) before it calls Payments. From then on,
 `refunded_outside` is refused for this refund. The reservation keeps the operator name and reason of
 the run that started it, and the outcome is attributed to that operator. To finish it, anyone runs
 the command again with exactly that operator name and reason.
+
+If Payments refuses the credential after Commerce reserves the abandonment, the reservation can stay
+`pending`. Correct the credential and repeat the original `abandoned` command with the same operator
+name and reason.
 
 What the command does (ADR-087 §10): reserve in Commerce; Payments proves the terminal failure with
 the same read-only lookup and writes an append-only marker on the exact leg, which releases that
