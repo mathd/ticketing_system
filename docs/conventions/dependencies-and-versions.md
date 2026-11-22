@@ -39,6 +39,13 @@ existing volumes, an ADR-007 amendment, and a new check of the PostgreSQL ADR cl
 - **No Go module hold (2026-11-21).** `oapi-codegen` v2.9.0 does not import
   `github.com/dprotaso/go-yit`, `vmware-labs/yaml-jsonpath` or the Speakeasy modules. `go mod tidy`
   removed them from `services/catalog/go.mod`, and the TKT-523 holds on them ended.
+- **Upstream-selected Go module paths (TKT-596).** `cenkalti/backoff` has a v6 path, and
+  `dlclark/regexp2` has a v2 path. The OpenTelemetry exporters still import `backoff/v5` and
+  `oapi-codegen` still imports `regexp2` v1, so the `// indirect` requirements stay on those paths
+  until the upstream modules move.
+- **npm comes with the Node image (TKT-596).** The web Dockerfiles install pnpm with the npm bundled
+  in `node:26.13.1-alpine3.24` (npm 11.20.0). npm is not pinned on its own: it moves with the Node
+  image pin.
 
 ## Executable dependency pins
 
