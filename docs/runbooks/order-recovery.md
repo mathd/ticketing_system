@@ -558,6 +558,12 @@ validates its arguments, checks that the Payments URL and selected credential ha
 passes `DATABASE_URL` to the database driver. If a migration fails, follow
 [ADR-087's rollout recovery](../adr/ADR-087-operator-outcomes-for-failed-post-purchase-refunds.md#consequences).
 
+The command sends the Payments credential only to `PAYMENTS_URL` and does not follow a redirect.
+It accepts a Payments `200` only when the body is exactly the evidence that Payments writes: one
+object with `provider_ref`, `amount` and `currency`, each once, with these exact names and no null
+value; a `re_` reference of at most 255 bytes; a positive amount in minor units; three uppercase
+letters for the currency; and no more than 64 KiB. The refusal of a `200` does not show its body.
+
 ### The buyer was refunded outside the platform
 
 ```
@@ -599,6 +605,8 @@ A command that differs in kind, operator name, reference or reason is refused as
 | `completed through payments` | The money moved through the platform | Nothing to record. |
 | `payments refused the failure proof` (404 or 409) | No such leg, the leg completed, it has an abandonment marker, or the provider says the refund did not fail | Reconcile the original refund first. Do not transfer money. |
 | `payments could not prove` (502, timeout, malformed answer, or different money) | No proof now | Nothing changed and both allowances stay reserved. Fix the cause and run the same command again. |
+| `payments could not prove` with `payments redirect refused (HTTP <status>)` | The answer to the request at `PAYMENTS_URL` was a redirect (3xx). The command did not follow it and did not send the credential to another address. | Nothing changed and both allowances stay reserved. Check the routing from `PAYMENTS_URL` to the Payments service: it must reach Payments with no redirect. Correct the routing or the URL, then run the same command again. |
+| `payments could not prove` with `payments returned invalid refund evidence` | A `200` answer is not exactly the evidence that Payments writes. This can occur when `PAYMENTS_URL` is correct. | Nothing changed and both allowances stay reserved. Find which service sent the answer: Payments, or a proxy or another service on the route. Correct the cause, then run the same command again. |
 | `changed while the command ran` | The refund or its order changed between the read and the write | Run the same command again. |
 | `an abandonment is reserved` | An operator started `abandoned` for this refund | Do not record it as outside. Finish the abandonment with the original command. |
 
@@ -676,6 +684,8 @@ and Commerce finishes once. An identical command after success returns the origi
 | `is completed` | The refund completed, through Payments or outside | Nothing to abandon. A pending reservation on it is inert. |
 | `payments refused this abandon request` (404 or 409) | No such leg, the leg completed, its money differs, or the provider says the refund did not fail | The reservation stays. Correct the cause, or reconcile the original refund; then run the same command again. |
 | `UNCERTAIN: payments' answer … is unknown` | Timeout, 5xx, provider inconclusive, or an answer for other money | Run the same command again. If Payments keeps answering 502, see the unstamped case below. |
+| `UNCERTAIN` with `payments redirect refused (HTTP <status>)` | The answer to the request at `PAYMENTS_URL` was a redirect (3xx). The command did not follow it and did not send the credential to another address. | The reservation stays `pending` and the quantity stays counted. The Payments marker can exist, from an earlier run or another request. Check the routing from `PAYMENTS_URL` to the Payments service: it must reach Payments with no redirect. Correct the routing or the URL, then run the same command again. |
+| `UNCERTAIN` with `payments returned invalid refund evidence` | A `200` answer is not exactly the evidence that Payments writes. This can occur when `PAYMENTS_URL` is correct. | The reservation stays `pending` and the quantity stays counted. The Payments marker can exist: Payments can have written it before the answer. Find which service sent the answer: Payments, or a proxy or another service on the route. Correct the cause, then run the same command again. |
 | `changed while the command ran` | The refund or its order changed between the read and the write | Run the same command again. |
 | `FAILED: … was not recorded in Commerce` | A Commerce error after Payments may have accepted | Run the same command again. |
 
