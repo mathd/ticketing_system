@@ -10,6 +10,8 @@ latest requires a stated compatibility reason, recorded next to the pin.
 Current anchors (update as they move): Go 1.27.4 · Node 26.13.1 · pnpm 12 (pinned via `packageManager`,
 which also enforces pnpm's supply-chain `minimumReleaseAge` policy) · PostgreSQL 18.7 · Vite 8 ·
 React 19 · TypeScript `~7.0.2`. Read the manifests and lockfile for exact resolutions.
+PostgreSQL 19 waits for TKT-597. The major upgrade needs `pg_upgrade` or a dump and restore of
+existing volumes, an ADR-007 amendment, and a new check of the PostgreSQL ADR claims.
 
 - **Hold: the TypeScript 6 API for `openapi-typescript`.** Every compiler in the repository is
   TypeScript 7. TypeScript 7 has no JavaScript compiler API, and `openapi-typescript` (latest
