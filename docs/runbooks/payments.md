@@ -11,20 +11,24 @@ and on demand — it does **not** require the slot to be in a cancelled state, a
 
 ```bash
 # start a run (Idempotency-Key is required; the same key replays the same run)
-curl -X POST "$COMMERCE_URL/internal/slots/$SLOT_ID/cancellation-refunds" \
-  -H "X-Internal-Token: $INTERNAL_SERVICE_TOKEN" -H "Idempotency-Key: cancel-$SLOT_ID-1" \
-  -H 'Content-Type: application/json' \
-  -d '{"organizer_id":"'"$ORGANIZER_ID"'","actor":"ops@example.test","reason":"event cancelled"}'
+printf 'X-Internal-Token: %s\n' "$INTERNAL_SERVICE_TOKEN" |
+  curl --noproxy '*' --header @- -X POST "$COMMERCE_URL/internal/slots/$SLOT_ID/cancellation-refunds" \
+    -H "Idempotency-Key: cancel-$SLOT_ID-1" \
+    -H 'Content-Type: application/json' \
+    -d '{"organizer_id":"'"$ORGANIZER_ID"'","actor":"ops@example.test","reason":"event cancelled"}'
 
 # read the report (202 while it is still running, with the counts; 200 when complete, with the rows)
-curl -H "X-Internal-Token: $INTERNAL_SERVICE_TOKEN" \
-  "$COMMERCE_URL/internal/cancellation-refunds/$RUN_ID?organizer_id=$ORGANIZER_ID"
+printf 'X-Internal-Token: %s\n' "$INTERNAL_SERVICE_TOKEN" |
+  curl --noproxy '*' --header @- \
+    "$COMMERCE_URL/internal/cancellation-refunds/$RUN_ID?organizer_id=$ORGANIZER_ID"
 ```
 
-Send the Commerce shared internal credential in `X-Internal-Token`. Read the order rows after the run
-completes. If the page does not contain the order and returns `next_after_order_id`, use that value
-as `after_order_id` in the next request. Repeat until you find the order or the report returns no
-cursor.
+Send the Commerce shared internal credential in `X-Internal-Token`. The shell builtin `printf` writes
+the header to curl's standard input (`--header @-`), so the token is in no command line.
+`--noproxy '*'` sends the request directly to Commerce, also when proxy settings are present. Read
+the order rows after the run completes. If the page does not contain the order and returns
+`next_after_order_id`, use that value as `after_order_id` in the next request. Repeat until you find
+the order or the report returns no cursor.
 
 Reading the outcomes:
 

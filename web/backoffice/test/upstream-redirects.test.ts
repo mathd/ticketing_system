@@ -445,6 +445,10 @@ describe('fetchUpstream refuses a redirect before any body read (stub)', () => {
     const { fetchUpstream, UpstreamRedirectError } = await import('../src/lib/upstream');
     const response = redirectResponse(status);
     const reads = spyOnReads(response);
+    // The stream itself (R1-6): no reader is taken, and the body is cancelled.
+    const stream = response.body!;
+    const getReader = vi.spyOn(stream, 'getReader');
+    const cancel = vi.spyOn(stream, 'cancel');
     answerWith(response);
 
     const error = await fetchUpstream('http://first-hop.invalid/read', {}).catch((cause: unknown) => cause);
@@ -452,6 +456,9 @@ describe('fetchUpstream refuses a redirect before any body read (stub)', () => {
     expect(error).toBeInstanceOf(UpstreamRedirectError);
     expect(error).toMatchObject({ status });
     for (const read of reads) expect(read).not.toHaveBeenCalled();
+    expect(getReader).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(stream.locked).toBe(false);
   });
 
   it('refuses a status-0 opaqueredirect without reading its body', async () => {
@@ -545,6 +552,14 @@ describe('fetchUpstream refuses a redirect before any body read (stub)', () => {
       expect(text).not.toContain(requestMarker);
       expect(text).not.toContain(locationMarker);
     }
+    // Exactly the permitted own properties (R1-6). Error defines `stack` and
+    // `message`; the class adds `name` and `status`. Each is a primitive, so a
+    // structured logger cannot print an attached response, headers or body.
+    expect(Reflect.ownKeys(err).sort()).toEqual(['message', 'name', 'stack', 'status']);
+    expect(typeof err.message).toBe('string');
+    expect(err.name).toBe('UpstreamRedirectError');
+    expect(typeof err.stack).toBe('string');
+    expect((err as InstanceType<typeof UpstreamRedirectError>).status).toBe(307);
   });
 
   it("sends redirect 'manual' even when the caller asks to follow", async () => {

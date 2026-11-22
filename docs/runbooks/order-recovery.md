@@ -539,7 +539,9 @@ For a bulk refund, use the procedure below only for a money refund that the prov
 
 1. Read the organizer's cancellation report with
    `GET /internal/cancellation-refunds/<run-id>?organizer_id=<organizer-id>`. Send the Commerce
-   shared internal credential in `X-Internal-Token`. Read the order rows after the run completes.
+   shared internal credential in `X-Internal-Token`. Give curl the header on standard input and
+   `--noproxy '*'`, as in the [report example](payments.md#event-cancellation-bulk-refunds-tkt-159).
+   Do not put the token in a command line. Read the order rows after the run completes.
    Record the run's `slot_id`. If the page does not contain the order and returns
    `next_after_order_id`, use that value as `after_order_id` in the next request. Repeat until you
    find the order or the report returns no cursor.
@@ -589,27 +591,29 @@ WHERE o.id = '<order-id>' AND r.organizer_id = '<organizer-id>';
 For `refund_key`, copy `refund_id` exactly as staff order detail shows it, as a canonical lowercase
 UUID. Set `ORGANIZER_ID`, `CHECKOUT_KEY`, and `REFUND_ID` to these three values. Export the dedicated
 `PAYMENTS_INTERNAL_TOKEN` in your shell. For base Compose, use a throwaway, digest-pinned curl
-container on the `ticketing_default` network. Pass the environment variable to Docker by name. The
-shell inside the container expands the token and pipes the header to curl on stdin, which keeps the
-token value off both command lines.
+container on the `ticketing_default` network. The image runs curl as its entry point. Your host
+shell writes the header to the container's standard input, and curl reads it with `--header @-`.
+`printf` is a shell builtin, so the token is in no command line, and it is not in the container's
+environment or configuration. `--noproxy '*'` sends the request directly to Payments, also when
+Docker gives the container proxy settings.
 
 ```sh
-docker run --rm --network ticketing_default -e PAYMENTS_INTERNAL_TOKEN \
-  --entrypoint /bin/sh \
-  curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93 \
-  -c '
-    printf "X-Internal-Token: %s\n" "$PAYMENTS_INTERNAL_TOKEN" |
-      curl --silent --show-error --header @- --get \
-        --data-urlencode "organizer_id=$1" \
-        --data-urlencode "idempotency_key=$2" \
-        --data-urlencode "refund_key=$3" \
-        --write-out "\nHTTP %{http_code}\n" \
-        http://payments:8080/internal/psp/partial-refund/failure-proof
-  ' sh "$ORGANIZER_ID" "$CHECKOUT_KEY" "$REFUND_ID"
+printf 'X-Internal-Token: %s\n' "$PAYMENTS_INTERNAL_TOKEN" |
+  docker run --rm -i --network ticketing_default \
+    curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93 \
+    --silent --show-error --fail-with-body --noproxy '*' --header @- --get \
+    --data-urlencode "organizer_id=$ORGANIZER_ID" \
+    --data-urlencode "idempotency_key=$CHECKOUT_KEY" \
+    --data-urlencode "refund_key=$REFUND_ID" \
+    --write-out '\nHTTP %{http_code}\n' \
+    http://payments:8080/internal/psp/partial-refund/failure-proof
 ```
 
-Continue only after a direct `200` with the provider reference and matching amount and currency.
-Stop if the refund is pending or the evidence is missing, contradictory, or inconclusive.
+Continue only when curl exits `0` and prints `HTTP 200` with the provider reference and matching
+amount and currency. Stop if the provider refund is still pending or the proof is missing,
+contradictory, or inconclusive. The proof is read-only: after a successful proof, Commerce still
+shows the refund as `pending` until you record the outcome below
+([ADR-087](../adr/ADR-087-operator-outcomes-for-failed-post-purchase-refunds.md) §3).
 
 Run either command with `docker compose exec commerce /app record-refund-outcome …`. This uses the
 `commerce` container's Compose values. It ignores values set in your shell unless you pass each one

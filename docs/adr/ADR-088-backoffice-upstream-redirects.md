@@ -65,8 +65,8 @@ Precedents:
 We adopt Option 4.
 
 1. **One transport.** Every Back Office upstream request uses `fetchUpstream` in
-   `web/backoffice/src/lib/upstream.ts`. It contains the only direct `fetch` in
-   `web/backoffice/src`. This includes the public Catalog venue and seat-map reads, the Commerce
+   `web/backoffice/src/lib/upstream.ts`. It contains the only reference to `fetch` in the
+   first-party code of `web/backoffice`. This includes the public Catalog venue and seat-map reads, the Commerce
    order-state read and the Access ticket-bundle read.
 2. **Manual mode, refusal before the body.** `fetchUpstream` sends `redirect: 'manual'`, set after
    the caller's `init`, so a caller cannot turn following back on. It refuses a response with type
@@ -103,12 +103,23 @@ We adopt Option 4.
 7. **The synchronous boundary stays.** `fetchUpstream` is a regular function that returns the fetch
    promise. A synchronous `fetch` failure still throws before a promise exists, so `fetchMutation`
    keeps a local construction failure definite and a later rejection ambiguous.
-8. **Enforcement.** `web/backoffice/test/upstream-policy.test.ts` scans every TypeScript,
-   JavaScript and Astro module in `web/backoffice/src`, `.tsx` islands included. It requires exactly
-   one direct `fetch`, inside `fetchUpstream`, and reports the path and line of any other. It
-   detects bare, qualified (`globalThis.fetch(`) and literal bracket forms. It does not detect an
-   alias (`const f = fetch`) or `fetch.call(...)`. The text `fetch(` in a comment or a string also
-   counts, which errs toward a false failure.
+8. **Enforcement.** `web/backoffice/test/upstream-policy.test.ts` scans all first-party runtime
+   and configuration code of `web/backoffice`: every TypeScript, JavaScript and Astro file in the
+   package, including `src` with its `.tsx` islands, the production entry point `start.mjs`,
+   `credentials.mjs`, `astro.config.mjs` and any new directory. Only `test`, `dist`,
+   `node_modules` and the generated `.astro` directory are outside. The scan parses each file with
+   the parsers that the build uses: the Astro compiler for `.astro` files (frontmatter, template
+   expressions and `<script>` bodies) and the rolldown parser for scripts. Comments, page text and
+   JSX text therefore cannot hide or fake a reference. It requires exactly one reference to
+   `fetch`, inside `fetchUpstream`, and reports the path and line of any other. A reference is an
+   identifier named `fetch` or a string or plain template literal equal to `fetch`. This covers
+   direct and optional calls (`fetch?.(`), `globalThis.fetch` and `globalThis['fetch']`,
+   `fetch.call`, `fetch.apply` and `fetch.bind`, an alias (`const f = fetch`), `fetch` passed as a
+   value and an imported `fetch`. An object key or a type named `fetch` also counts, which errs
+   toward a false failure. A file that does not parse fails the scan. Each form has a case in the
+   test. Known limits: the scan does not see a name built at run time
+   (`globalThis['fe' + 'tch']`), and it does not see a request that a dependency makes with its own
+   `fetch` or HTTP client.
 9. **Islands.** `upstream.ts` reads `process.env` and is a server-only module. A browser island
    that needs its own `fetch` requires an amendment of this ADR.
 
@@ -133,7 +144,8 @@ These instances of the same class are outside this rule and have their own ticke
       fail: reads are unavailable, writes are ambiguous and staff sign-in is unavailable.
     - The rule bounds where a request goes. It does not authenticate the configured first hop. A
       hostile or compromised first hop still receives what this process sends to it.
-    - The structural test has the alias and `fetch.call` gaps stated above.
+    - The structural test does not see a name built at run time or a request made inside a
+      dependency, as stated above.
 
 ## References *(optional)*
 

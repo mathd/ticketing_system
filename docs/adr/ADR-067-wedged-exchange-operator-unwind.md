@@ -257,9 +257,11 @@ perfectly healthy claim. The stub now carries inventory's **transition table, tr
 `Postgres.Transition`** including its three already-satisfied cases, and the tests drive a claim
 terminal by releasing it, as the threat model's service-token holder would.
 
-The wedged-unwind API fixture uses a transcribed Inventory transition table. The unwind proof runs
-Commerce with PostgreSQL and uses only an Inventory stub. Gateway smoke tests separately cover
-exchange admission and abandonment with the running services.
+The wedged-unwind API fixture runs Commerce with PostgreSQL and uses a transcribed Inventory
+transition table. It checks the unwind's Payments evidence request against an HTTP stub, which must
+receive exactly one operations read. The proof uses no real Inventory service and no real Payments
+service. Gateway smoke tests separately cover exchange admission and abandonment with the running
+services.
 
 ### Operational
 
