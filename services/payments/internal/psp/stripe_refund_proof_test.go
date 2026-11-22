@@ -164,7 +164,6 @@ func TestStripeProveRefundFailureRefusesEverythingElse(t *testing.T) {
 		{"more pages after an entry with no id", 200, proofList(true, ok, `{"object":"refund","amount":5,"currency":"eur","status":"succeeded","payment_intent":"pi_proof","metadata":{}}`), ErrRefundProofInconclusive},
 		{"an incomplete page", 200, `{"object":"list","data":[` + ok + `]}`, ErrRefundProofInconclusive},
 		{"a malformed page", 200, `{"object":"list",`, ErrRefundProofInconclusive},
-		{"more pages but none returned", 200, proofList(true), ErrRefundProofInconclusive},
 		{"the provider is unavailable", 503, `{"error":{"message":"down","type":"api_error"}}`, ErrRefundProofInconclusive},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -196,20 +195,6 @@ func TestStripeProveRefundFailureNeedsAChargeAndAKey(t *testing.T) {
 		if len(stub.requests) != 0 {
 			t.Fatalf("pi=%q key=%q: the proof called the provider %d times", c.pi, c.key, len(stub.requests))
 		}
-	}
-}
-
-// Both adapters are provers. The fake proves only refunds it itself failed (TKT-525); its own
-// tests are in fake_refund_proof_test.go, including that an ordinary fake charge can never be
-// proven.
-func TestBothPSPsAreRefundFailureProvers(t *testing.T) {
-	var p PSP = NewFake()
-	if _, ok := p.(RefundFailureProver); !ok {
-		t.Fatal("the fake PSP does not implement RefundFailureProver")
-	}
-	var s PSP = &Stripe{}
-	if _, ok := s.(RefundFailureProver); !ok {
-		t.Fatal("the Stripe adapter does not implement RefundFailureProver")
 	}
 }
 

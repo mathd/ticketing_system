@@ -100,8 +100,7 @@ The read cannot stop a scan that commits after it. Access therefore keeps the sa
 under the source ticket row lock during the switch. If that check refuses, the exchange is already
 settled and the buyer has no replacement. This is the remaining read-to-switch race, and the locked
 check is its backstop. **D4. AC-4 is not resolved by ADR-067:** `unwind-exchange` refuses a
-settled exchange. The operator remedy remains open under **TKT-498**. This ticket does not choose
-a money remedy.
+settled exchange. TKT-498 resolves it with a separate command: see the amendment below.
 
 #### Amended by TKT-498: a settled exchange whose source was admitted is abandoned
 

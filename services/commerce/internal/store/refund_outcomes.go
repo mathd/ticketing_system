@@ -400,7 +400,7 @@ func ReserveAbandonment(ctx context.Context, db *sql.DB, in RefundOutcomeRequest
 //
 // The order row lock is part of the contract: a fresh cancellation bind holds it while it
 // checks for abandoned outcomes and sums the ceiling, so it sees this commit entirely or not at
-// all (TestFinishAbandonmentLocksTheRefundBeforeTheOrder).
+// all (TestCommandWritesLockTheRefundBeforeTheOrder).
 func FinishAbandonment(ctx context.Context, db *sql.DB, in RefundOutcomeRequest, inspected RefundOutcomeTarget, providerRef string) (RefundOutcome, bool, error) {
 	if in.Kind != OutcomeAbandoned {
 		return RefundOutcome{}, false, fmt.Errorf("FinishAbandonment takes kind %s, got %q", OutcomeAbandoned, in.Kind)

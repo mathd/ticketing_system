@@ -188,11 +188,12 @@ consumed.
 **The sweep never writes `tickets_exchanged_at`, and never claims a row that lacks it.** That marker
 is access's fact, and migration 0011 gates the capacity return on it because freeing the seat while the
 ticket still admits is the one ordering that can oversell. A settled exchange whose switch is
-unconfirmed is *counted and monitored*, never claimed and never completed — ADR-063 §2. It accrues no
-attempts and no error, so it can never park and can never block a migration rollback, and it becomes
+unconfirmed is *counted and monitored*, never claimed and never completed by the sweep (ADR-063 §2).
+It accrues no attempts or error, so it can never park or block migration 0022's rollback. It becomes
 actionable the moment access confirms, with no backoff to wait out. **A rising `awaiting_switch` is an
 access incident, not an inventory one** — check access's consumer and its dead-letter queue, not
-inventory.
+inventory. If Access records `exchange_refused` because a source ticket was admitted, see
+[Settled exchange without a ticket switch](#settled-exchange-without-a-ticket-switch-tkt-498).
 
 **Attempts reset on progress.** An outage of any length costs one attempt per pass while nothing
 moves, and the first discharged obligation restores the full budget.
