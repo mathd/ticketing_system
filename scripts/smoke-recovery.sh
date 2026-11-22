@@ -18,7 +18,15 @@
 # here filters containers by a name prefix: another checkout's stack must
 # never match.
 #
-# Needs: PROJECT and a `compose` function (both from scripts/smoke.sh).
+# The published port is fixed per stack slot (RECOVERY_PORT from stack-env.sh), below the
+# ephemeral range. A random `-p 127.0.0.1::5432` port is assigned again on `docker restart`,
+# and Docker Desktop on WSL can fail to bind it when a client socket already holds it ("failed
+# to expose port ... address already in use" in its backend log): `docker restart` and
+# `docker port` still succeed, and every host connection is refused (TKT-498 gate, also the
+# TKT-525 and TKT-527 flakes). A check from the HOST, not from inside the container, now proves
+# the port answers before the run continues.
+#
+# Needs: PROJECT, RECOVERY_PORT and a `compose` function (all from scripts/smoke.sh).
 # Sets: RECOVERY_ID while a container exists, RECOVERY_DSN after a good start.
 
 RECOVERY_LABEL="ticketing.smoke.recovery.project=${PROJECT:?smoke-recovery.sh needs PROJECT}"
@@ -62,14 +70,14 @@ recovery_fail() {
 # the caller fails the run. It never skips and never falls back to a
 # simulation or to the ordinary admin database.
 recovery_start() {
-  local image name password i rc port
+  local image name password i rc port=${RECOVERY_PORT:?smoke-recovery.sh needs RECOVERY_PORT}
   image=$(compose config --images postgres) || recovery_fail "cannot resolve the pinned postgres image" || return 1
   [ -n "$image" ] || recovery_fail "compose resolved no postgres image" || return 1
   name="${PROJECT}-recovery-$(od -An -tx1 -N6 /dev/urandom | tr -d ' \n')"
   password=$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')
   # create, not run: the id is captured before anything can fail after it.
   RECOVERY_ID=$(docker create --name "$name" --label "$RECOVERY_LABEL" \
-    -e POSTGRES_PASSWORD="$password" -p 127.0.0.1::5432 -v /var/lib/postgresql "$image") \
+    -e POSTGRES_PASSWORD="$password" -p "127.0.0.1:${port}:5432" -v /var/lib/postgresql "$image") \
     || recovery_fail "docker create failed" || return 1
   docker start "$RECOVERY_ID" >/dev/null || recovery_fail "docker start failed" || return 1
 
@@ -101,10 +109,13 @@ recovery_start() {
     [ "$i" -lt 60 ] || recovery_fail "no startup rejection within 60 s (last pg_isready status $rc)" || return 1
     sleep 1
   done
-  # The published port can change on restart, so read it only now.
-  port=$(docker port "$RECOVERY_ID" 5432/tcp | head -n1)
-  port=${port##*:}
-  [ -n "$port" ] || recovery_fail "no published loopback port" || return 1
+  # From the host: the server must answer on the published port. Inside the container it
+  # already rejects startups; a refused TCP connect here means the port forward is missing.
+  for i in $(seq 1 30); do
+    if (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then break; fi
+    [ "$i" -lt 30 ] || recovery_fail "the host cannot connect to 127.0.0.1:${port} after 30 s; check Docker Desktop's backend log for \"failed to expose port\"" || return 1
+    sleep 1
+  done
   RECOVERY_DSN="postgres://access:${password}@127.0.0.1:${port}/access?sslmode=disable"
   echo "smoke: recovery-held PostgreSQL ready (container ${RECOVERY_ID:0:12}, 127.0.0.1:${port}, rejecting startups)"
 }
