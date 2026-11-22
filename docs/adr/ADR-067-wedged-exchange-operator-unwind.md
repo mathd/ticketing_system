@@ -123,6 +123,12 @@ Its Down fails closed once evidence exists, and that guard is stronger than 0023
 unpark row describes an order that still exists, while an unwind row is the **only** account of an
 exchange that does not.
 
+**Cross-reference (TKT-498).** `unwind-exchange` still refuses a settled exchange. A settled exchange
+whose switch Access refused because a source ticket was already admitted has a separate path,
+`commerce abandon-exchange` ([ADR-039 §2](./ADR-039-exchange-settles-the-difference.md), amended by
+TKT-498). That path keeps the row and sets `abandoned_at` instead of deleting it, because the
+abandoned exchange must go on blocking a second reversal of its used source (ADR-039 §6).
+
 ### 5. The lock is the SOURCE ORDER's, and the residual is stated rather than claimed away
 
 `UnwindWedgedExchange` takes `FOR UPDATE` on `orders` — the lock `BindOrderExchange` and

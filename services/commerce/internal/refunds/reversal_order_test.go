@@ -57,7 +57,7 @@ func (l *legRecorder) call(_ context.Context, _, url, _ string, _ any, _ bool) (
 
 func newVoidUnderTest(t *testing.T, rec *legRecorder) (*Service, commercestore.OrderVoid) {
 	t.Helper()
-	s := New(nil, rec.call, "http://payments", "http://access", "http://inventory")
+	s := New(nil, rec.call, rec.call, "http://payments", "http://access", "http://inventory")
 	v := commercestore.OrderVoid{
 		ID: uuid.New(), OrderID: uuid.New(), OrganizerID: uuid.New(),
 		HoldID: uuid.New(), Quantity: 2,
@@ -169,7 +169,7 @@ func TestBothLegsCarryTheVoidsOwnIdentity(t *testing.T) {
 		}
 		return rec.call(ctx, method, url, key, in, internal)
 	}
-	s := New(nil, capture, "http://payments", "http://access", "http://inventory")
+	s := New(nil, capture, capture, "http://payments", "http://access", "http://inventory")
 	v := commercestore.OrderVoid{
 		ID: uuid.New(), OrderID: uuid.New(), OrganizerID: uuid.New(),
 		HoldID: uuid.New(), Quantity: 1,

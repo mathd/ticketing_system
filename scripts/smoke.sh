@@ -168,6 +168,12 @@ docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
 docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
   -c "DROP DATABASE IF EXISTS commerce_refundoutcome_smoke" \
   -c "CREATE DATABASE commerce_refundoutcome_smoke OWNER commerce" >/dev/null
+# A SIXTH, for ./internal/exchangeabandon (TKT-498, D21): the settled-exchange abandonment
+# drives the store and its own stubbed Access, payments and inventory, and migrates its own
+# database by the same rule as the five above.
+docker exec "$(compose ps -q postgres)" psql -U postgres -v ON_ERROR_STOP=1 \
+  -c "DROP DATABASE IF EXISTS commerce_exchangeabandon_smoke" \
+  -c "CREATE DATABASE commerce_exchangeabandon_smoke OWNER commerce" >/dev/null
 # No -run filter: every smoke test in this package is part of the gate. An allowlist
 # means a newly added test silently never runs and the gate still passes green — which
 # is exactly what happened to this file's first six tests.
@@ -184,6 +190,7 @@ COMMERCE_API_TEST_DATABASE_URL="postgres://commerce:${COMMERCE_DB_PASSWORD}@loca
 COMMERCE_REFUNDOUTCOME_TEST_DATABASE_URL="postgres://commerce:${COMMERCE_DB_PASSWORD}@localhost:${POSTGRES_PORT}/commerce_refundoutcome_smoke" \
 COMMERCE_REFUNDOUTCOME_PAYMENTS_URL="http://localhost:${PAYMENTS_PORT}" \
 COMMERCE_REFUNDOUTCOME_PAYMENTS_TOKEN="$SMOKE_PAYMENTS_INTERNAL_TOKEN" \
+COMMERCE_EXCHANGEABANDON_TEST_DATABASE_URL="postgres://commerce:${COMMERCE_DB_PASSWORD}@localhost:${POSTGRES_PORT}/commerce_exchangeabandon_smoke" \
 go test -tags smoke -count=1 ./internal/...
 
 cd "$ROOT/services/access"

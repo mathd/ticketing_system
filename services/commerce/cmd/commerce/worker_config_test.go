@@ -94,10 +94,11 @@ func TestProductionWorkerConstructionPassesEachClaimItsBatchAndLease(t *testing.
 	runners.exchange.RunOnce(context.Background())
 
 	// The expected values independently encode the longest call chains: recovery 6,
-	// cancellation 4, reversal 2, and exchange 1. Every lease adds a 60s margin.
+	// cancellation 5 (TKT-498: the replacement's Access admission read before the four refund
+	// calls), reversal 2, and exchange 1. Every lease adds a 60s margin.
 	want := map[string]claimObservation{
 		"recovery":     {batch: 2, lease: 144 * time.Second, calls: 1},
-		"cancellation": {batch: 3, lease: 192 * time.Second, calls: 1},
+		"cancellation": {batch: 3, lease: 225 * time.Second, calls: 1},
 		"reversal":     {batch: 4, lease: 148 * time.Second, calls: 1},
 		"exchange":     {batch: 5, lease: 115 * time.Second, calls: 1},
 	}

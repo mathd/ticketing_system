@@ -1,13 +1,11 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -16,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"ticketing/services/commerce/internal/accessadmission"
 	"ticketing/services/commerce/internal/exchangeunwind"
 	"ticketing/services/commerce/internal/refunds"
 	commercestore "ticketing/services/commerce/internal/store"
@@ -124,15 +123,7 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if found && existing.Settled {
-		// Re-driving settlement is idempotent. It is normally a locked read, and it also
-		// repairs a settled row whose outbox obligation is absent without relying on rollout
-		// history to make that state impossible.
-		if err := commercestore.CompleteExchangeSettlement(r.Context(), s.db, existing.OrganizerID, existing.ID, existing.ReplacementOrderID); err != nil {
-			slog.Default().ErrorContext(r.Context(), "repair settled exchange on replay", "exchange_id", existing.ID, "err", err)
-			write(w, 500, map[string]string{"error": "persist exchange"})
-			return
-		}
-		writeExchange(w, existing, true)
+		s.replaySettledExchange(w, r, existing)
 		return
 	}
 
@@ -174,6 +165,13 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 				slog.Default().ErrorContext(r.Context(), "resume exchange", "exchange_id", existing.ID, "err", err)
 			}
 			write(w, code, map[string]string{"error": message})
+			return
+		}
+		// Another request settled the exchange after the lookup above, and an abandonment may
+		// have finished since (R3-5). The settled replay answers it from Commerce: nothing
+		// forward is owed, and a terminal row answers `abandoned`.
+		if ex.Settled {
+			s.replaySettledExchange(w, r, ex)
 			return
 		}
 		// settling_at is best-effort, so NULL alone does not prove the provider was never
@@ -318,6 +316,13 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		write(w, code, map[string]string{"error": message})
 		return
 	}
+	// A request with the same key bound and settled the exchange while this one held its
+	// target, and an abandonment may have finished since (R4-1). Commerce has the answer, so
+	// no forward step runs. The hold stays: it shares the exchange identity with the winner's.
+	if ex.Settled {
+		s.replaySettledExchange(w, r, ex)
+		return
+	}
 	ex.BuyerID, ex.HoldID, ex.PaymentSourceKey = src.BuyerID, src.HoldID, src.PaymentSourceKey
 
 	// THE BASIS, before any money (ai-review F3), and complete: hold, reservation, total,
@@ -357,38 +362,21 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 // checkSourceAdmission reads access's scoped ticket set and refuses unusable or admitted
 // sources. A 200 with no tickets means issuance has not caught up; a 404 means access did
 // not authenticate this internal request or otherwise failed to serve the dependency.
+//
+// The read and its strict decoder are accessadmission.Read, which the settled-exchange
+// abandonment and the replacement refund dispatch guard share (TKT-498). The rule and the
+// status mapping below are this check's own.
 func (s *Server) checkSourceAdmission(w http.ResponseWriter, r *http.Request, order, organizer uuid.UUID, quantity int32) bool {
-	if s.accessURL == "" {
+	admission, err := accessadmission.Read(r.Context(), s.accessAdmission, s.accessURL, order, organizer)
+	if err != nil {
 		write(w, http.StatusBadGateway, map[string]string{"error": "access admission unavailable"})
 		return false
 	}
-	url := fmt.Sprintf("%s/internal/orders/%s/admission?organizer_id=%s", s.accessURL, order, organizer)
-	status, body, err := s.call(r.Context(), http.MethodGet, url, "", nil, true)
-	if err != nil || status != http.StatusOK {
-		write(w, http.StatusBadGateway, map[string]string{"error": "access admission unavailable"})
-		return false
-	}
-	var admission struct {
-		Admitted    *bool  `json:"admitted"`
-		IssuedCount *int32 `json:"issued_count"`
-	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&admission); err != nil {
-		write(w, http.StatusBadGateway, map[string]string{"error": "access admission unavailable"})
-		return false
-	}
-	var trailing any
-	if decoder.Decode(&trailing) != io.EOF || admission.Admitted == nil || admission.IssuedCount == nil ||
-		*admission.IssuedCount < 0 || *admission.IssuedCount > 50 {
-		write(w, http.StatusBadGateway, map[string]string{"error": "access admission unavailable"})
-		return false
-	}
-	if *admission.IssuedCount == 0 || *admission.IssuedCount != quantity {
+	if admission.IssuedCount == 0 || admission.IssuedCount != quantity {
 		write(w, http.StatusServiceUnavailable, map[string]string{"error": "source tickets are not issued yet"})
 		return false
 	}
-	if *admission.Admitted {
+	if admission.Admitted {
 		write(w, http.StatusConflict, map[string]string{
 			"error": "source order tickets have already been admitted",
 			"code":  "source_tickets_already_admitted",
@@ -524,13 +512,47 @@ func (s *Server) completeExchangeFromBasis(w http.ResponseWriter, r *http.Reques
 		write(w, 500, map[string]string{"error": "persist exchange"})
 		return
 	}
-	if err := commercestore.CompleteExchangeSettlement(r.Context(), s.db, ex.OrganizerID, ex.ID, replacement); err != nil {
+	err = commercestore.CompleteExchangeSettlement(r.Context(), s.db, ex.OrganizerID, ex.ID, replacement)
+	ex.ReplacementOrderID, ex.Settled = replacement, true
+	if errors.Is(err, commercestore.ErrExchangeAbandoned) {
+		// Another request settled the exchange and its abandonment finished while this one ran
+		// its forward steps (R3-5). The locked read refused the settlement and the outbox write,
+		// so this answer is the terminal replay, not a failure.
+		ex.Abandoned = true
+		writeExchange(w, ex, true)
+		return
+	}
+	if err != nil {
 		slog.Default().ErrorContext(r.Context(), "complete exchange settlement", "err", err)
 		write(w, 500, map[string]string{"error": "persist exchange"})
 		return
 	}
-	ex.ReplacementOrderID, ex.Settled = replacement, true
 	writeExchange(w, ex, replay)
+}
+
+// replaySettledExchange answers a replay of a settled exchange from Commerce, with no dependency
+// call. Both settlement entry paths use it: the lookup that finds a settled row, and the basis
+// resume whose bind reloads one (R3-5).
+//
+// Settlement is re-driven, which is idempotent. It is normally a locked read, and it also repairs
+// a settled row whose outbox obligation is absent without relying on rollout history to make that
+// state impossible. Under the same row lock that the abandonment's terminal write takes, it
+// refuses a terminal row (TKT-498, RA2-2): the switch will never happen, so no switch obligation
+// is repaired, and the replay answers `abandoned` with the original values. That lock decides,
+// whether the abandonment finished before or after this request read the row.
+func (s *Server) replaySettledExchange(w http.ResponseWriter, r *http.Request, ex commercestore.Exchange) {
+	err := commercestore.CompleteExchangeSettlement(r.Context(), s.db, ex.OrganizerID, ex.ID, ex.ReplacementOrderID)
+	if errors.Is(err, commercestore.ErrExchangeAbandoned) {
+		ex.Abandoned = true
+		writeExchange(w, ex, true)
+		return
+	}
+	if err != nil {
+		slog.Default().ErrorContext(r.Context(), "repair settled exchange on replay", "exchange_id", ex.ID, "err", err)
+		write(w, 500, map[string]string{"error": "persist exchange"})
+		return
+	}
+	writeExchange(w, ex, true)
 }
 
 // shouldReleaseHoldOnBindError decides whether the hold this request took belongs to it.
@@ -585,6 +607,9 @@ func writeExchange(w http.ResponseWriter, ex commercestore.Exchange, replay bool
 	// still withheld — hiding the very substate migration 0011 exists to expose.
 	status := "switch_pending"
 	switch {
+	case ex.Abandoned:
+		// Terminal (TKT-498): the money and target were settled by the abandonment instead.
+		status = "abandoned"
 	case ex.TicketsExchanged && ex.CapacityReturned:
 		status = "completed"
 	case ex.TicketsExchanged:

@@ -61,13 +61,16 @@ func main() {
 // subcommands keeps operator commands in the path main executes. The parked-order and
 // wedged-exchange commands are the supported way to resume work that automated recovery
 // has stopped claiming (TKT-146 and TKT-255). record-refund-outcome records an operator's
-// outcome for a failed post-purchase refund (TKT-525).
+// outcome for a failed post-purchase refund (TKT-525). list-settled-unswitched-exchanges lists
+// settled exchanges whose ticket switch never happened, and abandon-exchange abandons one whose
+// source Access admitted (TKT-498).
 type commandCallbacks struct {
 	migrate                                                      func() error
 	healthcheck                                                  func() int
 	enrolReseller, revokeReseller, listResellers                 func([]string) error
 	listParked, unparkOrder, listWedgedExchanges, unwindExchange func([]string) error
 	recordRefundOutcome                                          func([]string) error
+	listSettledUnswitchedExchanges, abandonExchange              func([]string) error
 }
 
 func productionCommandCallbacks() commandCallbacks {
@@ -76,7 +79,9 @@ func productionCommandCallbacks() commandCallbacks {
 		enrolReseller: enrolReseller, revokeReseller: revokeReseller, listResellers: listResellers,
 		listParked: listParked, unparkOrder: unparkOrder,
 		listWedgedExchanges: listWedgedExchanges, unwindExchange: unwindExchange,
-		recordRefundOutcome: recordRefundOutcome,
+		recordRefundOutcome:            recordRefundOutcome,
+		listSettledUnswitchedExchanges: listSettledUnswitchedExchanges,
+		abandonExchange:                abandonExchange,
 	}
 }
 
@@ -96,6 +101,9 @@ func commandRegistry(callbacks commandCallbacks) cmdline.Registry {
 		"list-wedged-exchanges": cmdline.WithArgs(callbacks.listWedgedExchanges),
 		"unwind-exchange":       cmdline.WithArgs(callbacks.unwindExchange),
 		"record-refund-outcome": cmdline.WithArgs(callbacks.recordRefundOutcome),
+		// TKT-498: settled exchanges whose ticket switch never happened.
+		"list-settled-unswitched-exchanges": cmdline.WithArgs(callbacks.listSettledUnswitchedExchanges),
+		"abandon-exchange":                  cmdline.WithArgs(callbacks.abandonExchange),
 	}
 }
 

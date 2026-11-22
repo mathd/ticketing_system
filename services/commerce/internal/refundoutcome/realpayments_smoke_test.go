@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"ticketing/services/commerce/internal/accessadmission"
 	"ticketing/services/commerce/internal/refunds"
 	"ticketing/services/commerce/internal/store"
 )
@@ -204,7 +205,7 @@ func (f *forwarder) caller(token string) refunds.Caller {
 // Payments binds the leg, the fake PSP fails the refund terminally, and the refund stays pending.
 func failedStaffRefund(t *testing.T, ctx context.Context, db *sql.DB, f *forwarder, p realPayments, s seeded, key string, quantity int32) uuid.UUID {
 	t.Helper()
-	svc := refunds.New(db, f.caller(p.token), f.srv.URL, "http://access.invalid", "http://inventory.invalid")
+	svc := refunds.New(db, f.caller(p.token), accessadmission.Caller(f.caller(p.token)), f.srv.URL, "http://access.invalid", "http://inventory.invalid")
 	_, err := svc.Refund(ctx, store.RefundRequest{OrderID: s.order, OrganizerID: s.org, Quantity: quantity,
 		IdempotencyKey: key, Actor: "support@example.test", Reason: "buyer cannot attend"})
 	if !errors.Is(err, refunds.ErrProviderRefundFailed) {
@@ -347,7 +348,7 @@ func TestSharedChargeKeepsTheCapturedCeilingAfterAnOutsideCompletionWins(t *test
 	}
 
 	keyB := "staff-b-" + uuid.NewString()
-	svc := refunds.New(db, f.caller(p.token), f.srv.URL, "http://access.invalid", "http://inventory.invalid")
+	svc := refunds.New(db, f.caller(p.token), accessadmission.Caller(f.caller(p.token)), f.srv.URL, "http://access.invalid", "http://inventory.invalid")
 	_, err = svc.Refund(ctx, store.RefundRequest{OrderID: b.order, OrganizerID: org, Quantity: 2,
 		IdempotencyKey: keyB, Actor: "support@example.test", Reason: "replacement order refund"})
 	if !errors.Is(err, refunds.ErrPaymentsRefused) {

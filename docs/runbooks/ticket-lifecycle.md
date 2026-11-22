@@ -169,8 +169,10 @@ Operationally that means:
   ```sql
   SELECT id, source_order_id, settled_at, tickets_exchanged_at, capacity_returned_at
   FROM order_exchanges
-  WHERE settled_at IS NOT NULL AND capacity_returned_at IS NULL;
+  WHERE settled_at IS NOT NULL AND capacity_returned_at IS NULL AND abandoned_at IS NULL;
   ```
+
+  `abandoned_at IS NULL` leaves out exchanges an operator abandoned (TKT-498): they owe nothing.
 
 - **A gate refusing `exchanged` is not an integrity problem.** The verdict is its own
   (`DecisionExchanged`), distinct from `refunded`, and it is checked **before** chain verification —
@@ -184,8 +186,9 @@ Operationally that means:
 
   Access checks again under the source ticket row lock when it switches the tickets. A scan can land
   after commerce's read, so this backstop can still refuse after settlement. That leaves a
-  settled-but-unswitched exchange, visible in the query above. ADR-067 does not resolve this state:
-  `unwind-exchange` refuses settled exchanges. TKT-498 owns the open operator remedy.
+  settled-but-unswitched exchange, visible in the query above. `unwind-exchange` refuses settled
+  exchanges (ADR-067). The operator remedy is to abandon the exchange: see
+  [Settled exchange without a ticket switch](./order-recovery.md#settled-exchange-without-a-ticket-switch-tkt-498).
 
   The failure record says `exchange_refused`, **not** `issuance_retries_exhausted`, and it is
   published on the first delivery. Retrying a fact about admission history cannot change it, and
@@ -196,7 +199,9 @@ Operationally that means:
   product decision is admitting the same entitlement twice. Fencing the source tickets during
   `switch_pending` would remove the strand, and would do it by **denying a legitimate holder entry
   at the gate** while an exchange is mid-flight. For a ticketing system that is the worse failure,
-  which is why TKT-498 owns the operator decision rather than changing gate behavior here.
+  so gate behavior stays as it is. The owner's resolution (TKT-498) abandons the exchange: an
+  upgrade's delta is refunded, a downgrade's delta is written off, and the target capacity comes back
+  ([order recovery](./order-recovery.md#settled-exchange-without-a-ticket-switch-tkt-498)).
 
 - **The buyer's link shows the old tickets too, without QR codes.** Replacement tickets share the
   source order's guest reference deliberately, so one link covers the whole story. The storefront

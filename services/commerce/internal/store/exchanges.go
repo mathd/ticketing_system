@@ -58,6 +58,9 @@ var (
 	// FX inside an order (PRD; TKT-10 owns multi-currency), so this is a refusal rather
 	// than a conversion.
 	ErrExchangeCurrencyMismatch = errors.New("exchange target currency differs from the source order")
+	// ErrExchangeAbandoned reports that CompleteExchangeSettlement found a terminal abandonment
+	// under the row lock (TKT-498, RA2-2). It wrote nothing: the switch is no longer owed.
+	ErrExchangeAbandoned = errors.New("the exchange was abandoned; its switch is no longer owed")
 )
 
 // ExchangeRequest is one staff exchange instruction.
@@ -104,6 +107,10 @@ type Exchange struct {
 	// exchange `completed` from TicketsExchanged alone hid the exact substate the column
 	// was introduced to expose, and left an under-selling exchange findable only by hand.
 	CapacityReturned bool
+	// Abandoned reports a terminal abandonment (TKT-498, abandoned_at): the exchange settled,
+	// Access refused its switch, and an operator returned the target and settled the delta's
+	// correction. The switch will never happen. A started abandonment is not Abandoned.
+	Abandoned bool
 	// BasisRecorded is the pre-money commitment (ai-review F3): target hold, replacement
 	// reservation, target total and signed delta, all persisted BEFORE the provider is
 	// called. A retry settles against these, never against a re-resolved price or a
@@ -319,19 +326,20 @@ func lookupExchange(ctx context.Context, q rowQuerier, org, id uuid.UUID) (store
 	var s storedExchange
 	var replacement uuid.NullUUID
 	var target, delta sql.NullInt64
-	var settled, switched, returned, basis, settling sql.NullTime
+	var settled, switched, returned, basis, settling, abandoned sql.NullTime
 	var targetHold, replacementReservation, targetSlot uuid.NullUUID
 	var targetUnit sql.NullInt64
 	var createdAt time.Time
 	err := q.QueryRowContext(ctx, `
 		SELECT id,source_order_id,replacement_order_id,target_ticket_type_id,request_fingerprint,quantity,
 		       source_total,source_gross_total,target_total,delta_amount,currency,created_at,settled_at,tickets_exchanged_at,capacity_returned_at,
-		       target_hold_id,replacement_reservation_id,basis_at,target_unit_amount,target_slot_id,target_price_snapshot,settling_at
+		       target_hold_id,replacement_reservation_id,basis_at,target_unit_amount,target_slot_id,target_price_snapshot,settling_at,
+		       abandoned_at
 		FROM order_exchanges WHERE organizer_id=$1 AND id=$2`, org, id).
 		Scan(&s.exchange.ID, &s.exchange.SourceOrderID, &replacement, &s.exchange.TargetTicketTypeID,
 			&s.fingerprint, &s.exchange.Quantity, &s.exchange.SourceTotal, &s.exchange.SourceGrossTotal, &target, &delta,
 			&s.exchange.Currency, &createdAt, &settled, &switched, &returned, &targetHold, &replacementReservation, &basis,
-			&targetUnit, &targetSlot, &s.exchange.TargetPriceSnapshot, &settling)
+			&targetUnit, &targetSlot, &s.exchange.TargetPriceSnapshot, &settling, &abandoned)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storedExchange{}, false, nil
 	}
@@ -344,6 +352,7 @@ func lookupExchange(ctx context.Context, q rowQuerier, org, id uuid.UUID) (store
 	s.exchange.Settled, s.exchange.TicketsExchanged = settled.Valid, switched.Valid
 	s.exchange.Settling = settling.Valid
 	s.exchange.CapacityReturned = returned.Valid
+	s.exchange.Abandoned = abandoned.Valid
 	s.exchange.BasisRecorded = basis.Valid
 	s.exchange.TargetHoldID, s.exchange.ReplacementReservationID = targetHold.UUID, replacementReservation.UUID
 	s.exchange.TargetUnitAmount, s.exchange.TargetSlotID = targetUnit.Int64, targetSlot.UUID
@@ -518,12 +527,12 @@ func CompleteExchangeSettlement(ctx context.Context, db *sql.DB, org, exchangeID
 	// same exchange would otherwise both see `settled_at IS NULL`, both build an envelope
 	// from their own clock, and race on the outbox primary key with different bytes under
 	// one deterministic id.
-	var settledAt sql.NullTime
+	var settledAt, abandonedAt sql.NullTime
 	var alreadyReplacement uuid.NullUUID
 	err = tx.QueryRowContext(ctx, `
-		SELECT settled_at, replacement_order_id FROM order_exchanges
+		SELECT settled_at, replacement_order_id, abandoned_at FROM order_exchanges
 		WHERE organizer_id=$1 AND id=$2 AND basis_at IS NOT NULL FOR UPDATE`, org, exchangeID).
-		Scan(&settledAt, &alreadyReplacement)
+		Scan(&settledAt, &alreadyReplacement, &abandonedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// No row, or no basis yet — and since TKT-255 those are no longer the same
@@ -556,6 +565,12 @@ func CompleteExchangeSettlement(ctx context.Context, db *sql.DB, org, exchangeID
 			return nil
 		}
 		return err
+	}
+	if abandonedAt.Valid {
+		// A terminal abandonment (TKT-498, D24, RA2-2). The caller's snapshot can predate it:
+		// FinishExchangeAbandonment takes this same row lock, so this read is the one that
+		// decides. The switch will never happen, so no switch obligation is repaired.
+		return fmt.Errorf("%w: %s", ErrExchangeAbandoned, exchangeID)
 	}
 	if settledAt.Valid {
 		// Already settled. The event is still owed if a crash landed between the two

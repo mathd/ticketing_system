@@ -6,6 +6,7 @@ Date: 2026-08-18
 
 Accepted (TKT-259; decision taken under `config.gates: autonomous`, so gates 2–4 were the agent's —
 the plan-review critique, the self-made decisions and any overridden objections are on the ticket).
+**Amended by TKT-498** (§6: a terminal abandonment leaves the backlog).
 
 Closes the gap [ADR-062](./ADR-062-refund-reversal-reconciliation.md) named in its own
 *"What this does not cover, deliberately"*. Inherits [ADR-038](./ADR-038-refund-reversal-ticket-voiding.md) §1's
@@ -191,6 +192,15 @@ reading it thinks it means.
 
 As on the refund side: observability, not a gate. A failure to register a gauge is logged and commerce
 still exchanges.
+
+**Amended by TKT-498: a terminal abandonment leaves the backlog.** An operator can abandon a settled
+exchange whose switch Access refused because a source ticket was admitted
+([ADR-039 §2](./ADR-039-exchange-settles-the-difference.md), amended by TKT-498). A terminal
+abandonment (`abandoned_at` set) owes nothing: its target capacity came back and the switch will
+never happen. The backlog read therefore filters `abandoned_at IS NULL`, and such a row leaves all
+four gauges. A started abandonment, and one stopped by the provider's refusal of the upgrade refund,
+are unresolved: they stay in `outstanding` and `awaiting_switch`, and their settlement still counts
+for the oldest age. The claim query needs no change, because it already excludes unswitched rows.
 
 ### 7. No readiness change, and the tuning variables are plain defaults
 

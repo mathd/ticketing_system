@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 )
@@ -36,6 +37,11 @@ var ErrOrderNotVoidable = errors.New("order cannot be voided")
 // reversible, just not here. It is the exact mirror of ErrRefundNoMoney, which
 // tells a comped order the same thing in the other direction.
 var ErrVoidHasMoney = errors.New("order has captured money and must be refunded, not voided")
+
+// ErrExchangeReplacementVoidAbandoned refuses a void bind or replay on the replacement order of
+// an exchange whose abandonment has started (TKT-498, D23). It wraps ErrOrderNotVoidable, so the
+// staff endpoint answers its existing 409 and the bulk runner its existing `refund_refused`.
+var ErrExchangeReplacementVoidAbandoned = fmt.Errorf("%w: its exchange is being abandoned", ErrOrderNotVoidable)
 
 // OrderVoid is one comped-order reversal and its two independent obligations.
 //
@@ -109,18 +115,33 @@ func BindOrderVoid(ctx context.Context, db *sql.DB, in VoidRequest) (OrderVoid, 
 	defer func() { _ = tx.Rollback() }()
 
 	var (
-		status  string
-		hold    uuid.UUID
-		soldQty int32
-		unit    int64
-		total   int64
+		status            string
+		hold, reservation uuid.UUID
+		soldQty           int32
+		unit              int64
+		total             int64
 	)
 	if err := tx.QueryRowContext(ctx, `
-		SELECT o.status, r.hold_id, r.quantity, r.unit_amount, r.total_amount
+		SELECT o.status, r.id, r.hold_id, r.quantity, r.unit_amount, r.total_amount
 		FROM orders o JOIN reservations r ON r.id = o.reservation_id
 		WHERE o.id=$1 AND r.organizer_id=$2 FOR UPDATE OF o`, in.OrderID, in.OrganizerID).
-		Scan(&status, &hold, &soldQty, &unit, &total); err != nil {
+		Scan(&status, &reservation, &hold, &soldQty, &unit, &total); err != nil {
 		return OrderVoid{}, err
+	}
+
+	// A comped exchange replacement whose abandonment started cannot bind or replay a void
+	// (TKT-498, D23). The abandonment makes zero issuance permanent, so the void's ticket
+	// obligation could never be discharged. The same read as BindOrderRefund's, under the same
+	// order lock and BEFORE the replay; an existing void row stays as history.
+	var abandoning bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM order_exchanges
+		               WHERE organizer_id=$1 AND replacement_reservation_id=$2
+		                 AND abandonment_started_at IS NOT NULL)`, in.OrganizerID, reservation).Scan(&abandoning); err != nil {
+		return OrderVoid{}, err
+	}
+	if abandoning {
+		return OrderVoid{}, ErrExchangeReplacementVoidAbandoned
 	}
 
 	id := VoidID(in.OrganizerID, in.OrderID)

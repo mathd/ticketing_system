@@ -1,0 +1,277 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	"ticketing/services/commerce/internal/exchangeabandon"
+	store "ticketing/services/commerce/internal/store"
+)
+
+// TKT-498. `abandon-exchange` validates every argument and every required setting before it
+// opens the database or calls a service. The dial counter (listenForDials) observes the
+// database; a recording server stands for Access, payments and inventory.
+
+func recordingDependency(t *testing.T) (url string, calls func() int64) {
+	t.Helper()
+	var n atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL, n.Load
+}
+
+func TestAbandonExchangeRefusesBadArgumentsBeforeAnyDependency(t *testing.T) {
+	dials := listenForDials(t)
+	dep, calls := recordingDependency(t)
+	validAbandonSettings(t, dep)
+	org, exchange := uuid.NewString(), uuid.NewString()
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"no arguments", nil, "usage:"},
+		{"three arguments", []string{org, exchange, "Ada"}, "usage:"},
+		{"five arguments", []string{org, exchange, "Ada", "reason", "extra"}, "usage:"},
+		{"malformed organizer", []string{"not-a-uuid", exchange, "Ada", "reason"}, "organizer id"},
+		{"nil organizer", []string{uuid.Nil.String(), exchange, "Ada", "reason"}, "organizer id"},
+		{"malformed exchange", []string{org, "not-a-uuid", "Ada", "reason"}, "exchange id"},
+		{"nil exchange", []string{org, uuid.Nil.String(), "Ada", "reason"}, "exchange id"},
+		{"blank operator", []string{org, exchange, "  \t", "reason"}, "operator name"},
+		{"blank reason", []string{org, exchange, "Ada", " \n "}, "reason"},
+		{"operator over 200 characters", []string{org, exchange, strings.Repeat("é", 201), "reason"}, "operator name"},
+		{"reason over 500 characters", []string{org, exchange, "Ada", strings.Repeat("r", 501)}, "reason"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := abandonExchange(tc.args)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("abandonExchange(%q) = %v, want an error naming %q", tc.args, err, tc.want)
+			}
+		})
+	}
+	if n := dials(); n != 0 {
+		t.Errorf("a bad argument reached the database %d time(s)", n)
+	}
+	if n := calls(); n != 0 {
+		t.Errorf("a bad argument reached a service %d time(s)", n)
+	}
+}
+
+const (
+	abandonInternalToken = "internal-service-token-for-abandon-tests-0123456789"
+	abandonPaymentsToken = "payments-internal-token-for-abandon-tests-0123456789"
+)
+
+// validAbandonSettings sets every setting the command needs, with the database at the dial
+// counter. It also points libpq's PG* defaults at the counter, so a command that opened the
+// database with an empty DATABASE_URL would be counted.
+func validAbandonSettings(t *testing.T, dep string) {
+	t.Helper()
+	for _, name := range []string{"ACCESS_URL", "PAYMENTS_URL", "INVENTORY_URL"} {
+		t.Setenv(name, dep)
+	}
+	t.Setenv("INTERNAL_SERVICE_TOKEN", abandonInternalToken)
+	t.Setenv("PAYMENTS_INTERNAL_TOKEN", abandonPaymentsToken)
+	u, err := url.Parse(os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PGHOST", u.Hostname())
+	t.Setenv("PGPORT", u.Port())
+	t.Setenv("PGUSER", "u")
+	t.Setenv("PGDATABASE", "db")
+	t.Setenv("PGSSLMODE", "disable")
+	t.Setenv("PGCONNECT_TIMEOUT", "2")
+}
+
+// settled reads the dial counter once it has stopped moving: the listener counts on its own
+// goroutine, so a dial can land just after the command returns.
+func settled(count func() int) int {
+	n := count()
+	for {
+		time.Sleep(30 * time.Millisecond)
+		if m := count(); m != n {
+			n = m
+			continue
+		}
+		return n
+	}
+}
+
+// Each setting is checked before the database, one at a time: a command that cannot finish
+// must not start a reservation it cannot drive (R2-4, RA2-3). Every case changes one setting of
+// an otherwise valid configuration.
+func TestAbandonExchangeRefusesEachUnusableSettingBeforeAnyDependency(t *testing.T) {
+	dials := listenForDials(t)
+	dep, calls := recordingDependency(t)
+	args := []string{uuid.NewString(), uuid.NewString(), "Ada Operator", "source admitted"}
+	for _, tc := range []struct {
+		name, env, value, want string
+	}{
+		{"ACCESS_URL unset", "ACCESS_URL", "", "ACCESS_URL"},
+		{"PAYMENTS_URL unset", "PAYMENTS_URL", "", "PAYMENTS_URL"},
+		{"INVENTORY_URL unset", "INVENTORY_URL", "", "INVENTORY_URL"},
+		{"ACCESS_URL without a scheme", "ACCESS_URL", "access:8080", "ACCESS_URL"},
+		{"ACCESS_URL relative", "ACCESS_URL", "/access", "ACCESS_URL"},
+		{"PAYMENTS_URL not http", "PAYMENTS_URL", "ftp://payments:8080", "PAYMENTS_URL"},
+		{"INVENTORY_URL without a host", "INVENTORY_URL", "http://", "INVENTORY_URL"},
+		{"INVENTORY_URL with a query", "INVENTORY_URL", "http://inventory:8080/?x=1", "INVENTORY_URL"},
+		{"INVENTORY_URL with an empty query", "INVENTORY_URL", "http://inventory:8080/?", "INVENTORY_URL"},
+		{"ACCESS_URL with a fragment", "ACCESS_URL", "http://access:8080/#x", "ACCESS_URL"},
+		// R3-4. A fragment delimiter anywhere, even with nothing after it, makes every appended
+		// path part of the fragment; an empty host or a port outside 1-65535 cannot be dialled.
+		{"ACCESS_URL with a bare fragment delimiter", "ACCESS_URL", "http://access:8080/#", "ACCESS_URL"},
+		{"INVENTORY_URL with a fragment delimiter before the slash", "INVENTORY_URL", "http://inventory:8080#/", "INVENTORY_URL"},
+		{"PAYMENTS_URL with an empty hostname", "PAYMENTS_URL", "http://:8080", "PAYMENTS_URL"},
+		{"ACCESS_URL with port 0", "ACCESS_URL", "http://access:0", "ACCESS_URL"},
+		{"INVENTORY_URL with port 65536", "INVENTORY_URL", "http://inventory:65536", "INVENTORY_URL"},
+		{"PAYMENTS_URL with an empty port", "PAYMENTS_URL", "http://payments:/", "PAYMENTS_URL"},
+		{"INTERNAL_SERVICE_TOKEN unset", "INTERNAL_SERVICE_TOKEN", "", "INTERNAL_SERVICE_TOKEN"},
+		{"PAYMENTS_INTERNAL_TOKEN unset", "PAYMENTS_INTERNAL_TOKEN", "", "PAYMENTS_INTERNAL_TOKEN"},
+		{"PAYMENTS_INTERNAL_TOKEN equal to the shared token", "PAYMENTS_INTERNAL_TOKEN", abandonInternalToken, "must not equal"},
+		{"DATABASE_URL unset", "DATABASE_URL", "", "DATABASE_URL"},
+		{"DATABASE_URL blank", "DATABASE_URL", "  ", "DATABASE_URL"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			validAbandonSettings(t, dep)
+			t.Setenv(tc.env, tc.value)
+			before, beforeCalls := settled(dials), calls()
+			err := abandonExchange(args)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("with %s=%q: err = %v, want it to name %q", tc.env, tc.value, err, tc.want)
+			}
+			if n := settled(dials) - before; n != 0 {
+				t.Errorf("with %s=%q the command reached the database %d time(s)", tc.env, tc.value, n)
+			}
+			if n := calls() - beforeCalls; n != 0 {
+				t.Errorf("with %s=%q the command reached a service %d time(s)", tc.env, tc.value, n)
+			}
+		})
+	}
+}
+
+// A valid invocation does open the database: the test above is falsifiable only if the counter
+// can see a connection.
+func TestAbandonExchangeWithValidArgumentsReachesTheDatabase(t *testing.T) {
+	dials := listenForDials(t)
+	dep, _ := recordingDependency(t)
+	validAbandonSettings(t, dep)
+	if err := abandonExchange([]string{uuid.NewString(), uuid.NewString(), " Ada Operator ", " source admitted "}); err == nil {
+		t.Fatal("the command succeeded against a database that refuses every connection")
+	}
+	if settled(dials) == 0 {
+		t.Fatal("a valid invocation never reached the database")
+	}
+}
+
+// R3-3, RA4-2. The delta refund has its own timeout, longer than the evidence-read timeout:
+// payments can list the provider's refunds, submit and read back before it answers. Both answers
+// below are producer-valid and arrive one second after the evidence-read timeout. Through the
+// client the command builds, the refund completes and the evidence read gives up at its own
+// timeout. A client that waits longer receives the same evidence answer, so only the timeout
+// stops the command's read.
+func TestTheCommandRefundOutlastsTheEvidenceReadTimeout(t *testing.T) {
+	delay := paymentsEvidenceTimeout + time.Second
+	fact := uuid.New()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(delay)
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/internal/operations" {
+			_, _ = w.Write([]byte(`{"resolved":true,"occurred_at":"2026-11-21T10:00:00Z","status":"captured","fact_id":"` +
+				fact.String() + `","captured_amount":1000,"currency":"EUR"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"refunded","fact_id":"` + fact.String() + `","amount":1000,"currency":"EUR","replay":false}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := newAbandonClient(srv.URL, srv.URL, srv.URL, abandonInternalToken, abandonPaymentsToken)
+	patient := exchangeabandon.NewHTTP(srv.URL, srv.URL, srv.URL, abandonInternalToken, abandonPaymentsToken,
+		partialRefundTimeout, partialRefundTimeout)
+	ctx := context.Background()
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ChargeOperation(ctx, uuid.New(), "exchange-charge:x")
+		readErr <- err
+	}()
+	type evidence struct {
+		op  exchangeabandon.ChargeEvidence
+		err error
+	}
+	patientRead := make(chan evidence, 1)
+	go func() {
+		op, err := patient.ChargeOperation(ctx, uuid.New(), "exchange-charge:x")
+		patientRead <- evidence{op, err}
+	}()
+	start := time.Now()
+	got, err := client.PartialRefund(ctx, exchangeabandon.RefundRequest{OrganizerID: uuid.New(),
+		ChargeKey: "exchange-charge:x", RefundKey: uuid.NewString(), Amount: 1000, Currency: "EUR"})
+	if err != nil || got.FactID != fact {
+		t.Fatalf("a refund answered after %v = %+v, %v; want the refunded answer", time.Since(start).Round(time.Millisecond), got, err)
+	}
+	if p := <-patientRead; p.err != nil || !p.op.Found || !p.op.Resolved || p.op.Status != "captured" {
+		t.Fatalf("an evidence read with a %v budget = %+v, %v; want the captured operation", partialRefundTimeout, p.op, p.err)
+	}
+	if err := <-readErr; !errors.Is(err, exchangeabandon.ErrUnavailable) {
+		t.Fatalf("an evidence read answered after %v: err = %v, want ErrUnavailable at its own timeout", delay, err)
+	}
+}
+
+// The terminal record names the attribution, every instant and the branch's evidence.
+func TestAbandonedRecordPrintsTheBranchEvidence(t *testing.T) {
+	at := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	base := store.SettledExchange{OrganizerID: uuid.New(), ID: uuid.New(), Quantity: 2, Currency: "EUR",
+		AbandonmentOperator: "Ada Operator", AbandonmentSessionUser: "commerce", AbandonmentReason: "source admitted",
+		AbandonmentStartedAt: at, AbandonmentTargetReturnedAt: at.Add(time.Second), AbandonedAt: at.Add(2 * time.Second)}
+	upgrade, downgrade, even := base, base, base
+	upgrade.DeltaAmount, upgrade.AbandonmentRefundFactID = 1000, uuid.New()
+	downgrade.DeltaAmount, downgrade.AbandonmentWrittenOff = -700, 700
+	for _, tc := range []struct {
+		e         store.SettledExchange
+		replay    bool
+		want, not []string
+	}{
+		{upgrade, false, []string{"delta=+1000 EUR", "refund_fact=" + upgrade.AbandonmentRefundFactID.String(), "replay=false"}, []string{"written_off="}},
+		{downgrade, true, []string{"delta=-700 EUR", "written_off=700", "replay=true"}, []string{"refund_fact="}},
+		{even, false, []string{"delta=0 EUR"}, []string{"refund_fact=", "written_off="}},
+	} {
+		var out bytes.Buffer
+		printAbandoned(&out, exchangeabandon.Result{Exchange: tc.e, Replay: tc.replay})
+		line := out.String()
+		for _, want := range append(tc.want, `operator="Ada Operator"`, `session_user="commerce"`,
+			"started_at=2026-11-21T10:00:00Z", "target_returned_at=2026-11-21T10:00:01Z", "abandoned_at=2026-11-21T10:00:02Z") {
+			if !strings.Contains(line, want) {
+				t.Errorf("%q does not contain %q", line, want)
+			}
+		}
+		for _, not := range tc.not {
+			if strings.Contains(line, not) {
+				t.Errorf("%q contains %q", line, not)
+			}
+		}
+	}
+}
+
+// A recorded provider failure is reported as a stop with its reference, never as retryable.
+func TestAbandonRefusalNamesTheRecordedProviderFailure(t *testing.T) {
+	var out bytes.Buffer
+	e := store.SettledExchange{AbandonmentStarted: true, AbandonmentRefundFailedRef: "re_failed"}
+	reportAbandonRefusal(&out, uuid.New(), e, errors.Join(store.ErrAbandonmentRefundFailed))
+	if !strings.Contains(out.String(), "STOPPED") || !strings.Contains(out.String(), "re_failed") ||
+		!strings.Contains(out.String(), "TKT-588") {
+		t.Fatalf("report = %q, want a stop naming the provider reference and TKT-588", out.String())
+	}
+}

@@ -420,6 +420,8 @@ latency and no shutdown requirement supports a shorter timeout, so a shorter one
 - **Lease:** `LeaseFor` sizes the lease from the calls, not the charge: `batch × 4 calls × 30 s + 60 s`,
   which is 1,020 s at the default batch of 8. The 80 s charge cost is counted only by the 60 s margin,
   so a batch whose calls also run to their timeouts can outlive its lease.
+  **Amended by TKT-498:** the longest path is now five calls, so the lease is 1,260 s at the default
+  batch. See the TKT-498 amendment below.
 - **Per pass:** at most 64 batches (TKT-331), so at most 512 drives at the default batch. The charge
   component alone can then reach 5,120 s. That is a bound on one component, not on the elapsed time
   of a pass; the enumeration prelude is outside it.
@@ -475,3 +477,43 @@ No database cancellation latency or deployment termination behaviour was measure
 
 The attempt count, the lease and the claim id are commerce database state. This is honest-writer
 consistency, not a guarantee against a writer with access to the commerce database.
+
+## Amendment (2026-11-21, TKT-498) — five calls per order
+
+**Context.** TKT-498 adds one call before the money for one kind of order: a refund of an exchange
+replacement whose switch Commerce has not recorded. The refund unit asks Access for the replacement's
+admission summary first (TKT-498). That order has the longest path: the Access admission read,
+the partial refund, the refund fact, ticket voiding and the capacity return. `MaxCallsPerOrder = 4`
+did not include the first call. At the default batch of 8 and the 30 s call timeout, a batch of such
+orders whose calls all ran to their timeouts took 1,200 s of HTTP against a 1,020 s lease.
+
+**Decision.**
+
+- **Call budget:** `MaxCallsPerOrder = 5`. `LeaseFor` is `batch × 5 calls × call timeout + 60 s`:
+  **1,260 s** at the default batch of 8 and the 30 s timeout (was 1,020 s). Other orders make at most
+  four calls (a recorded switch needs no Access read) and comped voids two, but every order gets the
+  lease of the longest path.
+- **The margin is unchanged.** The TKT-332 charge bound (up to 80 s per batch) is still counted only
+  by the 60 s margin. A batch of five-call orders that all run to their timeouts and also charge for
+  80 s takes 1,280 s against a 1,260 s lease. This is the same overlap that TKT-332 recorded, with
+  the same consequence (next point). TKT-498 does not change it.
+- **Fencing limit:** the claim id fences every write, not the lease expiry (TKT-332 correction 2).
+  A pass that outlives its lease can still write until a successor reclaims the row. After the
+  reclaim, the stale writer's charge, verdict or hand-back matches nothing. The successor drives the
+  order again under the same `(slot, order)` refund key, so payments converges on one refund (§3),
+  and the Access void and the inventory return replay on the refund id. The fence protects the
+  verdict. It does not limit the calls: a reclaimed order can make its five calls again.
+- **Retry cadence:** a retryable failure keeps the lease as its backoff (§5, TKT-331). The next
+  drive of that order comes **no sooner than one lease later**: 1,260 s at the defaults (was
+  1,020 s). The 10 s ticker does not shorten it. At `maxAttempts = 5`, an order that stays
+  unresolved gets its terminal verdict after five charged attempts, so no sooner than about
+  4 × 1,260 s = 84 minutes after its first drive (was 68 minutes). The main such order is a
+  replacement for which Access reports no issued ticket: TKT-498 sends nothing to payments and
+  returns the retryable `unavailable`.
+
+**Evidence.** `bulkrefund/runner_replacement_smoke_test.go`
+`TestTheLongestBulkRefundPathFitsTheCallBudget` drives an issued replacement with no Commerce switch
+marker through the real refund unit and a real Commerce database, and asserts the five calls in
+order and `refunded`. `cmd/commerce` `TestProductionWorkerConstructionPassesEachClaimItsBatchAndLease`
+asserts the lease at `Store.Claim`: 225 s at batch 3 and an 11 s timeout. Setting
+`MaxCallsPerOrder = 4` turns both red. No call latency was measured for this decision.
