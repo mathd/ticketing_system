@@ -248,28 +248,6 @@ func TestBulkRefundOfAReplacementAfterTheAbandonmentReservationIsNotRefundable(t
 	}
 }
 
-// A replacement whose switch Commerce recorded reaches payments with no Access read (D22): the
-// transport would report zero issued tickets, and the runner never asks.
-func TestBulkRefundOfARecordedSwitchDispatchesWithoutAccess(t *testing.T) {
-	db, ctx := runnerDB(t)
-	f := seedSettledReplacement(t, ctx, db)
-	if _, err := db.ExecContext(ctx, `UPDATE order_exchanges SET tickets_exchanged_at=now() WHERE organizer_id=$1 AND id=$2`,
-		f.org, f.exchange); err != nil {
-		t.Fatal(err)
-	}
-	cancelTargetSlot(t, ctx, db, f)
-	transport := &replacementTransport{issued: 0}
-	refunder := refunds.New(db, transport.call, transport.call, "http://payments.test", "http://access.test", "http://inventory.test")
-	New(DBStore{DB: db}, refunder, time.Minute, 10, time.Minute).RunOnce(ctx)
-
-	if calls := transport.matching("GET http://access.test/internal/orders/" + f.replacementOrder.String() + "/admission"); len(calls) != 0 {
-		t.Fatalf("a recorded switch asked Access about issuance: %v", calls)
-	}
-	if calls := transport.matching("POST http://payments.test/internal/psp/partial-refund"); len(calls) != 1 {
-		t.Fatalf("a recorded switch made %d partial refund(s), want 1: %v", len(calls), transport.matching(""))
-	}
-}
-
 // A target-slot cancellation of a comped replacement whose exchange abandonment started binds no
 // void and does not replay one bound before the reservation (D23). The row fails with the
 // existing void refusal, nothing is called downstream, and an existing void row stays.

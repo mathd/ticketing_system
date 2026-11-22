@@ -242,7 +242,7 @@ func (s *Service) proveAdmission(ctx context.Context, e store.SettledExchange) e
 	if err != nil {
 		return fmt.Errorf("%w: source admission: %v", ErrUnavailable, err)
 	}
-	if source.IssuedCount <= 0 || source.IssuedCount != e.Quantity || !source.Admitted {
+	if source.IssuedCount != e.Quantity || !source.Admitted {
 		return fmt.Errorf("%w: exchange %s: source admitted=%t issued_count=%d, quantity %d",
 			ErrSourceNotAdmitted, e.ID, source.Admitted, source.IssuedCount, e.Quantity)
 	}
@@ -375,6 +375,10 @@ func (s *Service) drive(ctx context.Context, e store.SettledExchange) (Result, e
 	e, err := store.LoadSettledExchange(ctx, s.db, org, id)
 	if err != nil {
 		return Result{}, err
+	}
+	// An identical command finished while this one made progress: its record is the answer.
+	if e.Abandoned {
+		return Result{Exchange: e, Replay: true}, nil
 	}
 	fact, err := store.BuildExchangeAbandonedFact(e)
 	if err != nil {

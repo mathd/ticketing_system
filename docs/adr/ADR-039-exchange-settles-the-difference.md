@@ -251,20 +251,23 @@ the void's ticket obligation could never be discharged. An existing void row sta
 
 **The exchange replay.** A replay of the original exchange request after a terminal abandonment
 answers `200` with status `abandoned` and the original exchange and money values, and does not repair
-the switch outbox. A started abandonment that is not terminal still answers `switch_pending`. A
-replay reaches settlement by one of two entry paths, and both give this answer when the abandonment
-wins:
+the switch outbox. A started abandonment that is not terminal still answers `switch_pending`. The
+handler gives this answer at each point where it observes the settlement or the abandonment:
 
-- **Settled row.** The replay finds a settled exchange, or its basis bind reloads one because
-  another request settled it after the replay's first read. It answers from Commerce with no
-  dependency call: `abandoned` for a terminal row, otherwise the idempotent settlement repair.
+- **Settled row.** The request finds a settled exchange at its first read, or a bind reloads one
+  because another request with the same key settled it after that read. Both binds do this: a fresh
+  request's bind after its target hold, and a basis resume's bind. The request answers from Commerce
+  with no dependency call: `abandoned` for a terminal row, otherwise the idempotent settlement repair.
 - **Unsettled basis.** The replay resumes from the basis and runs its forward steps. Its final
   settlement decides under the exchange row lock that the terminal transaction also takes. If
   another request settled the exchange and the abandonment finished in the meantime, the locked
   read refuses the settlement and the outbox write, and the replay answers `abandoned`.
 
-So a replay that read the exchange before the terminal commit answers `abandoned`, makes no
-dependency call after it sees the terminal row, and writes no outbox row.
+The guarantee applies only at these points. A request that read the exchange before the terminal
+commit makes no dependency call after it observes the terminal row, and writes no outbox row. Before
+that point it runs its forward steps, and a dependency can fail or refuse one of them: a fresh
+request's checks and target hold before its bind, or a resume's steps before its final settlement.
+The request then answers that failure or refusal. The same request sent again answers `abandoned`.
 
 **Attribution, and the adversary (ADR-021).** The command records the trimmed typed operator name,
 the reason, and the PostgreSQL `session_user`. Only the first name and reason pair can resume or

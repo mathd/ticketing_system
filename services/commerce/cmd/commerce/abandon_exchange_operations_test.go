@@ -178,32 +178,52 @@ func TestAbandonExchangeWithValidArgumentsReachesTheDatabase(t *testing.T) {
 	}
 }
 
-// R3-3. The delta refund has its own timeout, longer than the evidence-read timeout: payments
-// can list the provider's refunds, submit and read back before it answers. Both answers below
-// arrive one second after the evidence-read timeout, through the client the command builds. The
-// refund completes; the evidence read gives up at its own timeout, so the two timeouts are
-// distinct.
+// R3-3, RA4-2. The delta refund has its own timeout, longer than the evidence-read timeout:
+// payments can list the provider's refunds, submit and read back before it answers. Both answers
+// below are producer-valid and arrive one second after the evidence-read timeout. Through the
+// client the command builds, the refund completes and the evidence read gives up at its own
+// timeout. A client that waits longer receives the same evidence answer, so only the timeout
+// stops the command's read.
 func TestTheCommandRefundOutlastsTheEvidenceReadTimeout(t *testing.T) {
 	delay := paymentsEvidenceTimeout + time.Second
 	fact := uuid.New()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(delay)
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/internal/operations" {
+			_, _ = w.Write([]byte(`{"resolved":true,"occurred_at":"2026-11-21T10:00:00Z","status":"captured","fact_id":"` +
+				fact.String() + `","captured_amount":1000,"currency":"EUR"}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"status":"refunded","fact_id":"` + fact.String() + `","amount":1000,"currency":"EUR","replay":false}`))
 	}))
 	t.Cleanup(srv.Close)
 	client := newAbandonClient(srv.URL, srv.URL, srv.URL, abandonInternalToken, abandonPaymentsToken)
+	patient := exchangeabandon.NewHTTP(srv.URL, srv.URL, srv.URL, abandonInternalToken, abandonPaymentsToken,
+		partialRefundTimeout, partialRefundTimeout)
 	ctx := context.Background()
 	readErr := make(chan error, 1)
 	go func() {
 		_, err := client.ChargeOperation(ctx, uuid.New(), "exchange-charge:x")
 		readErr <- err
 	}()
+	type evidence struct {
+		op  exchangeabandon.ChargeEvidence
+		err error
+	}
+	patientRead := make(chan evidence, 1)
+	go func() {
+		op, err := patient.ChargeOperation(ctx, uuid.New(), "exchange-charge:x")
+		patientRead <- evidence{op, err}
+	}()
 	start := time.Now()
 	got, err := client.PartialRefund(ctx, exchangeabandon.RefundRequest{OrganizerID: uuid.New(),
 		ChargeKey: "exchange-charge:x", RefundKey: uuid.NewString(), Amount: 1000, Currency: "EUR"})
 	if err != nil || got.FactID != fact {
 		t.Fatalf("a refund answered after %v = %+v, %v; want the refunded answer", time.Since(start).Round(time.Millisecond), got, err)
+	}
+	if p := <-patientRead; p.err != nil || !p.op.Found || !p.op.Resolved || p.op.Status != "captured" {
+		t.Fatalf("an evidence read with a %v budget = %+v, %v; want the captured operation", partialRefundTimeout, p.op, p.err)
 	}
 	if err := <-readErr; !errors.Is(err, exchangeabandon.ErrUnavailable) {
 		t.Fatalf("an evidence read answered after %v: err = %v, want ErrUnavailable at its own timeout", delay, err)

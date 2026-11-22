@@ -184,34 +184,43 @@ func TestAReplayThatLosesTheLockToTheTerminalCommitAnswersAbandoned(t *testing.T
 	}
 }
 
-// R3-5, RA3-3. A replay whose first read sees an UNSETTLED basis answers `abandoned` when the
-// abandonment wins, on both settlement entry paths. The delta moved and the target did not
-// confirm (202), so the replay resumes from the basis. It stops at one statement while another
-// request settles the exchange and the abandonment finishes, then it continues:
+// R3-5, RA3-3, R4-1. A request whose first read sees no settled row answers `abandoned` when
+// the abandonment wins, on every settlement entry path. It stops at one statement while another
+// request with the same key settles the exchange and the abandonment finishes, then it
+// continues:
 //
-//   - at the basis bind, which reloads a settled and abandoned row: the replay answers from
-//     Commerce and calls no dependency;
-//   - at the final settlement's locked read, after its forward calls: the read finds the
-//     terminal row.
+//   - a fresh request, at its bind after the target hold: the bind loads the settled and
+//     abandoned row, and the request answers from Commerce with no forward call;
+//   - a replay from an unsettled basis (the delta moved and the target did not confirm, 202),
+//     at the basis bind, which reloads the same row: the same answer;
+//   - the same replay at the final settlement's locked read, after its forward calls: the read
+//     finds the terminal row.
 //
-// Either way the answer is 200 `abandoned` as a replay, no dependency call follows the terminal
+// Each time the answer is 200 `abandoned` as a replay, no dependency call follows the terminal
 // state, and no switch outbox row is written.
 func TestAReplayFromAnUnsettledBasisAnswersAbandonedWhenTheAbandonmentWins(t *testing.T) {
-	for _, tc := range []struct{ name, key, statement string }{
-		{"paused at the basis bind", "abandon-basis-bind", "r.id, r.buyer_id, r.hold_id, r.slot_id"},
-		{"paused at the final settlement", "abandon-basis-settle", "SELECT settled_at, replacement_order_id, abandoned_at FROM order_exchanges"},
+	const bind = "r.id, r.buyer_id, r.hold_id, r.slot_id"
+	for _, tc := range []struct {
+		name, key, statement string
+		fresh                bool
+	}{
+		{"fresh request paused at its bind", "abandon-fresh-bind", bind, true},
+		{"paused at the basis bind", "abandon-basis-bind", bind, false},
+		{"paused at the final settlement", "abandon-basis-settle", "SELECT settled_at, replacement_order_id, abandoned_at FROM order_exchanges", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db, ctx := exchangeAPIDB(t)
 			f := seedExchangeSource(t, db, ctx, tc.key, 2, 2500)
 			policy := &stubPolicy{}
 			policy.catalogUnit.Store(2000)
-			policy.confirmFails.Store(true)
 			s := exchangeStackFor(t, db, f, policy)
-			if code, body := s.exchange(t, f, tc.key); code != http.StatusAccepted || body["status"] != "confirmation_pending" {
-				t.Fatalf("first exchange = %d %v, want 202 confirmation_pending: the basis must be unsettled", code, body)
+			if !tc.fresh {
+				policy.confirmFails.Store(true)
+				if code, body := s.exchange(t, f, tc.key); code != http.StatusAccepted || body["status"] != "confirmation_pending" {
+					t.Fatalf("first exchange = %d %v, want 202 confirmation_pending: the basis must be unsettled", code, body)
+				}
+				policy.confirmFails.Store(false)
 			}
-			policy.confirmFails.Store(false)
 			id := commercestore.ExchangeID(f.organizer, tc.key)
 
 			gated, arrived, release := pausingDB(t, tc.statement)

@@ -207,6 +207,9 @@ type world struct {
 	returnAfter  func(n int) error
 	returnAnswer func(CapacityReturn) CapacityReturn
 	returnCalls  int
+	// returnPaused runs after a return and its lock release, so the paused command blocks no
+	// other command's call.
+	returnPaused func(n int)
 }
 
 func newWorld(t *testing.T, f fixture) *world {
@@ -425,9 +428,12 @@ func equalFacts(a, b store.ExchangeAbandonedFact) bool {
 // ReturnCapacity models inventory's receipt: one return per refund id, replayed after.
 func (w *world) ReturnCapacity(_ context.Context, org, hold, receipt uuid.UUID, q int32) (CapacityReturn, error) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	w.returnCalls++
 	n := w.returnCalls
+	if paused := w.returnPaused; paused != nil {
+		defer paused(n)
+	}
+	defer w.mu.Unlock()
 	w.note("inventory:return")
 	if org != w.f.Org || hold != w.f.TargetHold || receipt != w.f.receipt() || q != w.f.Quantity {
 		w.t.Errorf("capacity return (%s, hold %s, receipt %s, %d), want (%s, target hold %s, receipt %s, %d)",

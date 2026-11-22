@@ -390,23 +390,10 @@ waits longer because Payments answers it only after its provider calls; 35 s is 
 30 s default response-write deadline. A run stopped at a deadline keeps its recorded progress; run the
 same command again.
 
-What the command does, in this order:
-
-1. It asks Access about the **source** order: it must be admitted, with as many issued tickets as the
-   exchange quantity. **Then** it asks about the **replacement** order: it must have zero issued
-   tickets. The order is the proof. After Access records an admission, its locked switch check
-   refuses every later switch, and an earlier switch left replacement tickets that the second read
-   sees.
-2. It checks the original money and journal evidence: the exchange's two gross journal facts, and by
-   the delta's sign, the captured upgrade charge or the completed downgrade refund. It asks Payments
-   about each pending refund of the replacement order.
-3. It reserves the abandonment in Commerce, with your operator name, your reason, and the database
-   login.
-4. Upgrade only: it refunds exactly the delta against the exchange's own charge
-   (`exchange-charge:<exchange-id>`).
-5. It returns the whole target claim to Inventory.
-6. It appends one `order.exchange.abandoned` fact to the Payments journal, then records the same fact
-   and the terminal marker in Commerce in one transaction.
+The command reads Access about the source and then the replacement, checks the money and journal
+evidence, reserves the abandonment, refunds an upgrade's delta, returns the target claim, and
+journals one `order.exchange.abandoned` fact. [ADR-039 §2](../adr/ADR-039-exchange-settles-the-difference.md#amended-by-tkt-498-a-settled-exchange-whose-source-was-admitted-is-abandoned)
+gives the reasons for this order.
 
 What each branch leaves:
 
@@ -441,6 +428,8 @@ organizer=… exchange=… source_order=… replacement_order=… target_hold=�
   return twice.
 - **An identical command after success** prints the original record with `replay=true` and its
   original times. It reads Commerce only and calls no other service.
+- **An identical command that overlaps a successful one** also prints the original record with
+  `replay=true` when it finds the terminal marker, and calls no other service after that.
 
 ### Refusals and what to do
 

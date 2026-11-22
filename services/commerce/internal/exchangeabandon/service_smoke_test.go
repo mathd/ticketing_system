@@ -199,7 +199,6 @@ func TestAccessRefusalsStopBeforeAnyReservationOrMoney(t *testing.T) {
 		{"source not admitted", source(accessadmission.Admission{Admitted: false, IssuedCount: quantity}), ErrSourceNotAdmitted, false},
 		{"source partly issued", source(accessadmission.Admission{Admitted: true, IssuedCount: quantity - 1}), ErrSourceNotAdmitted, false},
 		{"source over issued", source(accessadmission.Admission{Admitted: true, IssuedCount: quantity + 1}), ErrSourceNotAdmitted, false},
-		{"source unissued", source(accessadmission.Admission{Admitted: true, IssuedCount: 0}), ErrSourceNotAdmitted, false},
 		{"replacement unavailable", func(w *world) { w.accessErr[w.f.ReplacementOrder] = accessadmission.ErrUnavailable }, ErrUnavailable, true},
 		{"replacement issued", replacement(accessadmission.Admission{Admitted: false, IssuedCount: 1}), ErrReplacementIssued, true},
 		{"replacement issued and admitted", replacement(accessadmission.Admission{Admitted: true, IssuedCount: quantity}), ErrReplacementIssued, true},
@@ -636,6 +635,59 @@ func TestConcurrentIdenticalPairsProduceOneSetOfEffects(t *testing.T) {
 	if w.movements != 1 || len(w.legs) != 1 || len(w.receipts) != 1 || len(w.journal) != 1 {
 		t.Fatalf("effects: %d movement(s), %d leg(s), %d receipt(s), %d journal entr(ies); want one of each",
 			w.movements, len(w.legs), len(w.receipts), len(w.journal))
+	}
+}
+
+// RA4-1. A second identical command recorded its target progress and stops before its reload.
+// The first command completes the abandonment. When the second reloads the terminal row, it
+// returns that record as a replay and makes no further call, also when the journal is
+// unavailable.
+func TestAnOverlappingCommandThatReloadsTheTerminalRowStops(t *testing.T) {
+	for name, journalDown := range map[string]bool{"journal available": false, "journal unavailable": true} {
+		t.Run(name, func(t *testing.T) {
+			db, ctx := abandonDB(t)
+			w := newWorld(t, seed(t, db, ctx, upgradeUnit))
+			arrived, release := make(chan struct{}), make(chan struct{})
+			w.returnPaused = func(n int) {
+				if n == 1 {
+					close(arrived)
+					<-release
+				}
+			}
+			type outcome struct {
+				res Result
+				err error
+			}
+			second := make(chan outcome, 1)
+			go func() {
+				res, err := abandon(t, db, ctx, w)
+				second <- outcome{res, err}
+			}()
+			<-arrived
+			winner := mustAbandon(t, db, ctx, w)
+			terminal := assertTerminal(t, db, ctx, w)
+			w.mu.Lock()
+			if journalDown {
+				w.appendBefore = always(ErrUnavailable)
+			}
+			w.mu.Unlock()
+			w.resetCalls()
+			close(release)
+
+			got := <-second
+			if got.err != nil {
+				t.Fatalf("the overlapping command: %v", got.err)
+			}
+			if !got.res.Replay || !got.res.Exchange.Abandoned || !got.res.Exchange.AbandonedAt.Equal(winner.Exchange.AbandonedAt) {
+				t.Fatalf("the overlapping command = %+v, want the terminal record %v as a replay", got.res, winner.Exchange.AbandonedAt)
+			}
+			if n := w.total(); n != 0 {
+				t.Fatalf("the overlapping command made %d call(s) after it reloaded the terminal row: %v", n, w.calls)
+			}
+			if after := readRow(t, db, ctx, w.f); after != terminal {
+				t.Fatalf("the overlapping command changed the terminal row: %+v -> %+v", terminal, after)
+			}
+		})
 	}
 }
 

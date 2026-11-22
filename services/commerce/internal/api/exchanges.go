@@ -316,6 +316,13 @@ func (s *Server) exchangeOrder(w http.ResponseWriter, r *http.Request) {
 		write(w, code, map[string]string{"error": message})
 		return
 	}
+	// A request with the same key bound and settled the exchange while this one held its
+	// target, and an abandonment may have finished since (R4-1). Commerce has the answer, so
+	// no forward step runs. The hold stays: it shares the exchange identity with the winner's.
+	if ex.Settled {
+		s.replaySettledExchange(w, r, ex)
+		return
+	}
 	ex.BuyerID, ex.HoldID, ex.PaymentSourceKey = src.BuyerID, src.HoldID, src.PaymentSourceKey
 
 	// THE BASIS, before any money (ai-review F3), and complete: hold, reservation, total,
