@@ -514,19 +514,38 @@ The abandonment record is **honest-operator evidence, not tamper-evidence** (ADR
 
 A staff refund or an event-cancellation (bulk) refund whose provider refund failed stays `pending`.
 Its Payments leg stays `bound`, and both refund allowances stay reserved. The platform never
-re-submits it (ADR-032, TKT-347). The staff order read shows the refund as `pending`; the bulk report
-shows the order as `refund_refused`. Decision record:
+re-submits it (ADR-032, TKT-347). The staff order read shows the refund as `pending`. The bulk report
+row shows `outcome` `failed` with `failure.code` `refund_refused`. Decision record:
 [ADR-087](../adr/ADR-087-operator-outcomes-for-failed-post-purchase-refunds.md).
 
-Find the exact refund under the intended organizer. For a staff refund, open Commerce staff order
-detail, identify the refund attempt, and read its `refund_id`, stored `amount` in minor units, and
-`currency`.
+Find the exact refund under the intended organizer. Commerce staff order detail is
+`GET /internal/orders/<order-id>` on Commerce. The request needs the Commerce staff credential and an
+organizer assertion for the intended organizer. Commerce takes the organizer from the assertion, not
+from the request. An order of another organizer returns `404`.
 
-For a failed bulk refund, use the organizer's cancellation report after the run completes. Report
-rows are available only after completion. The failed row contains `order_id` and `outcome` and omits
-`refund_id`. Open Commerce staff order detail for that `order_id` and select the refund whose actor is
-`system:event-cancellation`. There is one such refund per order and slot. Read its `refund_id`, stored
-`amount` in minor units, and `currency` there.
+For a staff refund, open staff order detail, identify the refund attempt, and read its `refund_id`,
+stored `amount` in minor units, and `currency`.
+
+For a bulk refund, use the procedure below only for a money refund that the provider failed:
+
+1. Read the organizer's cancellation report with
+   `GET /internal/cancellation-refunds/<run-id>?organizer_id=<organizer-id>`. Report rows are
+   available only after the run completes. Record the run's `slot_id`.
+2. Find the row of the order. A row can include `refund_id`. A row with `outcome` `failed` and
+   `failure.code` `reversal_outstanding` has a refund whose money moved and whose ticket or capacity
+   reversal is outstanding. Do not record an outcome for it. Use
+   [refund reversal reconciliation](#refund-reversal-reconciliation) instead.
+3. Continue only for a row with `outcome` `failed` and `failure.code` `refund_refused`. This code also
+   covers other refusals. For example, Payments refused the refund for a different cause, an operator
+   already recorded the refund as `abandoned`, or the refund did not return the whole order. Thus the
+   row alone does not prove a provider failure.
+4. Open staff order detail for the row's `order_id`. Select the refund whose `idempotency_key` is
+   `cancel:<slot_id>:<order_id>`, with the run's `slot_id` and the row's `order_id`. Its `actor` must
+   also be `system:event-cancellation`. Use the actor only to confirm the selection. A staff refund
+   can have the same actor text under a different key.
+5. Continue only if that refund has `status` `pending` and `abandoned` `false`. If no such refund
+   exists, stop. This procedure does not apply to the order.
+6. Read the `refund_id`, stored `amount` in minor units, and `currency` of that refund.
 
 **Agree on the disposition first.** Before you transfer money or run a command, agree with the
 other operators what this refund's outcome is. Do not run two different commands for one refund. If

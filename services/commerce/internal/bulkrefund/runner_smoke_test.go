@@ -163,6 +163,9 @@ func TestRunnerDrainsARealBook(t *testing.T) {
 // migrated by store.Migrate. The claim query sees every claimable row in its schema, so rows
 // left by other tests in the shared schema would join the claimed batch and change which rows
 // the runner drives.
+//
+// The test's fixtures live entirely in this schema, so dropping the schema is their only
+// cleanup. Cleanups run in reverse order: the isolated pool closes first, then the schema drops.
 func isolatedRunnerDB(t *testing.T) (*sql.DB, context.Context) {
 	t.Helper()
 	admin, ctx := runnerDB(t)
@@ -170,14 +173,26 @@ func isolatedRunnerDB(t *testing.T) (*sql.DB, context.Context) {
 	if _, err := admin.ExecContext(ctx, "CREATE SCHEMA "+schema); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = admin.Exec("DROP SCHEMA " + schema + " CASCADE") })
+	t.Cleanup(func() {
+		// A fresh, bounded context: the test's own context can be cancelled or near its
+		// deadline here, and a blocked drop must not hold the test open.
+		dropCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if _, err := admin.ExecContext(dropCtx, "DROP SCHEMA "+schema+" CASCADE"); err != nil {
+			t.Errorf("drop test schema %s: %v", schema, err)
+		}
+	})
 	cfg, err := pgx.ParseConfig(os.Getenv("COMMERCE_BULKREFUND_TEST_DATABASE_URL"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg.RuntimeParams["search_path"] = schema
 	db := stdlib.OpenDB(*cfg)
-	t.Cleanup(func() { _ = db.Close() })
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close the pool of test schema %s: %v", schema, err)
+		}
+	})
 	if err := store.Migrate(ctx, db); err != nil {
 		t.Fatalf("migrate schema %s: %v", schema, err)
 	}
@@ -185,7 +200,8 @@ func isolatedRunnerDB(t *testing.T) (*sql.DB, context.Context) {
 }
 
 // seedPaidOrders seeds n completed one-unit EUR orders at 1000 minor units in one organizer and
-// slot, in the shape TestRunnerDrainsARealBook uses.
+// slot, in the shape TestRunnerDrainsARealBook uses. Use it only on an isolatedRunnerDB pool: the
+// schema drop is the only cleanup.
 func seedPaidOrders(t *testing.T, ctx context.Context, db *sql.DB, org, slot uuid.UUID, n int) []uuid.UUID {
 	t.Helper()
 	var orders []uuid.UUID
@@ -203,16 +219,12 @@ func seedPaidOrders(t *testing.T, ctx context.Context, db *sql.DB, org, slot uui
 			t.Fatal(err)
 		}
 		orders = append(orders, order)
-		t.Cleanup(func() {
-			_, _ = db.Exec(`DELETE FROM cancellation_refund_orders WHERE organizer_id=$1 AND order_id=$2`, org, order)
-			_, _ = db.Exec(`DELETE FROM order_refunds WHERE order_id=$1`, order)
-			_, _ = db.Exec(`DELETE FROM orders WHERE id=$1`, order)
-			_, _ = db.Exec(`DELETE FROM reservations WHERE id=$1`, res)
-		})
 	}
 	return orders
 }
 
+// bindIsolatedRun binds a cancellation run on an isolatedRunnerDB pool. The schema drop is the
+// only cleanup.
 func bindIsolatedRun(t *testing.T, ctx context.Context, db *sql.DB, org, slot uuid.UUID, key string) store.CancellationRun {
 	t.Helper()
 	run, err := store.BindCancellationRun(ctx, db, store.CancellationRunRequest{
@@ -221,12 +233,6 @@ func bindIsolatedRun(t *testing.T, ctx context.Context, db *sql.DB, org, slot uu
 	if err != nil {
 		t.Fatal(err)
 	}
-	// This cleanup runs before the order cleanups (cleanups run in reverse), so it deletes the
-	// run's ledger rows before the run row that they reference.
-	t.Cleanup(func() {
-		_, _ = db.Exec(`DELETE FROM cancellation_refund_orders WHERE organizer_id=$1 AND run_id=$2`, org, run.ID)
-		_, _ = db.Exec(`DELETE FROM cancellation_refund_runs WHERE organizer_id=$1 AND id=$2`, org, run.ID)
-	})
 	return run
 }
 
