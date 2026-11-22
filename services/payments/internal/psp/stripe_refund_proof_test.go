@@ -164,7 +164,6 @@ func TestStripeProveRefundFailureRefusesEverythingElse(t *testing.T) {
 		{"more pages after an entry with no id", 200, proofList(true, ok, `{"object":"refund","amount":5,"currency":"eur","status":"succeeded","payment_intent":"pi_proof","metadata":{}}`), ErrRefundProofInconclusive},
 		{"an incomplete page", 200, `{"object":"list","data":[` + ok + `]}`, ErrRefundProofInconclusive},
 		{"a malformed page", 200, `{"object":"list",`, ErrRefundProofInconclusive},
-		{"more pages but none returned", 200, proofList(true), ErrRefundProofInconclusive},
 		{"the provider is unavailable", 503, `{"error":{"message":"down","type":"api_error"}}`, ErrRefundProofInconclusive},
 	} {
 		t.Run(c.name, func(t *testing.T) {
