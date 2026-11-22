@@ -123,6 +123,8 @@ func TestFakeCompensationSurfaceIsDeterministicAndValid(t *testing.T) {
 
 // The Fake must satisfy the PSP interface — a compile-time assertion, red until Fake exists.
 var _ PSP = (*Fake)(nil)
+var _ RefundFailureProver = (*Fake)(nil)
+var _ RefundFailureProver = (*Stripe)(nil)
 
 // Result.Validate is the money-path boundary guard: the handler journals from a Result, so
 // a provider (a future Stripe adapter) that returns a self-contradictory Result must be

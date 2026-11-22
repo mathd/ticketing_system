@@ -199,20 +199,6 @@ func TestStripeProveRefundFailureNeedsAChargeAndAKey(t *testing.T) {
 	}
 }
 
-// Both adapters are provers. The fake proves only refunds it itself failed (TKT-525); its own
-// tests are in fake_refund_proof_test.go, including that an ordinary fake charge can never be
-// proven.
-func TestBothPSPsAreRefundFailureProvers(t *testing.T) {
-	var p PSP = NewFake()
-	if _, ok := p.(RefundFailureProver); !ok {
-		t.Fatal("the fake PSP does not implement RefundFailureProver")
-	}
-	var s PSP = &Stripe{}
-	if _, ok := s.(RefundFailureProver); !ok {
-		t.Fatal("the Stripe adapter does not implement RefundFailureProver")
-	}
-}
-
 // pagedStripe serves the given listing pages in order (the last one repeats) and answers every
 // POST with a succeeded refund. It records the listing queries and counts the POSTs.
 func pagedStripe(t *testing.T, pages []string) (*Stripe, *[]url.Values, *int) {
