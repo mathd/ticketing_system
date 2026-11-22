@@ -90,11 +90,13 @@ func recordRefundOutcome(args []string) error {
 	if paymentsURL == "" {
 		return errors.New("PAYMENTS_URL is required: nothing is recorded unless payments proves the refund failed")
 	}
-	token := os.Getenv("PAYMENTS_INTERNAL_TOKEN")
-	if token == "" {
-		token = os.Getenv("INTERNAL_SERVICE_TOKEN")
+	// The payments credential, named at both client call sites below. TKT-595 changes where it
+	// comes from.
+	paymentsToken := os.Getenv("PAYMENTS_INTERNAL_TOKEN")
+	if paymentsToken == "" {
+		paymentsToken = os.Getenv("INTERNAL_SERVICE_TOKEN")
 	}
-	if token == "" {
+	if paymentsToken == "" {
 		return errors.New("PAYMENTS_INTERNAL_TOKEN (or INTERNAL_SERVICE_TOKEN) is required to reach payments")
 	}
 
@@ -107,9 +109,9 @@ func recordRefundOutcome(args []string) error {
 	defer func() { _ = db.Close() }()
 
 	if in.Kind == store.OutcomeAbandoned {
-		return recordAbandoned(ctx, db, in, paymentsURL, token)
+		return recordAbandoned(ctx, db, in, paymentsURL, paymentsToken)
 	}
-	svc := refundoutcome.New(db, refundoutcome.NewHTTPPayments(paymentsURL, token, paymentsEvidenceTimeout))
+	svc := refundoutcome.New(db, refundoutcome.NewHTTPPayments(paymentsURL, paymentsToken, paymentsEvidenceTimeout))
 	res, err := svc.RecordRefundedOutside(ctx, in)
 	if err != nil {
 		reportRefundOutcomeRefusal(refundID, err)
@@ -162,8 +164,8 @@ func reportRefundOutcomeRefusal(refundID uuid.UUID, err error) {
 
 // recordAbandoned is the `abandoned` form: reserve in Commerce, then Payments, then finish in
 // Commerce (ADR-087).
-func recordAbandoned(ctx context.Context, db *sql.DB, in store.RefundOutcomeRequest, paymentsURL, token string) error {
-	svc := refundoutcome.NewAbandon(db, refundoutcome.NewHTTPAbandoner(paymentsURL, token, paymentsEvidenceTimeout))
+func recordAbandoned(ctx context.Context, db *sql.DB, in store.RefundOutcomeRequest, paymentsURL, paymentsToken string) error {
+	svc := refundoutcome.NewAbandon(db, refundoutcome.NewHTTPAbandoner(paymentsURL, paymentsToken, paymentsEvidenceTimeout))
 	res, err := svc.RecordAbandoned(ctx, in)
 	if err != nil {
 		reportAbandonedRefusal(in.RefundID, err)
