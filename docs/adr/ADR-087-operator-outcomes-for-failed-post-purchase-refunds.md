@@ -271,8 +271,9 @@ No database lock spans a provider call (ADR-037 §4 is unchanged).
   ordinary pending refund still count. A pending reservation alone releases nothing. The release
   happens when the finish (§10) commits the outcome.
 
-This is the only exception to ADR-037 §4. A pending refund with no outcome still consumes both
-ceilings, and so does a `refunded_outside` refund.
+This is the only exception to ADR-037 §4. Payments releases the amount when its abandonment marker
+commits. Commerce releases the quantity when its `abandoned` outcome commits. Between those commits,
+Commerce still counts the quantity. Both ceilings continue to count a `refunded_outside` refund.
 
 ### 13. Dispatch refuses an abandoned leg and never records a Refunded answer for one
 
@@ -458,8 +459,11 @@ session's identity.
   deployed API version is not verified live; the recorded fixtures assume it.
 - Rollout: run the Payments migration and replace every old Payments process, then run the Commerce
   migration and update Commerce. Enable the command only when both services are current. The
-  `migrate` subcommand has a 30-second deadline (ADR-008); if a migration fails on lock contention or
-  on that deadline, rerun the failed job from the previous version before you continue.
+  `migrate` subcommand has a 30-second deadline (ADR-008). If a migration fails, stop the rollout and
+  correct the cause. Rerun the failed one-shot migration job with the new release's image against the
+  existing service database. In that database, run
+  `SELECT max(version_id) FROM goose_db_version WHERE is_applied`. Continue only after the job
+  succeeds and the result matches the latest migration version in the new image.
 - Roll forward, not back, once either migration holds outcome or marker history. Both Downs refuse.
 - The quantity and money reports that read only `order_facts` or the Payments journal do not see an
   outside refund.
