@@ -120,6 +120,7 @@ const (
 // closes every connection; the positive controls below pin that order.
 func TestRecordRefundOutcomeRefusesInvalidConfiguration(t *testing.T) {
 	dials := listenForDials(t)
+	opens := countOpens(t)
 	payments, calls := recordingDependency(t)
 	forms := map[string][]string{
 		"refunded_outside": {uuid.NewString(), uuid.NewString(), "refunded_outside", "Ada Operator", "SEPA-0001", "paid by bank transfer"},
@@ -141,10 +142,13 @@ func TestRecordRefundOutcomeRefusesInvalidConfiguration(t *testing.T) {
 			t.Run(form+"/"+tc.name, func(t *testing.T) {
 				validOperatorSettings(t, payments)
 				t.Setenv(tc.env, tc.value)
-				before, beforeCalls := settled(dials), calls()
+				before, beforeCalls, beforeOpens := settled(dials), calls(), opens()
 				err := recordRefundOutcome(args)
 				if err == nil || err.Error() != tc.want {
 					t.Errorf("with %s=%q: err = %v, want %q", tc.env, tc.value, err, tc.want)
+				}
+				if n := opens() - beforeOpens; n != 0 {
+					t.Errorf("with %s=%q the command opened the database %d time(s) before it refused", tc.env, tc.value, n)
 				}
 				if n := settled(dials) - before; n != 0 {
 					t.Errorf("with %s=%q the command reached the database %d time(s)", tc.env, tc.value, n)
@@ -166,10 +170,14 @@ func TestRecordRefundOutcomeValidCommandReachesTheDatabase(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			dials := listenForDials(t)
+			opens := countOpens(t)
 			paymentsDials := listenForPaymentsDials(t)
 			err := recordRefundOutcome(args)
 			if err == nil {
 				t.Fatal("the command succeeded against a listener that closes every connection")
+			}
+			if n := opens(); n != 1 {
+				t.Fatalf("a valid command opened the database %d time(s), want 1 (err=%v)", n, err)
 			}
 			if dials() == 0 {
 				t.Fatalf("a valid command never reached the database (err=%v)", err)

@@ -106,7 +106,7 @@ func recordRefundOutcome(args []string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), operatorDBTimeout)
 	defer cancel()
-	db, err := sql.Open("pgx", dsn)
+	db, err := openOperatorDB(dsn)
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
 	}

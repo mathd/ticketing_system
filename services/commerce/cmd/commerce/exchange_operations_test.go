@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"net"
 	"strings"
 	"sync"
@@ -26,10 +27,12 @@ import (
 // commands usable during an incident, and it is falsifiable — delete a check and its case
 // goes red.
 //
-// The one genuine ordering claim left is asserted by observation rather than by error text:
+// The ordering claims are asserted by observation rather than by error text.
 // TestUnwindExchangeRefusesInvalidConfiguration counts TCP connections to a listener the test
 // owns, and TestUnwindExchangeValidCommandReachesTheDatabase shows that the listener sees a valid
-// command.
+// command. For the configuration checks of unwind-exchange and record-refund-outcome, the tests
+// also count calls to openOperatorDB (countOpens). That counter does see a check placed after
+// the open, which the connection counter cannot (TKT-595).
 
 func TestListWedgedExchangesRefusesArguments(t *testing.T) {
 	err := listWedgedExchanges([]string{"unexpected"})
@@ -116,6 +119,7 @@ func TestUnwindExchangeRefusesABlankReasonBeforeConnecting(t *testing.T) {
 // otherwise valid configuration.
 func TestUnwindExchangeRefusesInvalidConfiguration(t *testing.T) {
 	dials := listenForDials(t)
+	opens := countOpens(t)
 	payments, calls := recordingDependency(t)
 	args := []string{uuid.New().String(), uuid.New().String(), "a reason"}
 	for _, tc := range []struct {
@@ -130,10 +134,13 @@ func TestUnwindExchangeRefusesInvalidConfiguration(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			validOperatorSettings(t, payments)
 			t.Setenv(tc.env, tc.value)
-			before, beforeCalls := settled(dials), calls()
+			before, beforeCalls, beforeOpens := settled(dials), calls(), opens()
 			err := unwindExchange(args)
 			if err == nil || err.Error() != tc.want {
 				t.Errorf("with %s=%q: err = %v, want %q", tc.env, tc.value, err, tc.want)
+			}
+			if n := opens() - beforeOpens; n != 0 {
+				t.Errorf("with %s=%q the command opened the database %d time(s) before it refused", tc.env, tc.value, n)
 			}
 			if n := settled(dials) - before; n != 0 {
 				t.Errorf("with %s=%q the command reached the database %d time(s): the configuration check ran "+
@@ -150,11 +157,15 @@ func TestUnwindExchangeRefusesInvalidConfiguration(t *testing.T) {
 // and the counter can see a connection.
 func TestUnwindExchangeValidCommandReachesTheDatabase(t *testing.T) {
 	dials := listenForDials(t)
+	opens := countOpens(t)
 	payments, calls := recordingDependency(t)
 	validOperatorSettings(t, payments)
 	err := unwindExchange([]string{uuid.New().String(), uuid.New().String(), "a reason"})
 	if err == nil {
 		t.Fatal("the command succeeded against a listener that closes every connection")
+	}
+	if n := opens(); n != 1 {
+		t.Fatalf("a valid command opened the database %d time(s), want 1 (err=%v)", n, err)
 	}
 	if n := settled(dials); n == 0 {
 		t.Fatalf("a valid command never reached the database (err=%v)", err)
@@ -169,6 +180,28 @@ func TestUnwindExchangeValidCommandReachesTheDatabase(t *testing.T) {
 //
 // Connections are accepted and immediately closed. pgx then fails its startup handshake,
 // which is fine: the count is the observable, not the outcome.
+// countOpens counts the database opens of unwind-exchange and record-refund-outcome. pgx opens
+// lazily, so the dial counter cannot see a check that runs after sql.Open and before the first
+// query; this counter can (TKT-595 R1-1). The real opener still runs.
+func countOpens(t *testing.T) func() int {
+	t.Helper()
+	original := openOperatorDB
+	t.Cleanup(func() { openOperatorDB = original })
+	var mu sync.Mutex
+	var n int
+	openOperatorDB = func(dsn string) (*sql.DB, error) {
+		mu.Lock()
+		n++
+		mu.Unlock()
+		return original(dsn)
+	}
+	return func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return n
+	}
+}
+
 func listenForDials(t *testing.T) func() int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

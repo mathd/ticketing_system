@@ -35,6 +35,11 @@ import (
 // command that appears to hang.
 const paymentsEvidenceTimeout = 10 * time.Second
 
+// openOperatorDB opens the Commerce database for unwind-exchange and record-refund-outcome. It
+// is a variable so that their tests can count opens: pgx connects lazily, so a connection counter
+// cannot see a configuration check that runs after sql.Open but before the first query (TKT-595).
+var openOperatorDB = func(dsn string) (*sql.DB, error) { return sql.Open("pgx", dsn) }
+
 // listWedgedExchanges reports every unsettled exchange.
 //
 // Usage: commerce list-wedged-exchanges
@@ -152,7 +157,7 @@ func unwindExchange(args []string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), operatorDBTimeout)
 	defer cancel()
-	db, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
+	db, err := openOperatorDB(os.Getenv("DATABASE_URL"))
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
 	}
