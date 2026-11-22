@@ -3,6 +3,7 @@
 package refundoutcome
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -25,6 +26,9 @@ import (
 //
 // Each refused answer would otherwise be accepted: the redirect target answers evidence for the
 // refund's own money, and each malformed body carries that money where a loose decoder reads it.
+//
+// Each case reads the persisted Commerce state even when the error differs from the expected
+// one, so a change that both returns another error and writes to Commerce shows both failures.
 
 // switchablePayments answers the failure proof with the current handler and counts requests.
 type switchablePayments struct {
@@ -118,13 +122,16 @@ func TestRefundedOutsideRecordsNothingOnARedirectOrInvalidProof(t *testing.T) {
 
 			_, err := svc.RecordRefundedOutside(ctx, outsideRequest(s, r.ID))
 			if !errors.Is(err, ErrProofUnavailable) || err.Error() != c.detail {
-				t.Fatalf("err = %v, want %q", err, c.detail)
+				t.Errorf("err = %v, want %q", err, c.detail)
 			}
 			if seen := target.requests(); len(seen) != 0 {
-				t.Fatalf("the redirect target received %v, want nothing", seen)
+				t.Errorf("the redirect target received %v, want nothing", seen)
 			}
 			if st := readRefundState(t, ctx, db, s, r.ID); st != untouched {
-				t.Fatalf("Commerce changed on a refused proof: %+v", st)
+				t.Errorf("Commerce changed on a refused proof: %+v", st)
+			}
+			if t.Failed() {
+				t.FailNow()
 			}
 
 			peer.set(answer(200, proof2000))
@@ -149,6 +156,10 @@ func TestAbandonedStaysPendingOnARedirectOrInvalidAnswer(t *testing.T) {
 		first  func(p *statefulPayments, target string) func(http.ResponseWriter)
 		marker bool
 		detail string
+		// replay, when set, answers the second abandon POST. Otherwise the peer's default answer
+		// does. wantRef is the reference the finished outcome records.
+		replay  func(p *statefulPayments) func(http.ResponseWriter)
+		wantRef string
 	}
 	cases := map[string]refusal{
 		"307 to another host": {func(_ *statefulPayments, target string) func(http.ResponseWriter) {
@@ -156,21 +167,26 @@ func TestAbandonedStaysPendingOnARedirectOrInvalidAnswer(t *testing.T) {
 				w.Header().Set("Location", target+"/internal/psp/partial-refund/abandon")
 				w.WriteHeader(http.StatusTemporaryRedirect)
 			}
-		}, false, "payments abandonment answer unknown: payments redirect refused (HTTP 307)"},
+		}, false, "payments abandonment answer unknown: payments redirect refused (HTTP 307)", nil, peerProviderRef},
 		"308 to another host": {func(_ *statefulPayments, target string) func(http.ResponseWriter) {
 			return func(w http.ResponseWriter) {
 				w.Header().Set("Location", target+"/internal/psp/partial-refund/abandon")
 				w.WriteHeader(http.StatusPermanentRedirect)
 			}
-		}, false, "payments abandonment answer unknown: payments redirect refused (HTTP 308)"},
+		}, false, "payments abandonment answer unknown: payments redirect refused (HTTP 308)", nil, peerProviderRef},
 	}
-	for name, body := range malformedEvidence2000(peerProviderRef) {
+	// RA1-2. In these cases payments commits its marker with savedMarkerRef before the malformed
+	// answer. The retry answers from that saved marker only, the way payments' replay does
+	// (partial_refund_abandon.go), and it refuses when no marker is saved. A finished outcome with
+	// savedMarkerRef therefore proves that the retry finished from the marker of the first run.
+	for name, body := range malformedEvidence2000(savedMarkerRef) {
 		cases["marker committed, "+name] = refusal{func(p *statefulPayments, _ string) func(http.ResponseWriter) {
 			return func(w http.ResponseWriter) {
-				p.commitMarker()
+				p.commitMarkerRef(savedMarkerRef)
 				_, _ = w.Write([]byte(body))
 			}
-		}, true, "payments abandonment answer unknown: payments returned invalid refund evidence"}
+		}, true, "payments abandonment answer unknown: payments returned invalid refund evidence",
+			func(p *statefulPayments) func(http.ResponseWriter) { return p.replayFromMarker }, savedMarkerRef}
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -180,34 +196,43 @@ func TestAbandonedStaysPendingOnARedirectOrInvalidAnswer(t *testing.T) {
 			target := newRedirectTarget(t, proof2000)
 			peer := newStatefulPayments(t, 2000)
 			peer.script(c.first(peer, target.url))
+			if c.replay != nil {
+				peer.script(c.replay(peer))
+			}
 			in := abandonRequest(s, r.ID)
 
 			_, err := abandonService(db, peer).RecordAbandoned(ctx, in)
 			if !errors.Is(err, ErrAbandonUncertain) || err.Error() != c.detail {
-				t.Fatalf("err = %v, want %q", err, c.detail)
+				t.Errorf("err = %v, want %q", err, c.detail)
 			}
 			if seen := target.requests(); len(seen) != 0 {
-				t.Fatalf("the redirect target received %v, want nothing", seen)
+				t.Errorf("the redirect target received %v, want nothing", seen)
 			}
 			if got := (peer.markerRef() != ""); got != c.marker {
-				t.Fatalf("payments marker = %t, want %t", got, c.marker)
+				t.Errorf("payments marker = %t, want %t", got, c.marker)
 			}
 			if got := readReservation(t, ctx, db, s, r.ID); got != pendingReservation(in) {
-				t.Fatalf("reservation = %+v, want pending", got)
+				t.Errorf("reservation = %+v, want pending", got)
 			}
 			if st := readRefundState(t, ctx, db, s, r.ID); st != untouched {
-				t.Fatalf("Commerce changed on an uncertain answer: %+v", st)
+				t.Errorf("Commerce changed on an uncertain answer: %+v", st)
 			}
 			if quantityFree(t, ctx, db, s, 1) {
-				t.Fatal("an uncertain abandonment released quantity")
+				t.Error("an uncertain abandonment released quantity")
 			}
 			if _, err := outsideService(db, peer).RecordRefundedOutside(ctx, outsideRequest(s, r.ID)); !errors.Is(err, store.ErrAbandonmentReserved) {
-				t.Fatalf("outside completion over the pending reservation: err = %v, want ErrAbandonmentReserved", err)
+				t.Errorf("outside completion over the pending reservation: err = %v, want ErrAbandonmentReserved", err)
+			}
+			if t.Failed() {
+				t.FailNow()
 			}
 
 			got, err := abandonService(db, peer).RecordAbandoned(ctx, in)
-			if err != nil || got.Replay || got.Outcome.ExternalRef != peerProviderRef || got.Outcome.Amount != 2000 {
-				t.Fatalf("the same command with a valid answer: %+v err=%v", got, err)
+			if err != nil || got.Replay || got.Outcome.ExternalRef != c.wantRef || got.Outcome.Amount != 2000 {
+				t.Fatalf("the same command with a valid answer: %+v err=%v, want reference %q", got, err, c.wantRef)
+			}
+			if ref := readAbandonedRef(t, ctx, db, s, r.ID); ref != c.wantRef {
+				t.Fatalf("persisted abandoned outcome reference = %q, want %q", ref, c.wantRef)
 			}
 			if got := readReservation(t, ctx, db, s, r.ID); got != finalizedReservation(in) {
 				t.Fatalf("reservation after the finish = %+v, want finalized", got)
@@ -220,4 +245,42 @@ func TestAbandonedStaysPendingOnARedirectOrInvalidAnswer(t *testing.T) {
 			}
 		})
 	}
+}
+
+// savedMarkerRef is the reference in the marker that payments commits before a malformed answer.
+// It differs from peerProviderRef, the reference that the peer's default answer returns.
+const savedMarkerRef = "re_saved_marker_594"
+
+// commitMarkerRef commits the abandonment marker with ref, unless a marker exists.
+func (p *statefulPayments) commitMarkerRef(ref string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.marker == "" {
+		p.marker = ref
+	}
+}
+
+// replayFromMarker answers one abandon POST from the saved marker only. With no saved marker it
+// refuses, and it never creates one.
+func (p *statefulPayments) replayFromMarker(w http.ResponseWriter) {
+	ref := p.markerRef()
+	if ref == "" {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"peer: no saved marker to replay"}`))
+		return
+	}
+	_, _ = fmt.Fprintf(w, `{"provider_ref":%q,"amount":%d,"currency":"EUR"}`, ref, p.amount)
+}
+
+// readAbandonedRef reads the persisted reference of the refund's abandoned outcome, or "".
+func readAbandonedRef(t *testing.T, ctx context.Context, db *sql.DB, s seeded, refund uuid.UUID) string {
+	t.Helper()
+	var ref string
+	if err := db.QueryRowContext(ctx, `
+		SELECT coalesce(max(external_ref),'') FROM refund_outcomes
+		WHERE organizer_id=$1 AND subject_kind='order_refund' AND subject_id=$2 AND kind='abandoned'`, s.org, refund).
+		Scan(&ref); err != nil {
+		t.Fatal(err)
+	}
+	return ref
 }

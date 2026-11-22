@@ -78,6 +78,9 @@ func TestEvidenceAcceptsWhatPaymentsWrites(t *testing.T) {
 		want FailureProof
 	}{
 		{"control", validEvidence, FailureProof{"re_failed", 2000, "EUR"}},
+		// The control for the escaped duplicate below: one escaped spelling alone is the member
+		// "amount", not an unknown member.
+		{"an escaped member name", `{"provider_ref":"re_failed","\u0061mount":2000,"currency":"EUR"}`, FailureProof{"re_failed", 2000, "EUR"}},
 		{"members in another order, with white space", " {\"currency\" : \"EUR\",\n\"amount\":2000, \"provider_ref\":\"re_failed\"}\n", FailureProof{"re_failed", 2000, "EUR"}},
 		{"a 255-byte reference", fmt.Sprintf(`{"provider_ref":%q,"amount":2000,"currency":"EUR"}`, ref255), FailureProof{ref255, 2000, "EUR"}},
 		{"a 255-byte reference in 129 characters", fmt.Sprintf(`{"provider_ref":%q,"amount":2000,"currency":"EUR"}`, ref255multibyte), FailureProof{ref255multibyte, 2000, "EUR"}},
@@ -92,9 +95,10 @@ func TestEvidenceAcceptsWhatPaymentsWrites(t *testing.T) {
 func TestEvidenceRefusesAnAnswerPaymentsDoesNotWrite(t *testing.T) {
 	for _, c := range []struct{ name, body string }{
 		// The object's shape. Each duplicate puts the valid value last, so a decoder that keeps
-		// the last value would accept it.
+		// the last value would accept it. In the escaped duplicate, the second name is spelled
+		// `\u0061mount`: it is "amount" only after the JSON escape is decoded.
 		{"duplicate member", `{"provider_ref":"re_failed","amount":1999,"amount":2000,"currency":"EUR"}`},
-		{"escaped duplicate member", `{"provider_ref":"re_failed","amount":1999,"amount":2000,"currency":"EUR"}`},
+		{"escaped duplicate member", `{"provider_ref":"re_failed","amount":1999,"\u0061mount":2000,"currency":"EUR"}`},
 		{"case variant of a member", `{"provider_ref":"re_failed","Amount":2000,"currency":"EUR"}`},
 		{"canonical member and its case variant", `{"provider_ref":"re_failed","amount":2000,"AMOUNT":1999,"currency":"EUR"}`},
 		{"unknown member", `{"provider_ref":"re_failed","amount":2000,"currency":"EUR","completed":true}`},

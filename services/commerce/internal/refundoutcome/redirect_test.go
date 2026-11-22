@@ -215,3 +215,102 @@ func TestEvidenceClientsClassifyAnUnparsableLocation(t *testing.T) {
 		t.Errorf("abandon: err = %v, want ErrAbandonUncertain from the unparsable Location", err)
 	}
 }
+
+// TKT-594 RA1-1. The 3xx decides the class before the body is read: a large or stalled redirect
+// body cannot replace the redirect refusal with a size or transport error. The transport answers
+// the first request with a 3xx whose body records each read and fails it, so a client that reads
+// the body first returns the read error.
+type poisonedBody struct {
+	mu    sync.Mutex
+	reads int
+}
+
+var errBodyRead = errors.New("the 3xx body was read")
+
+func (b *poisonedBody) Read([]byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.reads++
+	return 0, errBodyRead
+}
+
+func (b *poisonedBody) Close() error { return nil }
+
+func (b *poisonedBody) readCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.reads
+}
+
+// redirectTransport answers every request with `status`, a Location on another host when
+// withLocation is set, and a poisoned body. It counts the requests it receives.
+type redirectTransport struct {
+	status       int
+	withLocation bool
+	body         *poisonedBody
+	mu           sync.Mutex
+	requests     int
+}
+
+func (rt *redirectTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	rt.mu.Lock()
+	rt.requests++
+	rt.mu.Unlock()
+	h := http.Header{}
+	if rt.withLocation {
+		h.Set("Location", "http://redirect-target.invalid"+r.URL.RequestURI())
+	}
+	return &http.Response{
+		StatusCode: rt.status, Status: http.StatusText(rt.status), Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
+		Header: h, Body: rt.body, ContentLength: -1, Request: r,
+	}, nil
+}
+
+func (rt *redirectTransport) requestCount() int {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.requests
+}
+
+func TestEvidenceClientsRefuseA3xxWithoutReadingItsBody(t *testing.T) {
+	for _, c := range []struct {
+		status       int
+		withLocation bool
+	}{
+		{http.StatusMultipleChoices, false}, {http.StatusMovedPermanently, true}, {http.StatusFound, true},
+		{http.StatusSeeOther, true}, {http.StatusNotModified, false}, {http.StatusTemporaryRedirect, true},
+		{http.StatusPermanentRedirect, true},
+	} {
+		for _, name := range []string{"constructor", "injected client"} {
+			t.Run(fmt.Sprintf("%d %s", c.status, name), func(t *testing.T) {
+				proofRT := &redirectTransport{status: c.status, withLocation: c.withLocation, body: &poisonedBody{}}
+				proof := proofClients("http://payments.invalid")[name]
+				proof.Client.Transport = proofRT
+				_, err := proof.ProveRefundFailure(context.Background(), uuid.New(), "k", uuid.NewString())
+				if want := fmt.Sprintf("refund failure proof unavailable: payments redirect refused (HTTP %d)", c.status); err == nil || err.Error() != want || !errors.Is(err, ErrProofUnavailable) {
+					t.Errorf("proof: err = %v, want %q", err, want)
+				}
+				if n := proofRT.body.readCount(); n != 0 {
+					t.Errorf("proof: the 3xx body was read %d time(s), want 0", n)
+				}
+				if n := proofRT.requestCount(); n != 1 {
+					t.Errorf("proof: the transport received %d request(s), want 1", n)
+				}
+
+				abandonRT := &redirectTransport{status: c.status, withLocation: c.withLocation, body: &poisonedBody{}}
+				abandon := abandonClients("http://payments.invalid")[name]
+				abandon.Client.Transport = abandonRT
+				_, err = abandon.AbandonRefundLeg(context.Background(), uuid.New(), "k", uuid.NewString(), 2000, "EUR")
+				if want := fmt.Sprintf("payments abandonment answer unknown: payments redirect refused (HTTP %d)", c.status); err == nil || err.Error() != want || !errors.Is(err, ErrAbandonUncertain) {
+					t.Errorf("abandon: err = %v, want %q", err, want)
+				}
+				if n := abandonRT.body.readCount(); n != 0 {
+					t.Errorf("abandon: the 3xx body was read %d time(s), want 0", n)
+				}
+				if n := abandonRT.requestCount(); n != 1 {
+					t.Errorf("abandon: the transport received %d request(s), want 1", n)
+				}
+			})
+		}
+	}
+}
