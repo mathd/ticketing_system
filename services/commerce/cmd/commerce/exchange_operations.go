@@ -26,6 +26,7 @@ import (
 
 	"ticketing/services/commerce/internal/exchangeunwind"
 	store "ticketing/services/commerce/internal/store"
+	"ticketing/shared/runtimecfg"
 )
 
 // paymentsEvidenceTimeout bounds the two read-only payments calls. Shorter than
@@ -33,6 +34,11 @@ import (
 // payments that is slow to answer must surface as an indeterminate refusal rather than as a
 // command that appears to hang.
 const paymentsEvidenceTimeout = 10 * time.Second
+
+// openOperatorDB opens the Commerce database for unwind-exchange and record-refund-outcome. It
+// is a variable so that their tests can count opens: pgx connects lazily, so a connection counter
+// cannot see a configuration check that runs after sql.Open but before the first query (TKT-595).
+var openOperatorDB = func(dsn string) (*sql.DB, error) { return sql.Open("pgx", dsn) }
 
 // listWedgedExchanges reports every unsettled exchange.
 //
@@ -141,17 +147,17 @@ func unwindExchange(args []string) error {
 		return errors.New("PAYMENTS_URL is required: the unwind refuses unless payments' own records " +
 			"say no money moved, and it cannot ask without one")
 	}
-	token := os.Getenv("PAYMENTS_INTERNAL_TOKEN")
-	if token == "" {
-		token = os.Getenv("INTERNAL_SERVICE_TOKEN")
-	}
-	if token == "" {
-		return errors.New("PAYMENTS_INTERNAL_TOKEN (or INTERNAL_SERVICE_TOKEN) is required to read payments evidence")
+	// The dedicated credential, never the shared one (TKT-595): payments refuses the shared token.
+	// The check comes before the database, because the no-basis and zero-delta branches change
+	// Commerce without a payments request.
+	token, err := runtimecfg.PaymentsTokenFromEnv()
+	if err != nil {
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), operatorDBTimeout)
 	defer cancel()
-	db, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
+	db, err := openOperatorDB(os.Getenv("DATABASE_URL"))
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
 	}

@@ -224,9 +224,12 @@ commerce list-wedged-exchanges
 commerce unwind-exchange <organizer-id> <exchange-id> "<reason>"
 ```
 
-`unwind-exchange` needs `DATABASE_URL`, `PAYMENTS_URL` and `PAYMENTS_INTERNAL_TOKEN` (falling back
-to `INTERNAL_SERVICE_TOKEN`). It refuses immediately if payments is not configured — it cannot do
-its job without asking payments, and finding that out after reading a row helps nobody.
+`unwind-exchange` needs `DATABASE_URL` set to the intended Commerce database, `PAYMENTS_URL`, and
+the dedicated `PAYMENTS_INTERNAL_TOKEN`. The token must have at least 32 bytes and must differ from
+`INTERNAL_SERVICE_TOKEN`. There is no fallback to the shared token. Before it opens the database, the
+command checks that the Payments URL is present and validates the token. It refuses immediately if
+payments is not configured — it cannot do its job without asking payments, and finding that out
+after reading a row helps nobody.
 
 **The listing reports CANDIDATES, not confirmed wedges.** Commerce holds no copy of inventory's
 claim state, so it cannot tell a genuinely terminal target claim from an exchange that is in flight
@@ -551,11 +554,17 @@ For a bulk refund, use the procedure below only for a money refund that the prov
 other operators what this refund's outcome is. Do not run two different commands for one refund. If
 you find a conflict, stop and investigate before any further money action.
 
-Run either command with `docker compose exec commerce /app record-refund-outcome …`. Set
-`DATABASE_URL` to the intended Commerce database. Set `PAYMENTS_URL` to a usable Payments URL. Set
-`PAYMENTS_INTERNAL_TOKEN` to the dedicated credential accepted by that Payments service. The command
-validates its arguments, checks that the Payments URL and selected credential have values, and
-passes `DATABASE_URL` to the database driver. If a migration fails, follow
+Run either command with `docker compose exec commerce /app record-refund-outcome …`. This uses the
+`commerce` container's Compose values. It ignores values set in your shell unless you pass each one
+with `-e`, for example
+`docker compose exec -e PAYMENTS_URL=<url> commerce /app record-refund-outcome …`.
+Set `DATABASE_URL` to the intended Commerce database. Set `PAYMENTS_URL` to an absolute `http` or
+`https` base URL with a host name and, if it names a port, a port in 1–65535. Do not include a query
+or a fragment. Set `PAYMENTS_INTERNAL_TOKEN` to the dedicated credential that this Payments service
+accepts. It must have at least 32 bytes and must differ from `INTERNAL_SERVICE_TOKEN`. There is no
+fallback to the shared token. Both forms check their arguments and these three settings before they
+open the Commerce database. A local configuration refusal creates no reservation. If a migration
+fails, follow
 [ADR-087's rollout recovery](../adr/ADR-087-operator-outcomes-for-failed-post-purchase-refunds.md#consequences).
 
 The command sends the Payments credential only to `PAYMENTS_URL` and does not follow a redirect.
@@ -642,9 +651,9 @@ refund of the same money.
 the run that started it, and the outcome is attributed to that operator. To finish it, anyone runs
 the command again with exactly that operator name and reason.
 
-If Payments refuses the credential after Commerce reserves the abandonment, the reservation can stay
-`pending`. Correct the credential and repeat the original `abandoned` command with the same operator
-name and reason.
+If the configuration passed the local checks, Payments can still refuse the credential after
+Commerce reserves the abandonment. The reservation can then stay `pending`. Correct the credential
+and repeat the original `abandoned` command with the same operator name and reason.
 
 What the command does (ADR-087 §10): reserve in Commerce; Payments proves the terminal failure with
 the same read-only lookup and writes an append-only marker on the exact leg, which releases that

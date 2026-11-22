@@ -20,6 +20,10 @@ Delivery: TKT-525 is one PR in two slices. Slice S1 is `refunded_outside` (§1�
 write, the two ceiling exclusions, the dispatch refusal, the Commerce outcome, the bulk rules and
 the Back Office replacement (§10–§16).
 
+**Amended by TKT-595 (2026-11-22)** — *the Decision introduction and §14 only.* Both command forms
+check `PAYMENTS_URL`, the dedicated Payments credential and `DATABASE_URL` before they open the
+database. The fallback to `INTERNAL_SERVICE_TOKEN` is removed.
+
 ## Context
 
 A staff refund or an event-cancellation (bulk) refund that the provider marks `failed` or
@@ -45,6 +49,14 @@ The owner decided on 2026-10-12:
 - The scope is staff refunds and bulk cancellation. Recovery and exchange are TKT-532 and TKT-533.
 
 ## Decision
+
+Both forms of `record-refund-outcome`, `refunded_outside` and `abandoned`, check their arguments and
+then their configuration before they open the Commerce database (TKT-595). `PAYMENTS_URL` must be an
+absolute `http` or `https` base URL with a host name, a port in 1–65535 if it names one, and no query
+or fragment. `PAYMENTS_INTERNAL_TOKEN` is read with `runtimecfg.PaymentsTokenFromEnv`, the validator
+Payments uses: at least 32 bytes, different from `INTERNAL_SERVICE_TOKEN`, and no fallback to the
+shared token. `DATABASE_URL` must not be empty, because pgx reads an empty value as the shell's
+PostgreSQL defaults. A local configuration refusal therefore creates no abandonment reservation.
 
 ### 1. One append-only outcome table with a generic subject
 
@@ -362,6 +374,11 @@ leg's refund failed while the POST is in flight, then answers the POST with the 
 body: the 422 for the current failed refund, no fact, the leg still bound.
 
 ### 14. Recovery, and the cost of starting an abandonment
+
+This section applies after the command has reserved the abandonment. A configuration refusal comes
+before the database is opened (Decision introduction), so it creates no reservation and needs no
+recovery. A credential that passes the local checks and that Payments still refuses is a non-200
+answer below.
 
 Any non-200 answer, a transport failure, unusable evidence or a failed Commerce finish leaves the
 reservation `pending`, unless another run already finalized it. A 404 or 409 describes one abandon

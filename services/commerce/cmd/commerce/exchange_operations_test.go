@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"net"
 	"strings"
 	"sync"
@@ -26,9 +27,12 @@ import (
 // commands usable during an incident, and it is falsifiable — delete a check and its case
 // goes red.
 //
-// The one genuine ordering claim left is asserted by observation rather than by error text:
-// TestUnwindExchangeReachesNoDatabaseWhenPaymentsIsUnconfigured counts TCP connections to a
-// listener the test owns.
+// The ordering claims are asserted by observation rather than by error text.
+// TestUnwindExchangeRefusesInvalidConfiguration counts TCP connections to a listener the test
+// owns, and TestUnwindExchangeValidCommandReachesTheDatabase shows that the listener sees a valid
+// command. For the configuration checks of unwind-exchange and record-refund-outcome, the tests
+// also count calls to openOperatorDB (countOpens). That counter does see a check placed after
+// the open, which the connection counter cannot (TKT-595).
 
 func TestListWedgedExchangesRefusesArguments(t *testing.T) {
 	err := listWedgedExchanges([]string{"unexpected"})
@@ -101,50 +105,73 @@ func TestUnwindExchangeRefusesABlankReasonBeforeConnecting(t *testing.T) {
 	}
 }
 
-// Payments configuration is required, and each missing piece is named.
+// Payments configuration is required, and each unusable setting is named before the database.
 //
-// The unwind's whole purpose is to refuse unless payments' own records say no money moved,
-// so a command with no way to ask payments cannot do its job — and must say which piece is
-// missing rather than failing later with something that reads like a payments outage.
+// The unwind's whole purpose is to refuse unless payments' own records say no money moved, so a
+// command with no way to ask payments cannot do its job. It must say which setting is wrong
+// rather than fail later with something that reads like a payments outage. The credential is
+// the dedicated one, validated as payments validates it (TKT-595): payments refuses the shared
+// token, a short one and one equal to the shared one. The no-basis and zero-delta branches
+// change Commerce without a payments request, so the check must come before the database.
 //
-// The dial counter is the ordering half, and it is the only ordering assertion in this file
-// that can actually fail: it observes what the command DID (whether it reached the database
-// at all) rather than what it returned. Deleting the payments checks entirely makes the
-// command proceed to the store, dial, and fail on the connection — which this catches.
-func TestUnwindExchangeReachesNoDatabaseWhenPaymentsIsUnconfigured(t *testing.T) {
-	org, exchangeID := uuid.New().String(), uuid.New().String()
+// The dial counter is the ordering half: it observes what the command DID (whether it reached
+// the database at all) rather than what it returned. Each row changes one setting of an
+// otherwise valid configuration.
+func TestUnwindExchangeRefusesInvalidConfiguration(t *testing.T) {
 	dials := listenForDials(t)
+	opens := countOpens(t)
+	payments, calls := recordingDependency(t)
+	args := []string{uuid.New().String(), uuid.New().String(), "a reason"}
+	for _, tc := range []struct {
+		name, env, value, want string
+	}{
+		{"PAYMENTS_INTERNAL_TOKEN unset with a valid shared token", "PAYMENTS_INTERNAL_TOKEN", "", missingPaymentsTokenError},
+		{"PAYMENTS_INTERNAL_TOKEN of 31 bytes", "PAYMENTS_INTERNAL_TOKEN", strings.Repeat("p", 31), shortPaymentsTokenError},
+		{"PAYMENTS_INTERNAL_TOKEN equal to the shared token", "PAYMENTS_INTERNAL_TOKEN", abandonInternalToken, equalPaymentsTokenError},
+		{"PAYMENTS_URL empty", "PAYMENTS_URL", "", "PAYMENTS_URL is required: the unwind refuses unless payments' own " +
+			"records say no money moved, and it cannot ask without one"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			validOperatorSettings(t, payments)
+			t.Setenv(tc.env, tc.value)
+			before, beforeCalls, beforeOpens := settled(dials), calls(), opens()
+			err := unwindExchange(args)
+			if err == nil || err.Error() != tc.want {
+				t.Errorf("with %s=%q: err = %v, want %q", tc.env, tc.value, err, tc.want)
+			}
+			if n := opens() - beforeOpens; n != 0 {
+				t.Errorf("with %s=%q the command opened the database %d time(s) before it refused", tc.env, tc.value, n)
+			}
+			if n := settled(dials) - before; n != 0 {
+				t.Errorf("with %s=%q the command reached the database %d time(s): the configuration check ran "+
+					"too late, and an operator learns about it only after the command has done real work", tc.env, tc.value, n)
+			}
+			if n := calls() - beforeCalls; n != 0 {
+				t.Errorf("with %s=%q the command reached payments %d time(s)", tc.env, tc.value, n)
+			}
+		})
+	}
+}
 
-	t.Setenv("PAYMENTS_URL", "")
-	t.Setenv("PAYMENTS_INTERNAL_TOKEN", "a-token")
-	t.Setenv("INTERNAL_SERVICE_TOKEN", "")
-	err := unwindExchange([]string{org, exchangeID, "a reason"})
+// A valid invocation does reach the database: the refusals above are refusals of THOSE settings,
+// and the counter can see a connection.
+func TestUnwindExchangeValidCommandReachesTheDatabase(t *testing.T) {
+	dials := listenForDials(t)
+	opens := countOpens(t)
+	payments, calls := recordingDependency(t)
+	validOperatorSettings(t, payments)
+	err := unwindExchange([]string{uuid.New().String(), uuid.New().String(), "a reason"})
 	if err == nil {
-		t.Fatal("unwind-exchange ran with no PAYMENTS_URL; it cannot establish whether money " +
-			"moved without one, and proceeding would mean deciding on commerce's flags alone")
+		t.Fatal("the command succeeded against a listener that closes every connection")
 	}
-	if !strings.Contains(err.Error(), "PAYMENTS_URL") {
-		t.Fatalf("err = %v, want the error to name PAYMENTS_URL", err)
+	if n := opens(); n != 1 {
+		t.Fatalf("a valid command opened the database %d time(s), want 1 (err=%v)", n, err)
 	}
-
-	// With a URL but no credential of either kind, payments answers 401 to everything, which
-	// this command would then have to read as indeterminate. Refusing up front says why.
-	t.Setenv("PAYMENTS_URL", "http://payments.invalid")
-	t.Setenv("PAYMENTS_INTERNAL_TOKEN", "")
-	t.Setenv("INTERNAL_SERVICE_TOKEN", "")
-	err = unwindExchange([]string{org, exchangeID, "a reason"})
-	if err == nil {
-		t.Fatal("unwind-exchange ran with no payments credential")
+	if n := settled(dials); n == 0 {
+		t.Fatalf("a valid command never reached the database (err=%v)", err)
 	}
-	if !strings.Contains(err.Error(), "PAYMENTS_INTERNAL_TOKEN") {
-		t.Fatalf("err = %v, want the error to name the credential", err)
-	}
-
-	if n := dials(); n != 0 {
-		t.Errorf("the command dialled the database %d time(s) before refusing on payments "+
-			"configuration. sql.Open with pgx connects to nothing, so a non-zero count here means "+
-			"the store was actually called — the payments checks ran too late, and an operator "+
-			"with a misconfigured payments learns it only after the command has done real work", n)
+	if n := calls(); n != 0 {
+		t.Fatalf("the command called payments before it could read the exchange (%d requests)", n)
 	}
 }
 
@@ -153,6 +180,28 @@ func TestUnwindExchangeReachesNoDatabaseWhenPaymentsIsUnconfigured(t *testing.T)
 //
 // Connections are accepted and immediately closed. pgx then fails its startup handshake,
 // which is fine: the count is the observable, not the outcome.
+// countOpens counts the database opens of unwind-exchange and record-refund-outcome. pgx opens
+// lazily, so the dial counter cannot see a check that runs after sql.Open and before the first
+// query; this counter can (TKT-595 R1-1). The real opener still runs.
+func countOpens(t *testing.T) func() int {
+	t.Helper()
+	original := openOperatorDB
+	t.Cleanup(func() { openOperatorDB = original })
+	var mu sync.Mutex
+	var n int
+	openOperatorDB = func(dsn string) (*sql.DB, error) {
+		mu.Lock()
+		n++
+		mu.Unlock()
+		return original(dsn)
+	}
+	return func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return n
+	}
+}
+
 func listenForDials(t *testing.T) func() int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -197,7 +246,8 @@ func listenForDials(t *testing.T) func() int {
 func TestUnwindExchangeRefusesEveryBadArgumentWithoutReachingTheDatabase(t *testing.T) {
 	dials := listenForDials(t)
 	t.Setenv("PAYMENTS_URL", "http://payments.invalid")
-	t.Setenv("PAYMENTS_INTERNAL_TOKEN", "a-token")
+	t.Setenv("INTERNAL_SERVICE_TOKEN", abandonInternalToken)
+	t.Setenv("PAYMENTS_INTERNAL_TOKEN", abandonPaymentsToken)
 
 	good := uuid.New().String()
 	for _, tc := range []struct {
@@ -229,32 +279,6 @@ func TestUnwindExchangeRefusesEveryBadArgumentWithoutReachingTheDatabase(t *test
 		t.Errorf("a bad argument reached the database %d time(s). Argument validation has to "+
 			"refuse before the store is called, or an operator who mistyped a uuid during an "+
 			"incident waits on a connection to find out", n)
-	}
-}
-
-// The shared token is accepted as a fallback for the payments-specific one.
-//
-// Commerce's own `internalTokenFor` falls back the same way, and for the stated reason: a
-// deployment that predates the credential split must keep working rather than sending an
-// empty credential, which payments fails closed on and which reads as an outage rather than
-// as a misconfiguration.
-//
-// Asserted by what the command does NEXT: with both ids valid, a reason, a URL and the
-// shared token, validation is satisfied and the command proceeds to the database — so the
-// error it returns must no longer be about configuration.
-func TestTheSharedTokenIsAcceptedWhenThePaymentsOneIsAbsent(t *testing.T) {
-	t.Setenv("PAYMENTS_URL", "http://payments.invalid")
-	t.Setenv("PAYMENTS_INTERNAL_TOKEN", "")
-	t.Setenv("INTERNAL_SERVICE_TOKEN", "shared-token")
-	t.Setenv("DATABASE_URL", "postgres://nobody@127.0.0.1:1/nothing")
-
-	err := unwindExchange([]string{uuid.New().String(), uuid.New().String(), "a reason"})
-	if err == nil {
-		t.Fatal("the command somehow succeeded against an unreachable database")
-	}
-	if strings.Contains(err.Error(), "PAYMENTS_INTERNAL_TOKEN") || strings.Contains(err.Error(), "PAYMENTS_URL") {
-		t.Fatalf("err = %v; the shared token must satisfy the credential requirement, as "+
-			"internalTokenFor's own fallback does", err)
 	}
 }
 

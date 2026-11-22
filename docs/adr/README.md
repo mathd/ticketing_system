@@ -95,7 +95,7 @@ this register when adding an ADR or changing its status. Preserve existing decis
 | ADR-064 | [Presale unlock codes](ADR-064-presale-unlock-codes.md) | Accepted |
 | ADR-065 | [Parked recovery orders are a gauge, not an alarm](ADR-065-parked-recovery-order-observability.md) | Accepted |
 | ADR-066 | [Scanners pull a voided-ticket feed, and the staleness ceiling is the scanner's to enforce](ADR-066-scanner-voided-ticket-feed.md) | Accepted; amended by ADR-085 |
-| ADR-067 | [A wedged exchange is unwound by an operator, and the refusal is decided by payments](ADR-067-wedged-exchange-operator-unwind.md) | Accepted |
+| ADR-067 | [A wedged exchange is unwound by an operator, and the refusal is decided by payments](ADR-067-wedged-exchange-operator-unwind.md) | Accepted; amended by TKT-595 |
 | ADR-068 | [Staff re-delivery of a completed order's tickets](ADR-068-staff-ticket-redelivery.md) | Accepted; amended by TKT-526 |
 | ADR-069 | [The payment token is opaque to commerce, and an exchange upgrade needs a real one](ADR-069-opaque-payment-tokens-and-exchange-upgrade-instruments.md) | Accepted |
 | ADR-070 | [The reversal claims' organizer check is a column comparison, not a correlated subquery](ADR-070-indexable-reversal-claim-scoping.md) | Accepted |
@@ -114,7 +114,7 @@ this register when adding an ADR or changing its status. Preserve existing decis
 | ADR-084 | [Promotion storage and redemption contract](ADR-084-promotion-storage-and-redemption-contract.md) | Proposed; no implementation authority |
 | ADR-085 | [Scanner local outcome model](ADR-085-scanner-local-outcome-model.md) | Accepted model; staged delivery and venue qualification limits |
 | ADR-086 | [Parallel CI gate parts](ADR-086-parallel-ci-gate-parts.md) | Accepted |
-| ADR-087 | [Operator outcomes for failed post-purchase refunds](ADR-087-operator-outcomes-for-failed-post-purchase-refunds.md) | Accepted; amends ADR-032, ADR-037 §4 and ADR-040 §3 |
+| ADR-087 | [Operator outcomes for failed post-purchase refunds](ADR-087-operator-outcomes-for-failed-post-purchase-refunds.md) | Accepted; amends ADR-032, ADR-037 §4 and ADR-040 §3; amended by TKT-595 |
 
 Use [the ADR template](<[template].md>) for a new decision. Record current implementation and
 future requirements separately. Historical context inside an ADR is not an operator procedure.

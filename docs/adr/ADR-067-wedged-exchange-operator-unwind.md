@@ -7,6 +7,10 @@ Date: 2026-08-23
 Accepted (TKT-255; decision taken under `config.gates: autonomous`, so gates 2–4 were the agent's —
 the plan-review critique, the self-made decisions and any overridden objections are on the ticket).
 
+**Amended by TKT-595 (2026-11-22)** — *the Operational paragraph only.* `unwind-exchange` requires
+the dedicated Payments credential, validated as Payments validates it, before it opens the
+database. The fallback to `INTERNAL_SERVICE_TOKEN` is removed.
+
 Closes the gap [ADR-039](./ADR-039-exchange-settles-the-difference.md) leaves open and that
 TKT-167's adversarial review found and pinned. Inherits ADR-039's exchange lifecycle,
 [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md)'s adversary language,
@@ -255,9 +259,20 @@ burned by before.
 ### Operational
 
 Migration `0024` runs out-of-band via commerce's `migrate` subcommand (ADR-022). `unwind-exchange`
-needs `DATABASE_URL`, `PAYMENTS_URL` and `PAYMENTS_INTERNAL_TOKEN` (falling back to
-`INTERNAL_SERVICE_TOKEN`, as `internalTokenFor` does); it refuses up front when payments is not
-configured, because a command that cannot ask payments cannot do its job. No index was added for the
+needs `DATABASE_URL`, `PAYMENTS_URL` and the dedicated `PAYMENTS_INTERNAL_TOKEN`. It reads the token
+with `runtimecfg.PaymentsTokenFromEnv`, the validator payments uses: at least 32 bytes, different
+from `INTERNAL_SERVICE_TOKEN`, and no fallback to the shared token. Payments refuses the shared
+token, so the fallback could only send a credential that payments rejects. The command checks that
+`PAYMENTS_URL` is present and validates the token before it opens the database, because its
+no-basis and zero-delta branches change Commerce without a payments request. A command that cannot
+ask payments cannot do its job.
+
+> **Amended by TKT-595.** The original text was: "`unwind-exchange` needs `DATABASE_URL`,
+> `PAYMENTS_URL` and `PAYMENTS_INTERNAL_TOKEN` (falling back to `INTERNAL_SERVICE_TOKEN`, as
+> `internalTokenFor` does); it refuses up front when payments is not configured, because a command
+> that cannot ask payments cannot do its job."
+
+No index was added for the
 listing — 0023 declined the same thing for the same ADR-019 reason, and that decision is recorded in
 the migration rather than left implicit. Operator surface and the meaning of each state:
 `docs/development.md` § Wedged exchange operator unwind.

@@ -121,6 +121,12 @@ surface. Commerce is payments' only caller and holds both; it refuses to start w
 two of its four credentials are equal, and payments refuses to start when its own equals
 the shared one.
 
+The Commerce operator commands `record-refund-outcome`, `unwind-exchange` and `abandon-exchange`
+call payments with this credential. Each command reads it with the validator payments uses. The
+value must have at least 32 bytes and must differ from `INTERNAL_SERVICE_TOKEN`, and there is no
+fallback to the shared token. Each command checks the credential before it opens the database
+(TKT-595). For their setup, see the [order recovery runbook](runbooks/order-recovery.md).
+
 This is a reduction, not a solution: compromising commerce still reaches payments. For the
 Payments boundary, per-caller credentials or mTLS is the remaining production control. The shared
 `INTERNAL_SERVICE_TOKEN` elsewhere also remains a testbed credential model, not a production
