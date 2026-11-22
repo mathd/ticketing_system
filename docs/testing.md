@@ -134,11 +134,15 @@ The maintained scanner suite builds two frozen clients from Git. The object data
 `3752a96a16a2ed6e7fe267206c3dbd05bf5271bf` for predecessor Exit compatibility. A shallow clone can
 lack these objects. Check both with `git cat-file -e <commit>^{commit}` before the run.
 
-The historical baselines pin pnpm `11.12.0`, a broken release that pnpm `12.21.0` refuses to
+The historical baselines pin pnpm `11.12.0`, a broken release that pnpm `12.22.0` refuses to
 install. Each harness therefore sets `packageManager` to `pnpm@11.13.1` in its extracted copy, after
-it records the original source manifest, and asserts that version. The current workspace requires
-`12.21.0`. Use a manifest-aware pnpm that selects the version from the working directory, such as
-pnpm `12.21.0` with its own version management. A pnpm that ignores `packageManager` fails the
+it records the original source manifest, and asserts that version. The pin stays on `11.13.1`, behind
+the `latest-11` release, on purpose: it is the nearest working release to the baselines' `11.12.0`, so
+the rebuilt historical clients stay close to the original build. A newer 11.x changes a maintained
+browser fixture and needs its own mutation and repeat runs (TKT-596 review R1-1).
+The current workspace requires `12.22.0`. Use a manifest-aware pnpm that selects the version from
+the working directory, such as
+pnpm `12.22.0` with its own version management. A pnpm that ignores `packageManager` fails the
 historical version assertions.
 Cache both package-manager versions and the packages selected by both historical lockfiles before
 running the suite. Historical installs use `--offline --frozen-lockfile`, so an empty or incomplete

@@ -30,6 +30,7 @@ export async function predecessorExit({ browser, BASE, token, fixture, check }) 
   try {
     // The manifest above records the original baseline bytes. Only the extracted
     // copy's package.json is changed below, to pick a non-deprecated pnpm for the build.
+    // 11.13.1 is the nearest working release to the baseline's 11.12.0 (docs/testing.md).
     const packagePath = join(source, 'package.json');
     const packageJson = JSON.parse(readFileSync(packagePath, 'utf8'));
     packageJson.packageManager = 'pnpm@11.13.1';

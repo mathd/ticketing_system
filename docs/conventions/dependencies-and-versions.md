@@ -10,6 +10,8 @@ latest requires a stated compatibility reason, recorded next to the pin.
 Current anchors (update as they move): Go 1.27.4 · Node 26.13.1 · pnpm 12 (pinned via `packageManager`,
 which also enforces pnpm's supply-chain `minimumReleaseAge` policy) · PostgreSQL 18.7 · Vite 8 ·
 React 19 · TypeScript `~7.0.2`. Read the manifests and lockfile for exact resolutions.
+PostgreSQL 19 waits for TKT-597. The major upgrade needs `pg_upgrade` or a dump and restore of
+existing volumes, an ADR-007 amendment, and a new check of the PostgreSQL ADR claims.
 
 - **Hold: the TypeScript 6 API for `openapi-typescript`.** Every compiler in the repository is
   TypeScript 7. TypeScript 7 has no JavaScript compiler API, and `openapi-typescript` (latest
@@ -37,6 +39,13 @@ React 19 · TypeScript `~7.0.2`. Read the manifests and lockfile for exact resol
 - **No Go module hold (2026-11-21).** `oapi-codegen` v2.9.0 does not import
   `github.com/dprotaso/go-yit`, `vmware-labs/yaml-jsonpath` or the Speakeasy modules. `go mod tidy`
   removed them from `services/catalog/go.mod`, and the TKT-523 holds on them ended.
+- **Upstream-selected Go module paths (TKT-596).** `cenkalti/backoff` has a v6 path, and
+  `dlclark/regexp2` has a v2 path. The OpenTelemetry exporters still import `backoff/v5` and
+  `oapi-codegen` still imports `regexp2` v1, so the `// indirect` requirements stay on those paths
+  until the upstream modules move.
+- **npm comes with the Node image (TKT-596).** The web Dockerfiles install pnpm with the npm bundled
+  in `node:26.13.1-alpine3.24` (npm 11.20.0). npm is not pinned on its own: it moves with the Node
+  image pin.
 
 ## Executable dependency pins
 

@@ -59,6 +59,9 @@ x-go-service: &go-service
 
 services:
   postgres:
+    # Hold on PostgreSQL 18. TKT-597 does the upgrade to 19. A major upgrade
+    # needs pg_upgrade or a dump and restore of existing volumes. It also
+    # needs an ADR-007 amendment and a new check of the PostgreSQL ADR claims.
     image: postgres:18.7-trixie@sha256:eb63372c1e05c755f55fa30cbd07aecc443676fc6c0fa90b9002d01537841e1a
     restart: unless-stopped
     environment:

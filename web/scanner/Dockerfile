@@ -1,11 +1,11 @@
 # Build context = repo root (see compose.yaml): the pnpm workspace lockfile
 # lives there. Node 25+ dropped the bundled corepack, so pnpm is installed
-# directly, pinned to the root packageManager version (pnpm@12.21.0).
+# directly, pinned to the root packageManager version (pnpm@12.22.0).
 FROM node:26.13.1-alpine3.24@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS build
 ENV CI=true
 WORKDIR /src
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
-RUN npm install -g pnpm@12.21.0
+RUN npm install -g pnpm@12.22.0
 COPY web/scanner/ web/scanner/
 RUN pnpm install --frozen-lockfile && pnpm --filter scanner build
 
