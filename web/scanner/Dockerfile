@@ -1,15 +1,15 @@
 # Build context = repo root (see compose.yaml): the pnpm workspace lockfile
 # lives there. Node 25+ dropped the bundled corepack, so pnpm is installed
-# directly, pinned to the root packageManager version (pnpm@12.18.0).
-FROM node:26.13.0-alpine3.24@sha256:8996bb5821d62a8fd9bb27c1cb07462f3fdce6e47d640c6a881ead0b064ce216 AS build
+# directly, pinned to the root packageManager version (pnpm@12.21.0).
+FROM node:26.13.1-alpine3.24@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS build
 ENV CI=true
 WORKDIR /src
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
-RUN npm install -g pnpm@12.18.0
+RUN npm install -g pnpm@12.21.0
 COPY web/scanner/ web/scanner/
 RUN pnpm install --frozen-lockfile && pnpm --filter scanner build
 
-FROM nginx:1.31.8-alpine3.24@sha256:713fc2ebfd92e8217db451477182ee91944b123d2b1ee9fd5a8c6e91ca6c3a11
+FROM nginx:1.31.9-alpine3.24@sha256:fb4658584bd9a916ffb6f6e365f97c25cfdb2923801f551ea08356e695f14ff7
 RUN sed -i -e 's!^pid.*!pid /tmp/nginx.pid;!' -e 's!/var/cache/nginx!/tmp/nginx!g' /etc/nginx/nginx.conf \
     && mkdir -p /tmp/nginx \
     && chown nginx:nginx /tmp/nginx
