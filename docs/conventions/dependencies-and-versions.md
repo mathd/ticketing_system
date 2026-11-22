@@ -7,8 +7,8 @@ release**, looked up at implementation time — never assumed from memory. Appli
 TypeScript, Vite, PostgreSQL, Redis, NATS, GitHub Actions, linters, everything. Pinning behind
 latest requires a stated compatibility reason, recorded next to the pin.
 
-Current anchors (update as they move): Go 1.27.4 · Node 26.13.0 · pnpm 12 (pinned via `packageManager`,
-which also enforces pnpm's supply-chain `minimumReleaseAge` policy) · PostgreSQL 18.6 · Vite 8 ·
+Current anchors (update as they move): Go 1.27.4 · Node 26.13.1 · pnpm 12 (pinned via `packageManager`,
+which also enforces pnpm's supply-chain `minimumReleaseAge` policy) · PostgreSQL 18.7 · Vite 8 ·
 React 19 · TypeScript `~7.0.2`. Read the manifests and lockfile for exact resolutions.
 
 - **Hold: the TypeScript 6 API for `openapi-typescript`.** Every compiler in the repository is
@@ -19,13 +19,13 @@ React 19 · TypeScript `~7.0.2`. Read the manifests and lockfile for exact resol
   `packageExtensions` and `overrides` cannot point the peer elsewhere. `@hey-api/openapi-ts`
   0.99.0 also calls the TS JS API, so a generator change does not remove the hold. Remove the
   alias when an `openapi-typescript` release accepts `typescript@7`.
-- **Local Node selection.** Run `nvm use` from the repo to select the Node 26.13.0 release
+- **Local Node selection.** Run `nvm use` from the repo to select the Node 26.13.1 release
   pinned in `.nvmrc`.
-- **Node 26 in CI and images.** CI and the web images use Node 26.13.0. Node 25+ has no Corepack.
+- **Node 26 in CI and images.** CI and the web images use Node 26.13.1. Node 25+ has no Corepack.
   The web images install pnpm with npm. CI runs `corepack enable` before `setup-node`, with the
   runner's preinstalled Node; the pnpm shim then runs under Node 26.
 
-### Go directive and current holds (TKT-523)
+### Go directive and holds (TKT-523)
 
 - **The `go` directive in `go.work` and in every `go.mod` names the patch release, 1.27.4.** With
   `go 1.27.0`, the local `GOTOOLCHAIN=auto` selection can run 1.27.0, which has the standard-library
@@ -34,16 +34,9 @@ React 19 · TypeScript `~7.0.2`. Read the manifests and lockfile for exact resol
 - **A Go patch release can break the linter.** golangci-lint v2.13.2 cannot read the go1.27.2
   export data. `check-go-toolchain` compares minor versions only, so it stays green for that pair.
   After a Go bump, run `make lint-go`.
-- **Hold: `github.com/dprotaso/go-yit` in `services/catalog/go.mod`.** It stays at the last commit
-  on `gopkg.in/yaml.v3` (`v0.0.0-20250513224043-18a80f8f6df4`). Later commits use another yaml
-  module, and `vmware-labs/yaml-jsonpath` v0.3.2 (its latest release) then stops compiling inside
-  `go tool oapi-codegen`. The reason is also above the pin. `go get -u tool` removes the hold, so
-  give the pinned version again in that command. Remove the hold when yaml-jsonpath uses the same
-  yaml module as go-yit.
-- **Speakeasy dependencies share the `go-yit` hold.** `github.com/speakeasy-api/jsonpath`
-  stays at v0.6.3 and `github.com/speakeasy-api/openapi` at v1.25.6. Their v0.7.0 and
-  v1.26.3 releases require `go-yit@v0.0.0-20250804204205-7afe4252a1dd`, which conflicts
-  with the held version. Recheck these upgrades when the generator hold is removed.
+- **No Go module hold (2026-11-21).** `oapi-codegen` v2.9.0 does not import
+  `github.com/dprotaso/go-yit`, `vmware-labs/yaml-jsonpath` or the Speakeasy modules. `go mod tidy`
+  removed them from `services/catalog/go.mod`, and the TKT-523 holds on them ended.
 
 ## Executable dependency pins
 

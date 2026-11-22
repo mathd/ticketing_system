@@ -6,11 +6,11 @@ Local Docker Compose testbed. Run commands from the repo root.
 
 Use the versions selected in [go.work](../go.work), [package.json](../package.json), and
 [CI](../.github/workflows/check.yaml). At this revision, Go requires 1.27.4; CI and the web
-images select Node 26.13.0, and the package manager is pnpm 12.18.0. The gate requires the active Go minor version to match the declared
+images select Node 26.13.1, and the package manager is pnpm 12.21.0. The gate requires the active Go minor version to match the declared
 1.27 line and the pinned linter to read its export data. Patch compatibility still needs the lint
 stage. See [toolchain check](../scripts/check-go-toolchain.sh). See [dependency policy](conventions/dependencies-and-versions.md)
 for holds and tool upgrades. Node 26 has no Corepack. Install the pinned pnpm with
-`npm install -g pnpm@12.18.0` or your approved package-manager method. The web images do the same.
+`npm install -g pnpm@12.21.0` or your approved package-manager method. The web images do the same.
 Docker with Compose v2 is required. Browser checks also need real
 host Chrome. `make lint-go` installs the pinned linter into `bin/`.
 
