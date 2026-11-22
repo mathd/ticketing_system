@@ -35,7 +35,8 @@ func listenForPaymentsDials(t *testing.T) func() int {
 		}
 	}()
 	t.Setenv("PAYMENTS_URL", "http://"+ln.Addr().String())
-	t.Setenv("PAYMENTS_INTERNAL_TOKEN", "payments-token")
+	t.Setenv("INTERNAL_SERVICE_TOKEN", abandonInternalToken)
+	t.Setenv("PAYMENTS_INTERNAL_TOKEN", abandonPaymentsToken)
 	return func() int {
 		mu.Lock()
 		defer mu.Unlock()
@@ -94,24 +95,65 @@ func TestRecordRefundOutcomeRefusesInvalidCommandsBeforeAnyConnection(t *testing
 	}
 }
 
-// Payments configuration is required and named, and its absence is found before the database.
-func TestRecordRefundOutcomeNeedsPaymentsConfigurationFirst(t *testing.T) {
-	args := []string{uuid.NewString(), uuid.NewString(), "refunded_outside", "Ada Operator", "SEPA-0001", "paid by bank transfer"}
-	dials := listenForDials(t)
+// validOperatorSettings points the command at the database dial counter and at a payments that
+// counts requests, with two valid, distinct credentials. It also points the PG* defaults at the
+// dial counter, so a command that opened the database with an empty DATABASE_URL is counted, and
+// clears PGSERVICE, which pgx would otherwise read from the shell.
+func validOperatorSettings(t *testing.T, payments string) {
+	t.Helper()
+	validAbandonSettings(t, payments)
+	t.Setenv("PGSERVICE", "")
+}
 
-	t.Setenv("PAYMENTS_URL", "")
-	t.Setenv("PAYMENTS_INTERNAL_TOKEN", "a-token")
-	t.Setenv("INTERNAL_SERVICE_TOKEN", "")
-	if err := recordRefundOutcome(args); err == nil || !strings.Contains(err.Error(), "PAYMENTS_URL") {
-		t.Fatalf("err = %v, want it to name PAYMENTS_URL", err)
+const (
+	missingPaymentsTokenError = "PAYMENTS_INTERNAL_TOKEN required: no default is shipped, run `make up` once to generate a local credential"
+	shortPaymentsTokenError   = "PAYMENTS_INTERNAL_TOKEN must be at least 32 bytes (`make up` generates a conformant value)"
+	equalPaymentsTokenError   = "PAYMENTS_INTERNAL_TOKEN must not equal INTERNAL_SERVICE_TOKEN: the separate credential exists " +
+		"so a compromise elsewhere does not reach the money surface, and an identical value removes that boundary while looking configured"
+)
+
+// TKT-595. Every setting is checked before the database is opened, one at a time, in both forms.
+// Each row changes one setting of an otherwise valid configuration. The database counter is the
+// observable: the abandoned form inspects the refund and reserves its abandonment through the
+// handle the command opens, so zero connections also means no reservation. The payments counter
+// cannot fail under a mutation here, because both forms read the database first and the listener
+// closes every connection; the positive controls below pin that order.
+func TestRecordRefundOutcomeRefusesInvalidConfiguration(t *testing.T) {
+	dials := listenForDials(t)
+	payments, calls := recordingDependency(t)
+	forms := map[string][]string{
+		"refunded_outside": {uuid.NewString(), uuid.NewString(), "refunded_outside", "Ada Operator", "SEPA-0001", "paid by bank transfer"},
+		"abandoned":        {uuid.NewString(), uuid.NewString(), "abandoned", "Ada Operator", "nobody will refund this attempt"},
 	}
-	t.Setenv("PAYMENTS_URL", "http://payments.invalid")
-	t.Setenv("PAYMENTS_INTERNAL_TOKEN", "")
-	if err := recordRefundOutcome(args); err == nil || !strings.Contains(err.Error(), "PAYMENTS_INTERNAL_TOKEN") {
-		t.Fatalf("err = %v, want it to name the credential", err)
+	rows := []struct {
+		name, env, value, want string
+	}{
+		{"PAYMENTS_INTERNAL_TOKEN unset with a valid shared token", "PAYMENTS_INTERNAL_TOKEN", "", missingPaymentsTokenError},
+		{"PAYMENTS_INTERNAL_TOKEN of 31 bytes", "PAYMENTS_INTERNAL_TOKEN", strings.Repeat("p", 31), shortPaymentsTokenError},
+		{"PAYMENTS_INTERNAL_TOKEN equal to the shared token", "PAYMENTS_INTERNAL_TOKEN", abandonInternalToken, equalPaymentsTokenError},
+		{"DATABASE_URL empty", "DATABASE_URL", "", "DATABASE_URL is required: an empty value would select the shell's PostgreSQL defaults"},
+		{"PAYMENTS_URL empty", "PAYMENTS_URL", "", "PAYMENTS_URL is required"},
+		{"PAYMENTS_URL with a bare fragment delimiter", "PAYMENTS_URL", payments + "#",
+			"PAYMENTS_URL must be an absolute http or https base URL with a host name, a port in 1-65535 if any, and no query or fragment"},
 	}
-	if dials() != 0 {
-		t.Fatalf("the command reached the database %d times without payments configuration", dials())
+	for form, args := range forms {
+		for _, tc := range rows {
+			t.Run(form+"/"+tc.name, func(t *testing.T) {
+				validOperatorSettings(t, payments)
+				t.Setenv(tc.env, tc.value)
+				before, beforeCalls := settled(dials), calls()
+				err := recordRefundOutcome(args)
+				if err == nil || err.Error() != tc.want {
+					t.Errorf("with %s=%q: err = %v, want %q", tc.env, tc.value, err, tc.want)
+				}
+				if n := settled(dials) - before; n != 0 {
+					t.Errorf("with %s=%q the command reached the database %d time(s)", tc.env, tc.value, n)
+				}
+				if n := calls() - beforeCalls; n != 0 {
+					t.Errorf("with %s=%q the command reached payments %d time(s)", tc.env, tc.value, n)
+				}
+			})
+		}
 	}
 }
 

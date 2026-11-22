@@ -26,6 +26,7 @@ import (
 
 	"ticketing/services/commerce/internal/exchangeunwind"
 	store "ticketing/services/commerce/internal/store"
+	"ticketing/shared/runtimecfg"
 )
 
 // paymentsEvidenceTimeout bounds the two read-only payments calls. Shorter than
@@ -141,12 +142,12 @@ func unwindExchange(args []string) error {
 		return errors.New("PAYMENTS_URL is required: the unwind refuses unless payments' own records " +
 			"say no money moved, and it cannot ask without one")
 	}
-	token := os.Getenv("PAYMENTS_INTERNAL_TOKEN")
-	if token == "" {
-		token = os.Getenv("INTERNAL_SERVICE_TOKEN")
-	}
-	if token == "" {
-		return errors.New("PAYMENTS_INTERNAL_TOKEN (or INTERNAL_SERVICE_TOKEN) is required to read payments evidence")
+	// The dedicated credential, never the shared one (TKT-595): payments refuses the shared token.
+	// The check comes before the database, because the no-basis and zero-delta branches change
+	// Commerce without a payments request.
+	token, err := runtimecfg.PaymentsTokenFromEnv()
+	if err != nil {
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), operatorDBTimeout)

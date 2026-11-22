@@ -13,13 +13,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"ticketing/services/commerce/internal/refundoutcome"
 	store "ticketing/services/commerce/internal/store"
+	"ticketing/shared/runtimecfg"
 )
 
 const recordRefundOutcomeUsage = "usage: commerce record-refund-outcome <organizer-id> <refund-id> refunded_outside <operator> <external-ref> <reason> | " +
@@ -86,23 +86,27 @@ func recordRefundOutcome(args []string) error {
 	if err := in.Validate(); err != nil {
 		return err
 	}
-	paymentsURL := strings.TrimSuffix(os.Getenv("PAYMENTS_URL"), "/")
-	if paymentsURL == "" {
-		return errors.New("PAYMENTS_URL is required: nothing is recorded unless payments proves the refund failed")
+	// Every setting is checked before the database is opened (TKT-595, ADR-087). The abandoned
+	// form reserves in Commerce before it calls payments, so a setting it cannot use would leave a
+	// reservation behind. The order is the one abandon-exchange uses: URL, token, DSN.
+	paymentsURL, err := serviceBaseURL("PAYMENTS_URL")
+	if err != nil {
+		return err
 	}
-	// The payments credential, named at both client call sites below. TKT-595 changes where it
-	// comes from.
-	paymentsToken := os.Getenv("PAYMENTS_INTERNAL_TOKEN")
-	if paymentsToken == "" {
-		paymentsToken = os.Getenv("INTERNAL_SERVICE_TOKEN")
+	// The dedicated credential, never the shared one: payments refuses the shared token, and the
+	// refusal would read as "could not prove" instead of a configuration error (TKT-498 D30).
+	paymentsToken, err := runtimecfg.PaymentsTokenFromEnv()
+	if err != nil {
+		return err
 	}
-	if paymentsToken == "" {
-		return errors.New("PAYMENTS_INTERNAL_TOKEN (or INTERNAL_SERVICE_TOKEN) is required to reach payments")
+	dsn, err := requiredDatabaseURL()
+	if err != nil {
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), operatorDBTimeout)
 	defer cancel()
-	db, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
 	}
