@@ -483,8 +483,9 @@ session's identity.
   a stamped refund. An unstamped refund on the charge came from outside the platform. It can be
   the operator's own outside transfer through the PSP. Before a same-key replay or an outside
   transfer, check the other refunds on the charge, with or without the stamp. Stop if another
-  refund returned money, can still move money, or has an unknown status. Wait for a terminal
-  status and reconcile the result before you continue
+  refund returned money, can still move money, or has an unknown status (any status other than
+  `succeeded`, `failed` or `canceled`). Wait for a terminal status and reconcile the result before
+  you continue
   ([runbook](../runbooks/order-recovery.md#resolve-a-lost-provider-reply)). Both allowances stay
   reserved while the leg is unresolved and unmarked.
 - Stripe documents refund listing filtered by PaymentIntent and the `failed` and `canceled`

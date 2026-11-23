@@ -671,15 +671,20 @@ letters for the currency; and no more than 64 KiB. The refusal of a `200` does n
    outside the platform, for example from the provider dashboard. The proof does not see it.
    Stop if the listing is incomplete or unclear. Stop if any refund other than the refund from
    step 1 returned money, can still move money, or has an unknown status. This includes
-   `pending` refunds, with or without the stamp. Wait for each of these refunds to reach a
-   terminal status. Reconcile each result against the amount still owed before you continue.
+   `pending` refunds, with or without the stamp. A terminal status is `succeeded`, `failed` or
+   `canceled`. Any other status, or a refund that the listing does not show clearly, is an
+   unknown status. Wait for each of these refunds to reach a terminal status. If one of them
+   returned money for this order, do not continue: reconcile the order with the other operators.
 3. Immediately before the transfer, run the Commerce query under
    [Inspect one refund's disposition](#inspect-one-refunds-disposition). Use the intended Commerce
    database. Require exactly one row for the organizer, order, and refund you selected. Require
    `refund_status = pending`, the stored amount and currency, and NULL in both `state` and `kind`.
    Stop on a read error, zero rows, more than one row, any mismatch, a disposition, or an outcome.
 4. Send the full stored amount in its stored currency only after all three checks pass and you
-   confirm that the buyer is still owed that amount for this refund. The checks reserve nothing.
+   confirm that the buyer is still owed that amount for this refund. The buyer is still owed it
+   only when step 2 found no other refund that returned money for this order, and no operator
+   knows of another outside transfer for this order. Otherwise, stop and reconcile the order.
+   This procedure never sends a partial amount. The checks reserve nothing.
    A dispatch can still submit after the listing (ADR-087 §13). Keep the other operators'
    agreement in effect until you record the outcome.
 5. Confirm that the full transfer settled. Record it with the command below. Use the bank or PSP
