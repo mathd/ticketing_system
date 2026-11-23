@@ -529,7 +529,9 @@ An order with an exchange row cannot be refunded (`BindOrderRefund` counts `orde
 it cannot get a second exchange under a new key (unique index `order_exchanges_one_per_source`).
 
 **The operator route.** An operator resolves the money with the PSP or with the buyer, outside the
-platform. Then the operator uses the existing surfaces. This is what each one does to such an order:
+platform. For a staff or bulk post-purchase refund, follow
+[the checks before an outside transfer](../runbooks/order-recovery.md#before-an-outside-transfer).
+Then the operator uses the existing surfaces. This is what each one does to such an order:
 
 - **Recovery.** `commerce list-parked` shows the order with `status=reconciliation_required` and
   `last_error=provider_refund_failed: … (re_…)`. It is read-only. `commerce unpark-order <order-id>

@@ -234,8 +234,15 @@ delta, it uses local evidence and makes no Payments request
 ([service](../../services/commerce/internal/exchangeunwind/service.go)). A Payments outage
 therefore does not stop those two cases.
 
-Before you run the command, confirm that `PAYMENTS_URL` reaches the Payments service with no
-redirect. The current client follows redirects and accepts a 404 from the final address as absence
+Before an unwind that calls Payments, check the exact `PAYMENTS_URL` configured for the command.
+Use the same lookup route the command will use. For an upgrade, use `GET /internal/operations`
+with `organizer_id` and the `idempotency_key` of a charge you know exists. For a downgrade, use
+`GET /internal/refund-legs` with `organizer_id`, `source_idempotency_key`, and
+`refund_idempotency_key` for a leg you know exists. Send the dedicated Payments credential. Use a
+client that stops at the first response. Require HTTP 200 and a Payments response for the known
+record. Run the check from the throwaway curl container on the stack network shown under [Prove
+the provider failure](#prove-the-provider-failure), against the address that `PAYMENTS_URL`
+names. Stop if the check fails. The unwind client accepts the final 404 by status after redirects
 (TKT-589).
 
 **The listing reports CANDIDATES, not confirmed wedges.** Commerce holds no copy of inventory's
@@ -559,26 +566,35 @@ For a bulk refund, use the procedure below only for a money refund that the prov
 3. Continue only for a row with `outcome` `failed` and `failure.code` `refund_refused`. This code also
    covers other refusals. For example, Payments refused the refund for a different cause, an operator
    already recorded the refund as `abandoned`, or the refund did not return the whole order. Thus the
-   row alone does not prove a provider failure.
+   row alone does not prove a provider failure. For an `unavailable` row, use steps 4–6 to
+   identify the original attempt for diagnosis. Follow
+   [Resolve a lost provider reply](#resolve-a-lost-provider-reply). TKT-605 tracks the report
+   entry rule.
 4. Open staff order detail for the row's `order_id`. Select the refund whose `idempotency_key` is
    `cancel:<slot_id>:<order_id>`, with the run's `slot_id` and the row's `order_id`. Its `actor` must
    also be `system:event-cancellation`. Use the actor only to confirm the selection. A staff refund
    can have the same actor text under a different key.
 5. Continue only if that refund has `status` `pending` and `abandoned` `false`. If no such refund
-   exists, stop. This procedure does not apply to the order.
+   exists, stop. This procedure does not apply to the order. Staff detail shows
+   `abandoned: false` while Commerce holds a pending abandonment reservation.
 6. Read the `refund_id`, stored `amount` in minor units, and `currency` of that refund.
 
-**Agree on the disposition first.** Before you transfer money or run a command, agree with the
-other operators what this refund's outcome is. Do not run two different commands for one refund. If
-you find a conflict, stop and investigate before any further money action.
+**Agree on the disposition first.** Agree with the other operators before any money action or
+outcome command. Keep that agreement in effect through the transfer and the recording. Stop and
+investigate if another operator is taking a different action on the same refund.
 
-**Before you send money outside the platform**, verify that the provider marked the exact original
-refund `failed` or `canceled` for the stored amount and currency. From a client on the platform
-network, use the Payments service address. Base Compose uses `http://payments:8080` on its network.
-The Commerce container's `PAYMENTS_URL` is a setting for the Commerce command. For local work, the
-opt-in `compose.direct-ports.yaml` overlay makes Payments available from the host at
-`http://127.0.0.1:${PAYMENTS_PORT:-8093}`. Both the Payments and Commerce containers use distroless
-images without a shell or `curl`.
+For a bulk refund, wait for the terminal report. A terminal report covers that run only. Wait for
+any known overlapping cancellation run or staff retry for the same refund attempt to finish.
+Reconcile its result before you continue.
+
+<a name="prove-the-provider-failure"></a>
+
+**Prove the provider failure.** Use the read-only Payments proof for the exact refund, stored
+amount, and currency. From a client on the platform network, use the Payments service address.
+Base Compose uses `http://payments:8080` on its network. The Commerce container's `PAYMENTS_URL`
+sets the address for the Commerce command. For local work, `compose.direct-ports.yaml` makes
+Payments available from the host at `http://127.0.0.1:${PAYMENTS_PORT:-8093}`. The Payments and
+Commerce containers have no shell or `curl`.
 
 For `organizer_id`, use the refund's organizer. For `idempotency_key`, read the order's stored
 checkout key from the intended Commerce database. Staff order detail shows the refund attempt's own
@@ -644,18 +660,40 @@ letters for the currency; and no more than 64 KiB. The refusal of a `200` does n
 
 ### The buyer was refunded outside the platform
 
+<a name="before-an-outside-transfer"></a>
+
+1. Complete the [Payments proof](#prove-the-provider-failure). Continue only after `HTTP 200` with
+   a provider reference and the stored amount and currency.
+2. List every refund on the charge with the provider, all pages. Every refund that Payments
+   sends for a refund leg carries `metadata.compensation_key`. An unstamped refund came from
+   outside the platform, for example from the provider dashboard. The proof does not see it.
+   Stop and reconcile the charge if any refund other than the failed original returned money
+   for this order, with or without the stamp.
+3. Immediately before the transfer, run the Commerce query under
+   [Inspect one refund's disposition](#inspect-one-refunds-disposition). Use the intended Commerce
+   database. Require exactly one row for the organizer, order, and refund you selected. Require
+   `refund_status = pending`, the stored amount and currency, and NULL in both `state` and `kind`.
+   Stop on a read error, zero rows, more than one row, any mismatch, a disposition, or an outcome.
+4. Send the full stored amount in its stored currency only after all three checks pass. The checks
+   reserve nothing. Keep the other operators' agreement in effect until you record the outcome.
+5. Confirm that the full transfer settled. Record it with the command below. Use the bank or PSP
+   transfer reference and your own name. The command copies the stored amount and currency. The
+   command also records the shared Commerce database login as `session_user`.
+
 ```
 commerce record-refund-outcome <organizer-id> <refund-id> refunded_outside "<operator name>" "<external reference>" "<reason>"
 ```
 
-Before you run it:
-
-1. Confirm that the outside transfer is **settled** and is for the **full stored amount** of this
-   refund, in its stored currency. The command does not take an amount: it copies the refund's
-   amount and currency, and prints them. Running the command is your confirmation.
-2. Use the transfer's own reference (bank or PSP dashboard) as `<external reference>`.
-3. Type your own name as `<operator name>`. It is the only personal attribution. The record also
-   stores PostgreSQL `session_user`, which on this access path is always the shared `commerce` login.
+If the Commerce check finds a reservation before you send money, stop the outside transfer.
+Confirm that no outside transfer occurred or remains in flight. After you resolve any refusal,
+finish the abandonment with the original operator name and reason. After the abandonment, the
+Back Office offers a fresh refund under a new key (ADR-087 §16). Run [Detect a late provider
+refund](#detect-a-late-provider-refund) for the original attempt before staff refund the buyer
+under a new key. Stop and reconcile if the check finds a `succeeded` refund or other evidence
+that money moved. The check detects a refund that already happened. A dispatch that Payments
+admitted before the abandonment marker can still send its POST after the check. A new-key refund
+keeps the residual risk accepted in ADR-087 §13. The buyer can receive two refunds. Run the same
+check again during reconciliation (ADR-087 §13).
 
 What the command does (ADR-087 §3–§6): it asks Payments, read-only, to prove that the leg is still
 bound and unmarked and that the provider's stamped refund is `failed` or `canceled` for the stored
@@ -679,21 +717,37 @@ report `refunded`.
 original record (`replay=true`) with its original time and attribution, and asks Payments nothing.
 A command that differs in kind, operator name, reference or reason is refused as a conflict.
 
+If an outside transfer is in flight or settled, follow
+[Outside transfer incident](#outside-transfer-incident) for every refusal below. Stop retries.
+
 | Refusal | Meaning | What to do |
 |---|---|---|
 | `no refund … for this organizer` | Wrong ids, or the refund belongs to another organizer | Check both ids. |
 | `already carries a different outcome` | An outcome is recorded and it is not this one | Stop. Outcomes are append-only. Investigate before any money action. |
 | `completed through payments` | The money moved through the platform | Nothing to record. |
-| `payments refused the failure proof` (404 or 409) | No such leg, the leg completed, it has an abandonment marker, or the provider says the refund did not fail | Reconcile the original refund first. Do not transfer money. |
-| `payments could not prove` (502, timeout, malformed answer, or different money) | No proof now | Nothing changed and both allowances stay reserved. Fix the cause and run the same command again. |
+| `payments refused the failure proof` (404 or 409) | No such leg, the leg completed, it has an abandonment marker, or the provider says the refund did not fail | If you did not send a transfer, reconcile the original refund first and do not transfer money. If a transfer is in flight or settled, follow [Outside transfer incident](#outside-transfer-incident). A 409 can mean that a late dispatch completed the leg, so the buyer can have two refunds. |
+| `payments could not prove` (502, timeout, malformed answer, or different money) | No proof now | Nothing changed and both allowances stay reserved. Fix the cause and run the same command again. If a transfer is in flight or settled, follow [Outside transfer incident](#outside-transfer-incident). |
 | `payments could not prove` with `payments redirect refused (HTTP <status>)` | The answer to the request at `PAYMENTS_URL` was a redirect (3xx). The command did not follow it and did not send the credential to another address. | Nothing changed and both allowances stay reserved. Check the routing from `PAYMENTS_URL` to the Payments service: it must reach Payments with no redirect. Correct the routing or the URL, then run the same command again. |
 | `payments could not prove` with `payments returned invalid refund evidence` | A `200` answer is not exactly the evidence that Payments writes. This can occur when `PAYMENTS_URL` is correct. | Nothing changed and both allowances stay reserved. Find which service sent the answer: Payments, or a proxy or another service on the route. Correct the cause, then run the same command again. |
 | `changed while the command ran` | The refund or its order changed between the read and the write | Run the same command again. |
-| `an abandonment is reserved` | An operator started `abandoned` for this refund | Do not record it as outside. Finish the abandonment with the original command. |
+| `an abandonment is reserved` | An operator started `abandoned` for this refund. | If the transfer is in flight or settled, follow [Outside transfer incident](#outside-transfer-incident). If you confirm that no transfer occurred or remains in flight, finish the abandonment with the original operator name and reason. |
 
-**A refund whose provider refund has no stamp can never be proven.** A leg bound before the adapter
-added the `compensation_key` stamp, or one the provider never answered, has no refund the proof can
-find. The command refuses it, and both allowances stay reserved.
+<a name="outside-transfer-incident"></a>
+
+**Outside transfer incident.** Use this procedure when an outside transfer is in flight or settled
+and either Commerce refuses to record the outcome or the failure proof fails. The proof requires
+`HTTP 200` with matching evidence. A timeout, a refused redirect, invalid evidence, or any
+other HTTP status triggers this procedure. Stop further money actions on the order and its
+charge. Keep the transfer reference.
+Follow the leg and provider lookups under [Detect a late provider refund](#detect-a-late-provider-refund)
+to reconcile the order and charge. A proof 409 can mean that a late dispatch completed the leg,
+so the buyer can have two refunds.
+If Commerce holds an abandonment reservation, also leave the reservation pending. Finishing it
+releases both allowances. Without a Payments marker, a pending reservation keeps both allowances
+reserved. Apply the same stop even if the command tells you to finish the abandonment.
+
+If the provider reply was lost or the proof is inconclusive, follow [Resolve a lost provider
+reply](#resolve-a-lost-provider-reply) before you take another money action.
 
 After an outside completion the refund is in the reversal backlog until its tickets are voided and
 its capacity is returned. Watch `commerce.refund.reversal.outstanding` and
@@ -724,8 +778,10 @@ the run that started it, and the outcome is attributed to that operator. To fini
 the command again with exactly that operator name and reason.
 
 If the configuration passed the local checks, Payments can still refuse the credential after
-Commerce reserves the abandonment. The reservation can then stay `pending`. Correct the credential
-and repeat the original `abandoned` command with the same operator name and reason.
+Commerce reserves the abandonment. The reservation can then stay `pending`. Correct the credential.
+Repeat the original `abandoned` command with the same operator name and reason only after you
+confirm that no outside transfer occurred or remains in flight. Otherwise, follow
+[Outside transfer incident](#outside-transfer-incident).
 
 What the command does (ADR-087 §10): reserve in Commerce; Payments proves the terminal failure with
 the same read-only lookup and writes an append-only marker on the exact leg, which releases that
@@ -750,7 +806,10 @@ After success:
   `already_refunded`, or `reversal_outstanding` while a reversal is still owed. Staff own any further
   refund of the order.
 
-**Run the same command again** after any refusal, timeout, 5xx, malformed answer or Commerce error.
+**Retry only after you confirm that no outside transfer occurred or remains in flight.** If
+money is in flight or settled, follow [Outside transfer incident](#outside-transfer-incident).
+Otherwise, run the same command again after a refusal, timeout, 5xx, malformed answer or Commerce
+error. Use the original operator name and reason.
 The reservation stays `pending` until the run that finishes it; a 404 or 409 describes one request,
 and an overlapping request can still have written the marker. If Payments wrote its marker, its
 allowance is released while Commerce keeps the quantity counted: the stricter state. Payments
@@ -758,42 +817,95 @@ answers the next run from its marker without asking the provider (also when the 
 and Commerce finishes once. An identical command after success returns the original record
 (`replay=true`). A different operator name or reason is a conflict.
 
+Apply this retry condition to every refusal below. Follow this runbook when the command's
+refusal text gives different instructions.
+
 | Refusal | Meaning | What to do |
 |---|---|---|
 | `no refund … for this organizer` | Wrong ids, or another organizer's refund | Check both ids. |
 | `already carries a different outcome, or its abandonment was started with another operator name or reason` | An outcome is recorded and it is not this one, or the reservation has another attribution | Repeat the original operator name and reason, or stop and investigate before any money action. |
 | `is completed` | The refund completed, through Payments or outside | Nothing to abandon. A pending reservation on it is inert. |
 | `payments refused this abandon request` (404 or 409) | No such leg, the leg completed, its money differs, or the provider says the refund did not fail | The reservation stays. Correct the cause, or reconcile the original refund; then run the same command again. |
-| `UNCERTAIN: payments' answer … is unknown` | Timeout, 5xx, provider inconclusive, or an answer for other money | Run the same command again. If Payments keeps answering 502, see the unstamped case below. |
+| `UNCERTAIN: payments' answer … is unknown` | Timeout, 5xx, provider inconclusive, or an answer for other money | Follow the retry condition above. If Payments keeps answering 502, use [Resolve a lost provider reply](#resolve-a-lost-provider-reply) to check the provider evidence. |
 | `UNCERTAIN` with `payments redirect refused (HTTP <status>)` | The answer to the request at `PAYMENTS_URL` was a redirect (3xx). The command did not follow it and did not send the credential to another address. | The reservation stays `pending` and the quantity stays counted. The Payments marker can exist even on the first attempt. A redirect leaves the outcome of the initial request unknown. Check the routing from `PAYMENTS_URL` to the Payments service: it must reach Payments with no redirect. Correct the routing or the URL, then run the same command again. |
 | `UNCERTAIN` with `payments returned invalid refund evidence` | A `200` answer is not exactly the evidence that Payments writes. This can occur when `PAYMENTS_URL` is correct. | The reservation stays `pending` and the quantity stays counted. The Payments marker can exist: Payments can have written it before the answer. Find which service sent the answer: Payments, or a proxy or another service on the route. Correct the cause, then run the same command again. |
 | `changed while the command ran` | The refund or its order changed between the read and the write | Run the same command again. |
 | `FAILED: … was not recorded in Commerce` | A Commerce error after Payments may have accepted | Run the same command again. |
 
-**Inspect one refund's disposition** in both databases. The Payments leg query is below.
+<a name="inspect-one-refunds-disposition"></a>
+
+**Inspect one refund's disposition.** Run this query in Commerce. In `psql`, set `organizer_id`
+and `refund_id` with `\set`. The Payments leg query below shows whether Payments holds a marker.
 
 ```sql
 -- commerce database
-SELECT d.state, d.operator_name, d.reason, d.reserved_at, o.kind, o.external_ref, o.recorded_at
+SELECT r.order_id, r.status AS refund_status, r.amount, r.currency,
+       d.state, d.operator_name, d.reason, d.reserved_at, o.kind, o.external_ref, o.recorded_at
 FROM order_refunds r
+JOIN orders ord ON ord.id = r.order_id
+JOIN reservations res ON res.id = ord.reservation_id AND res.organizer_id = r.organizer_id
 LEFT JOIN order_refund_abandonment_dispositions d ON (d.organizer_id, d.refund_id) = (r.organizer_id, r.id)
 LEFT JOIN refund_outcomes o
   ON (o.organizer_id, o.subject_kind, o.subject_id) = (r.organizer_id, 'order_refund', r.id)
-WHERE r.organizer_id = '<organizer-id>' AND r.id = '<refund-id>';
+WHERE r.organizer_id = :'organizer_id' AND r.id = :'refund_id';
 ```
 
-- `pending`, no outcome, and a Payments marker (`abandonment_ref` set): Payments accepted and
-  Commerce did not finish. Run the same `abandoned` command again. Do not transfer money until it
-  has finished.
-- `pending`, no outcome, no marker: nothing released yet. Both allowances stay reserved. If the
-  proof never becomes conclusive (an unstamped leg), it stays pending.
+- With a `pending` disposition and no outcome, stop the outside path. If the transfer is in
+  flight or settled, follow [Outside transfer incident](#outside-transfer-incident).
+- With a `pending` disposition and a Payments marker (`abandonment_ref` set), Payments released
+  its allowance. Commerce still counts the quantity. If you confirm that no outside transfer
+  occurred or remains in flight, run the original `abandoned` command again.
+- With a `pending` disposition and no marker, both allowances stay reserved. Resume abandonment
+  only after you confirm that no outside transfer occurred or remains in flight. If the proof
+  stays inconclusive, the reservation stays pending.
+- After abandonment finishes, the original attempt cannot record an outside transfer. The Back
+  Office then offers a fresh refund under a new key (ADR-087 §16). Run [Detect a late provider
+  refund](#detect-a-late-provider-refund) for the original attempt before staff refund the buyer
+  under a new key. Stop and reconcile if the check finds a `succeeded` refund or other evidence
+  that money moved. The check detects a refund that already happened. A dispatch that Payments
+  admitted before the abandonment marker can still send its POST after the check. A new-key refund
+  keeps the residual risk accepted in ADR-087 §13. The buyer can receive two refunds. Run the same
+  check again during reconciliation (ADR-087 §13).
 - An outcome `refunded_outside` together with a Payments marker on the same leg is an invariant
-  violation. Stop all further money actions on the order and its charge, and investigate.
+  violation. Stop further money actions on the order and its charge. Investigate both records.
 
-**The unstamped-leg case.** Proof is impossible for a leg whose provider refund has no compensation
-stamp (bound before the adapter added it, or never answered by the provider). Both commands refuse
-it (`refunded_outside` with "could not prove", `abandoned` with "UNCERTAIN" and Payments 502), and
-both allowances stay reserved. No command in this release can close such a refund.
+<a name="resolve-a-lost-provider-reply"></a>
+
+**Resolve a lost provider reply.** A lost reply can appear as `502 refund unresolved` in staff
+refunds or as `failed` with `failure.code = unavailable` in a bulk report. The Access gate can
+also return a staff 502 on an exchange replacement refund before that request calls Payments.
+Stripe can create the refund before the reply is lost. Payments puts
+`metadata.compensation_key` on the request before it sends the POST.
+Follow this procedure when the command says a refund with no provider stamp can never be proven.
+
+Start with the [read-only Payments proof](#prove-the-provider-failure) for the original attempt.
+Use the leg and provider lookups below to reconcile the exact charge, stamp, amount, and currency.
+A proof 502 leaves the result unresolved. Keep both allowances reserved while the leg is unresolved
+and unmarked. Use the read-only proof for diagnosis. Running `abandoned` first reserves the refund
+in Commerce before Payments checks the provider.
+
+The replay column describes an ordinary replay of the original refund attempt, with its original
+key and request values. For a bulk refund, use the original cancellation attempt under its derived
+key. A fresh staff refund has a different key.
+
+| Provider evidence for this stamp | Same-key replay | Read-only proof |
+|---|---|---|
+| A complete, valid listing has no matching refund | Submits a refund under the stored provider key | 502 |
+| One matching refund is `succeeded` | Adopts it and completes the original attempt | 409 |
+| One matching refund is `pending` | 502. Wait and check again. | 502 |
+| One matching refund is `failed` or `canceled` | 422. Sends no refund POST. | 200 |
+
+With proof 200, follow the usual checks for the chosen outcome. If a listing is incomplete,
+malformed, or has conflicting evidence, stop money actions and reconcile the provider record.
+Multiple corroborated matches also require reconciliation.
+
+**Unstamped refunds.** Every refund that Payments sends for a refund leg carries the stamp. The
+stamp (commit `9b1d6a86`, 2026-07-30) is older than refund legs (commit `f7f419c8`, 2026-07-31).
+An unstamped refund on the charge therefore came from outside the platform, for example from the
+provider dashboard. The proof and the same-key replay ignore it as evidence for the original
+attempt. Before a same-key replay or an outside transfer, list every refund on the charge with
+the provider. If an unstamped refund already returned this money, stop money actions and reconcile
+the charge. Otherwise a same-key replay or an outside transfer can refund the buyer twice.
 
 **Find the Payments leg** for a refund with the scoped leg key: the organizer, the order's checkout
 idempotency key (`orders.idempotency_key`) and the refund id as the refund key.
@@ -809,6 +921,8 @@ WHERE l.organizer_id = '<organizer-id>'
   AND l.source_idempotency_key = '<order checkout key>'
   AND l.refund_idempotency_key = '<refund-id>';
 ```
+
+<a name="detect-a-late-provider-refund"></a>
 
 **Detect a late provider refund** for a refund closed with either outcome (ADR-087 §13). A
 dispatch admitted before the outside proof or the abandonment marker can still send one POST under

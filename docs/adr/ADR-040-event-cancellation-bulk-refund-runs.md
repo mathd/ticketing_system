@@ -12,6 +12,8 @@ dimension), [ADR-038](./ADR-038-refund-reversal-ticket-voiding.md) (the reversal
 obligations, void before capacity) and [ADR-039](./ADR-039-exchange-settles-the-difference.md)
 (a multi-obligation operation is not complete until every obligation is).
 
+**Amended by TKT-607 (2026-11-23)** — *the seated capacity-return consequence only.*
+
 ## Context
 
 Refunding one order is solved. Refunding a **book** is a different problem, and the ticket named
@@ -174,10 +176,11 @@ starting another run — which §3 makes safe.
   this ticket.
   **→ CLOSED by the TKT-171 amendment below (2026-08-27): a comped order is now VOIDED. This
   paragraph is retained as the record of what was accepted and for how long.**
-- **A seated order's capacity return stays outstanding forever** — nothing associates an issued
-  ticket with a seat identity, so no subset of seats can be derived (TKT-164). Such an order is a
-  permanent `failed/reversal_outstanding`. That is honest, not a regression: the buyer has their
-  money and the tickets are void.
+- **A partial seated capacity return stays outstanding.** Inventory releases seats only when one
+  return covers the entire seated claim and the claim has zero quantity already returned. An order
+  refunded in parts keeps its seats unavailable. This includes a cancellation refund of the
+  remainder after a partial staff refund. The run reports `failed/reversal_outstanding` while that
+  capacity obligation remains. See [ADR-038](ADR-038-refund-reversal-ticket-voiding.md).
 - **Outstanding obligations on refunds this run did not create are reported, not repaired.** Driving
   them would need their original idempotency keys, which the refund row does not carry.
   *Bounded to this runner by [ADR-062](./ADR-062-refund-reversal-reconciliation.md) (TKT-163): it is

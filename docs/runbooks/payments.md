@@ -78,7 +78,7 @@ Reading the outcomes:
 |---|---|
 | `refunded` | This run returned the money **and** the tickets are void **and** the seat is back. |
 | `already_refunded` | The order was already fully refunded, with every obligation discharged. No provider call was made. |
-| `failed` + `reversal_outstanding` | The money is back but a reversal is not done. `money_refunded`/`tickets_voided`/`capacity_returned` say which half. A **seated** order stays here permanently (TKT-164). |
+| `failed` + `reversal_outstanding` | The money is back but a reversal is not done. `money_refunded`/`tickets_voided`/`capacity_returned` say which half. Inventory releases seats only when one return covers the entire seated claim and the claim has zero quantity already returned. An order refunded in parts stays outstanding for capacity. This includes a cancellation refund of the remainder after a partial staff refund. |
 | `failed` + `no_captured_money` | A zero-price (comped) order. It has no money leg — and therefore got **no reversal at all**, so its tickets still admit. |
 | `failed` + `refund_refused` / `unavailable` / `not_refundable` / `internal` | The refund did not happen. Failures are terminal **for that run**; retry by starting another run, which is safe. |
 

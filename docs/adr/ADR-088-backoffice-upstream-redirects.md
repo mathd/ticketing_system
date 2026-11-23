@@ -11,6 +11,8 @@ Scope: the Back Office (`web/backoffice`) only. This ADR is the Back Office coun
 TKT-594 rule for the Commerce refund-outcome clients. It does not state a rule for other
 components. The known open instances elsewhere are listed under [Known exceptions](#known-exceptions).
 
+**Amended by TKT-607 (2026-11-23)** — *the known exceptions list only.*
+
 ## Context
 
 The Back Office server calls Catalog, Commerce, Inventory and Access. Some calls go through the
@@ -149,7 +151,10 @@ These instances of the same class are outside this rule and have their own ticke
 
 - Storefront server calls that send the customer assertion: TKT-603.
 - The Payments Go Stripe adapter's exact-decoding gap: TKT-604.
-- The Commerce Go transports that still follow redirects: TKT-589 and TKT-600.
+- TKT-589 tracks the Commerce exchange unwind client that still follows redirects.
+- TKT-600 moves the Commerce exchange abandonment and Access admission callers to `exactcall`.
+  Both callers already stop at the first redirect response and then read its body. `exactcall`
+  refuses a redirect before it reads the body.
 
 ## Consequences
 

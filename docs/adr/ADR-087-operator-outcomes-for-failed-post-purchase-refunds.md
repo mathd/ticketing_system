@@ -29,6 +29,8 @@ replays an outside completion and when it refunds a remaining quantity. §14 sta
 marker can exist after a redirect on the first attempt. The Back Office redirect rule is
 [ADR-088](ADR-088-backoffice-upstream-redirects.md).
 
+**Amended by TKT-607 (2026-11-23)** — *the lost-reply consequence only.*
+
 ## Context
 
 A staff refund or an event-cancellation (bulk) refund that the provider marks `failed` or
@@ -476,9 +478,13 @@ session's identity.
 
 - An operator can close a failed staff or bulk refund that was refunded outside the platform. Both
   allowances stay consumed and the tickets are voided before the capacity returns.
-- Proof is impossible for a leg whose provider refund has no compensation stamp (bound before the
-  stamp existed, or never answered by the provider). The command refuses it, and the allowances stay
-  reserved.
+- The proof uses only the platform's stamped refund as evidence. Every platform refund for a leg
+  is stamped, and Payments sets the stamp before it sends the request, so a lost reply can leave
+  a stamped refund. An unstamped refund on the charge came from outside the platform. It can be
+  the operator's own outside transfer through the PSP, or a refund that already returned the
+  money. Check for it before a same-key replay or an outside transfer
+  ([runbook](../runbooks/order-recovery.md#resolve-a-lost-provider-reply)). Both allowances stay
+  reserved while the leg is unresolved and unmarked.
 - Stripe documents refund listing filtered by PaymentIntent and the `failed` and `canceled`
   statuses. That historical failed and canceled refunds stay visible in that listing under the
   deployed API version is not verified live; the recorded fixtures assume it.
