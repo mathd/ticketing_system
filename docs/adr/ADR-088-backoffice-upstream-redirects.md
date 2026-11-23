@@ -117,9 +117,20 @@ We adopt Option 4.
    `fetch.call`, `fetch.apply` and `fetch.bind`, an alias (`const f = fetch`), `fetch` passed as a
    value and an imported `fetch`. An object key or a type named `fetch` also counts, which errs
    toward a false failure. A file that does not parse fails the scan. Each form has a case in the
-   test. Known limits: the scan does not see a name built at run time
-   (`globalThis['fe' + 'tch']`), and it does not see a request that a dependency makes with its own
-   `fetch` or HTTP client.
+   test.
+
+   The same test also refuses every other outbound transport in first-party code. No file may load
+   `http`, `https`, `http2`, `net` or `tls`, with or without the `node:` prefix, `undici`, or a
+   common HTTP client package (`axios`, `got`, `node-fetch`, `ky`, `superagent` and the others in
+   the test's list), also by a subpath. The scan finds a static import or re-export, a type-only
+   import, `import x = require()`, a dynamic `import()`, `require()`, `module.require()`,
+   `createRequire(...)()` and `process.getBuiltinModule()`. It also refuses a module load whose name
+   is not a literal, because it cannot tell what that load gives. A string that only equals a module
+   name, such as `'https'`, is not a load and does not count. Each form has a case in the test.
+
+   Known limits: the scan does not see a name built at run time (`globalThis['fe' + 'tch']`), a
+   loader reached through an alias (`const r = require`), or a transport that is not in its list.
+   It does not see a request that a dependency makes with its own `fetch` or HTTP client.
 9. **Islands.** `upstream.ts` reads `process.env` and is a server-only module. A browser island
    that needs its own `fetch` requires an amendment of this ADR.
 
@@ -144,8 +155,8 @@ These instances of the same class are outside this rule and have their own ticke
       fail: reads are unavailable, writes are ambiguous and staff sign-in is unavailable.
     - The rule bounds where a request goes. It does not authenticate the configured first hop. A
       hostile or compromised first hop still receives what this process sends to it.
-    - The structural test does not see a name built at run time or a request made inside a
-      dependency, as stated above.
+    - The structural test does not see a name built at run time, a module loader reached through an
+      alias, a transport outside its list, or a request made inside a dependency, as stated above.
 
 ## References *(optional)*
 
@@ -157,3 +168,7 @@ These instances of the same class are outside this rule and have their own ticke
   [ADR-087](ADR-087-operator-outcomes-for-failed-post-purchase-refunds.md) §16 (saved retry key).
 - `web/backoffice/src/lib/upstream.ts`, `web/backoffice/test/upstream-redirects.test.ts`,
   `web/backoffice/test/upstream-policy.test.ts`, `web/backoffice/test/mutation-pages.test.ts`.
+- `test/browser/refund-redirected.mjs`: host Chrome submits the saved refund retry while the Back
+  Office's refund POST is redirected, and looks the order up while its staff order detail read is
+  redirected. The page keeps the saved retry with its original key and terms, and the redirect
+  target receives no request.

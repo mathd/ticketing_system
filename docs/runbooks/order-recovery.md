@@ -539,12 +539,13 @@ For a bulk refund, use the procedure below only for a money refund that the prov
 
 1. Read the organizer's cancellation report with
    `GET /internal/cancellation-refunds/<run-id>?organizer_id=<organizer-id>`. Send the Commerce
-   shared internal credential in `X-Internal-Token`. Give curl the header on standard input and
-   `--noproxy '*'`, as in the [report example](payments.md#event-cancellation-bulk-refunds-tkt-159).
-   Do not put the token in a command line. Read the order rows after the run completes.
-   Record the run's `slot_id`. If the page does not contain the order and returns
-   `next_after_order_id`, use that value as `after_order_id` in the next request. Repeat until you
-   find the order or the report returns no cursor.
+   shared internal credential in `X-Internal-Token`. Use the
+   [report example](payments.md#event-cancellation-bulk-refunds-tkt-159) as written: `-q` first, the
+   header on standard input, `--noproxy '*'`, `--fail-with-body` and the printed HTTP status. Do not
+   put the token in a command line. On `HTTP 202` the run is still going: wait and read again. Read
+   the order rows only from an `HTTP 200` report. Record the run's `slot_id`. If an `HTTP 200` page
+   does not contain the order and returns `next_after_order_id`, use that value as `after_order_id`
+   in the next request. Repeat until you find the order or an `HTTP 200` page returns no cursor.
 2. Find the row of the order. A row can include `refund_id`. A row with `outcome` `failed` and
    `failure.code` `reversal_outstanding` has a refund whose money moved and whose ticket or capacity
    reversal is outstanding. Do not record an outcome for it. Use
@@ -594,14 +595,15 @@ UUID. Set `ORGANIZER_ID`, `CHECKOUT_KEY`, and `REFUND_ID` to these three values.
 container on the `ticketing_default` network. The image runs curl as its entry point. Your host
 shell writes the header to the container's standard input, and curl reads it with `--header @-`.
 `printf` is a shell builtin, so the token is in no command line, and it is not in the container's
-environment or configuration. `--noproxy '*'` sends the request directly to Payments, also when
-Docker gives the container proxy settings.
+environment or configuration. `-q` (`--disable`) is the first curl option, so curl reads no curl
+configuration file that could turn on redirects or verbose output. `--noproxy '*'` sends the request
+directly to Payments, also when Docker gives the container proxy settings.
 
 ```sh
 printf 'X-Internal-Token: %s\n' "$PAYMENTS_INTERNAL_TOKEN" |
   docker run --rm -i --network ticketing_default \
     curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93 \
-    --silent --show-error --fail-with-body --noproxy '*' --header @- --get \
+    -q --silent --show-error --fail-with-body --noproxy '*' --header @- --get \
     --data-urlencode "organizer_id=$ORGANIZER_ID" \
     --data-urlencode "idempotency_key=$CHECKOUT_KEY" \
     --data-urlencode "refund_key=$REFUND_ID" \

@@ -9,26 +9,63 @@ Load only the section needed for the operation. Historical examples retain their
 Refunds every completed, not-fully-refunded order on one slot, with a per-order outcome. Internal
 and on demand — it does **not** require the slot to be in a cancelled state, and never reads catalog.
 
-```bash
-# start a run (Idempotency-Key is required; the same key replays the same run)
-printf 'X-Internal-Token: %s\n' "$INTERNAL_SERVICE_TOKEN" |
-  curl --noproxy '*' --header @- -X POST "$COMMERCE_URL/internal/slots/$SLOT_ID/cancellation-refunds" \
-    -H "Idempotency-Key: cancel-$SLOT_ID-1" \
-    -H 'Content-Type: application/json' \
-    -d '{"organizer_id":"'"$ORGANIZER_ID"'","actor":"ops@example.test","reason":"event cancelled"}'
+Base Compose publishes no Commerce port to the host. Run curl in a throwaway, digest-pinned curl
+container on the `ticketing_default` network, and use the Commerce service address
+`http://commerce:8080`. The image runs curl as its entry point. Set `INTERNAL_SERVICE_TOKEN` (the
+Commerce shared internal credential), `ORGANIZER_ID` and `SLOT_ID` in your shell.
 
-# read the report (202 while it is still running, with the counts; 200 when complete, with the rows)
+```bash
+CURL_IMAGE=curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93
+
+# Start a run. The Idempotency-Key is required. The same key and request replay the same run.
 printf 'X-Internal-Token: %s\n' "$INTERNAL_SERVICE_TOKEN" |
-  curl --noproxy '*' --header @- \
-    "$COMMERCE_URL/internal/cancellation-refunds/$RUN_ID?organizer_id=$ORGANIZER_ID"
+  docker run --rm -i --network ticketing_default "$CURL_IMAGE" \
+    -q --silent --show-error --fail-with-body --noproxy '*' --header @- \
+    --header "Idempotency-Key: cancel-$SLOT_ID-1" \
+    --header 'Content-Type: application/json' \
+    --data '{"organizer_id":"'"$ORGANIZER_ID"'","actor":"ops@example.test","reason":"event cancelled"}' \
+    --write-out '\nHTTP %{http_code}\n' \
+    "http://commerce:8080/internal/slots/$SLOT_ID/cancellation-refunds"
+
+# Read the report. Set RUN_ID to the run_id of the start response. For the next page, also set
+# AFTER_ORDER_ID (see below); leave it unset for the first page.
+printf 'X-Internal-Token: %s\n' "$INTERNAL_SERVICE_TOKEN" |
+  docker run --rm -i --network ticketing_default "$CURL_IMAGE" \
+    -q --silent --show-error --fail-with-body --noproxy '*' --header @- --get \
+    --data-urlencode "organizer_id=$ORGANIZER_ID" \
+    ${AFTER_ORDER_ID:+--data-urlencode "after_order_id=$AFTER_ORDER_ID"} \
+    --write-out '\nHTTP %{http_code}\n' \
+    "http://commerce:8080/internal/cancellation-refunds/$RUN_ID"
 ```
 
-Send the Commerce shared internal credential in `X-Internal-Token`. The shell builtin `printf` writes
-the header to curl's standard input (`--header @-`), so the token is in no command line.
-`--noproxy '*'` sends the request directly to Commerce, also when proxy settings are present. Read
-the order rows after the run completes. If the page does not contain the order and returns
-`next_after_order_id`, use that value as `after_order_id` in the next request. Repeat until you find
-the order or the report returns no cursor.
+For local work with the opt-in `compose.direct-ports.yaml` overlay, you can run the same curl
+options on the host instead, with `-q` still first, and the address
+`http://127.0.0.1:${COMMERCE_PORT:-8092}`.
+
+The credential:
+
+- The shell builtin `printf` writes the header to curl's standard input (`--header @-`), so the
+  token is in no command line, and it is not in the container's environment or configuration.
+- `-q` (`--disable`) must be the first option. Curl then ignores a curl configuration file
+  (`.curlrc`), which can turn on redirects or verbose output that forward or print the token.
+- `--noproxy '*'` sends the request directly to Commerce, also when proxy settings are present.
+
+The answer: `--write-out` prints `HTTP <status>` on the last line. `--fail-with-body` makes curl exit
+`22` on a status of 400 or more, and still prints the body. Use only a body that comes with the
+statuses below. For any other status, including a redirect, stop: the answer is not from this
+procedure.
+
+- **Start.** `HTTP 201` is a new run. `HTTP 200` is a replay: a run with this key and request
+  exists, and the body describes it. `HTTP 409` is the same key with a different request. Record
+  `run_id` from a `201` or `200` body.
+- **Report.** `HTTP 202`: the run is still going. The body has the counts and no order rows. Wait,
+  then read the report again. `HTTP 200`: the run is complete, and the body has the order rows.
+- **Not found.** `HTTP 404` from the start means that the credential is wrong. `HTTP 404` from the
+  report means one of these: the run does not exist, the organizer is wrong, or the credential is
+  wrong. Commerce gives the same answer for all three.
+- **Pages.** Apply this rule only to an `HTTP 200` report. If the page does not contain the order
+  and returns `next_after_order_id`, set `AFTER_ORDER_ID` to that value and read the report again.
+  Repeat until you find the order or an `HTTP 200` page returns no cursor.
 
 Reading the outcomes:
 

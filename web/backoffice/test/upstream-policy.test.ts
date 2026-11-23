@@ -21,8 +21,21 @@
 //   - every string or plain template literal equal to `fetch`, as in
 //     `globalThis['fetch']`.
 // It errs toward a false failure (an object key or a type named `fetch` also
-// counts). Known limits, recorded in ADR-088: a name built at run time
-// (`globalThis['fe' + 'tch']`), and a fetch inside a dependency.
+// counts).
+//
+// A second scan closes the other way out: an outbound transport that is not
+// fetch (R2-4). No first-party file may load node:http, node:https, node:http2,
+// node:net or node:tls (with or without the `node:` prefix), undici, or a common
+// HTTP client package (TRANSPORTS below), also by a subpath. It flags a static
+// import or re-export, `import x = require()`, a dynamic `import()`, `require()`,
+// `module.require()`, `createRequire(...)()` and `process.getBuiltinModule()`. A
+// module load whose name is not a literal is flagged too, because the scan
+// cannot tell what it loads.
+//
+// Known limits, recorded in ADR-088: a name built at run time
+// (`globalThis['fe' + 'tch']`), a loader reached through an alias
+// (`const r = require`), a transport that is not in TRANSPORTS, and a request
+// that a dependency makes with its own fetch or HTTP client.
 import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join, relative } from 'node:path';
@@ -99,13 +112,110 @@ function fetchReferences(name: string, source: string): number[] {
   return [...new Set(offsets)].sort((a, b) => a - b);
 }
 
+/**
+ * Outbound transports other than fetch, by bare module name. A subpath of one
+ * (`undici/...`) counts as the module.
+ */
+const TRANSPORTS = [
+  'http',
+  'https',
+  'http2',
+  'net',
+  'tls',
+  'undici',
+  'axios',
+  'got',
+  'node-fetch',
+  'ky',
+  'superagent',
+  'cross-fetch',
+  'isomorphic-fetch',
+  'ofetch',
+  'needle',
+  'request',
+  'wretch',
+];
+
+function isTransport(specifier: string): boolean {
+  const bare = specifier.replace(/^node:/, '');
+  return TRANSPORTS.some((name) => bare === name || bare.startsWith(`${name}/`));
+}
+
+/** The literal value of a module name, or null when it is computed. */
+function literalName(node: Node | null | undefined): string | null {
+  if (!node) return null;
+  if (node.type === 'Literal' && typeof node.value === 'string') return node.value;
+  if (node.type === 'TemplateLiteral' && (node.expressions as unknown[]).length === 0) {
+    return (node.quasis as Array<{ value: { cooked: string | null } }>)[0]?.value.cooked ?? null;
+  }
+  return null;
+}
+
+function isNamed(node: Node | undefined, name: string): boolean {
+  return node?.type === 'Identifier' && node.name === name;
+}
+
+/**
+ * The module name node of a module load, or undefined when `node` loads no
+ * module. Covers import and export declarations, `import x = require()`,
+ * `import()`, `require()`, `x.require()`, `createRequire(...)()` and
+ * `x.getBuiltinModule()`.
+ */
+function loadedModule(node: Node): Node | null | undefined {
+  switch (node.type) {
+    case 'ImportDeclaration':
+    case 'ExportAllDeclaration':
+    case 'ImportExpression':
+      return node.source as Node;
+    case 'ExportNamedDeclaration':
+      // `export const x = ...` loads nothing.
+      return (node.source as Node | null) ?? undefined;
+    case 'TSExternalModuleReference':
+      return node.expression as Node;
+    case 'CallExpression': {
+      const callee = node.callee as Node;
+      const loads =
+        isNamed(callee, 'require') ||
+        (callee.type === 'MemberExpression' &&
+          (isNamed(callee.property as Node, 'require') || isNamed(callee.property as Node, 'getBuiltinModule'))) ||
+        (callee.type === 'CallExpression' && isNamed(callee.callee as Node, 'createRequire'));
+      return loads ? (((node.arguments as Node[])[0] ?? null) as Node | null) : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Every module load in one file that names an outbound transport, or whose
+ * name the scan cannot read. Each entry is the module name, or `<computed>`.
+ */
+function transportLoads(name: string, source: string): Array<{ offset: number; specifier: string }> {
+  return [...nodes(syntaxTree(name, source))].flatMap((node) => {
+    const module = loadedModule(node);
+    if (module === undefined) return [];
+    const specifier = literalName(module);
+    if (specifier === null) return [{ offset: node.start, specifier: '<computed>' }];
+    return isTransport(specifier) ? [{ offset: node.start, specifier }] : [];
+  });
+}
+
+function siteAt(path: string, source: string, offset: number): Site {
+  const line = source.slice(0, offset).split('\n').length;
+  return { file: relative(PACKAGE, path), line, offset, text: source.split('\n')[line - 1].trim() };
+}
+
+function transportSites(): Site[] {
+  return sourceFiles(PACKAGE).flatMap((path) => {
+    const source = readFileSync(path, 'utf8');
+    return transportLoads(path, source).map(({ offset }) => siteAt(path, source, offset));
+  });
+}
+
 function directFetchSites(): Site[] {
   return sourceFiles(PACKAGE).flatMap((path) => {
     const source = readFileSync(path, 'utf8');
-    return fetchReferences(path, source).map((offset) => {
-      const line = source.slice(0, offset).split('\n').length;
-      return { file: relative(PACKAGE, path), line, offset, text: source.split('\n')[line - 1].trim() };
-    });
+    return fetchReferences(path, source).map((offset) => siteAt(path, source, offset));
   });
 }
 
@@ -148,6 +258,11 @@ describe('Back Office upstream request policy', () => {
       site.offset > start && site.offset < end,
       `${site.file}:${site.line} is outside fetchUpstream`,
     ).toBe(true);
+  });
+
+  it('loads no other outbound transport', () => {
+    const report = transportSites().map((site) => `${site.file}:${site.line}: ${site.text}`);
+    expect(report, 'send upstream requests through fetchUpstream in src/lib/upstream.ts').toEqual([]);
   });
 });
 
@@ -192,5 +307,61 @@ describe('the fetch reference detector', () => {
     ['an Astro file', 'x.astro', '---\nconst = fetch;\n---\n<p>{fetch(</p>'],
   ])('fails, rather than skips, %s that does not parse', (_name, file, source) => {
     expect(() => fetchReferences(file, source)).toThrow();
+  });
+});
+
+// The transport detector, on synthetic sources. Each load must be found once,
+// and other modules and look-alike strings must not count.
+describe('the outbound transport detector', () => {
+  it.each([
+    ['a default import of node:https', 'x.ts', "import https from 'node:https';"],
+    ['a named import of node:http', 'x.ts', "import { request } from 'node:http';"],
+    ['a namespace import of http', 'x.ts', "import * as http from 'http';"],
+    ['https without the prefix', 'x.ts', "import https from 'https';"],
+    ['node:http2', 'x.ts', "import { connect } from 'node:http2';"],
+    ['http2', 'x.ts', "import { connect } from 'http2';"],
+    ['node:net', 'x.ts', "import { Socket } from 'node:net';"],
+    ['net', 'x.ts', "import net from 'net';"],
+    ['node:tls', 'x.ts', "import { connect } from 'node:tls';"],
+    ['tls', 'x.ts', "import tls from 'tls';"],
+    ['undici', 'x.ts', "import { request } from 'undici';"],
+    ['an undici subpath', 'x.ts', "import { Agent } from 'undici/lib/agent.js';"],
+    ['axios', 'x.ts', "import axios from 'axios';"],
+    ['got', 'x.ts', "import got from 'got';"],
+    ['node-fetch', 'x.ts', "import nodeFetch from 'node-fetch';"],
+    ['ky', 'x.ts', "import ky from 'ky';"],
+    ['superagent', 'x.ts', "import superagent from 'superagent';"],
+    ['a side-effect import', 'x.ts', "import 'node:https';"],
+    ['a type-only import', 'x.ts', "import type { Agent } from 'node:https';"],
+    ['a re-export of all', 'x.ts', "export * from 'got';"],
+    ['a named re-export', 'x.ts', "export { request } from 'undici';"],
+    ['import = require', 'x.ts', "import https = require('https');"],
+    ['a dynamic import', 'x.ts', "const https = await import('node:https');"],
+    ['a dynamic import of a template', 'x.ts', 'const https = await import(`node:https`);'],
+    ['require', 'x.cjs', "const https = require('https');"],
+    ['module.require', 'x.cjs', "const net = module.require('net');"],
+    ['createRequire', 'x.mjs', "const tls = createRequire(import.meta.url)('node:tls');"],
+    ['process.getBuiltinModule', 'x.mjs', "const https = process.getBuiltinModule('node:https');"],
+    ['a dynamic import with a computed name', 'x.ts', 'const m = await import(name);'],
+    ['a require with a computed name', 'x.cjs', 'const m = require(name);'],
+    ['an import in Astro frontmatter', 'x.astro', "---\nimport https from 'node:https';\n---\n<p>x</p>"],
+    ['a dynamic import in Astro frontmatter', 'x.astro', "---\nconst u = await import('undici');\n---\n<p>x</p>"],
+    ['an import in an Astro script', 'x.astro', "<script>\nimport ky from 'ky';\n</script>"],
+    ['an import in a tsx island', 'x.tsx', "import axios from 'axios';\nexport const A = () => <p>x</p>;"],
+  ])('finds %s', (_name, file, source) => {
+    expect(transportLoads(file, source)).toHaveLength(1);
+  });
+
+  it.each([
+    ['another built-in module', 'x.ts', "import { randomUUID } from 'node:crypto';"],
+    ['a relative module with a transport name', 'x.ts', "import { x } from './http';\nimport { y } from '../https/index.ts';"],
+    ['a package whose name starts with a transport name', 'x.ts', "import kysely from 'kysely';\nimport httpx from 'httpx';"],
+    ['a string equal to a transport name', 'x.ts', "const scheme = 'https';\nconst ok = url.protocol === 'https:';"],
+    ['a comment', 'x.ts', "// import https from 'node:https';\n/* require('net') */"],
+    ['a local export', 'x.ts', 'export const https = 1;\nexport function net() {}'],
+    ['a literal dynamic import of the build output', 'x.mjs', "await import('./dist/server/entry.mjs');"],
+    ['Astro page text', 'x.astro', "<p>import https from 'node:https'</p>"],
+  ])('ignores %s', (_name, file, source) => {
+    expect(transportLoads(file, source)).toEqual([]);
   });
 });
