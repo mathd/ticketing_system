@@ -51,21 +51,26 @@ The credential:
 - `--noproxy '*'` sends the request directly to Commerce, also when proxy settings are present.
 
 The answer: `--write-out` prints `HTTP <status>` on the last line. `--fail-with-body` makes curl exit
-`22` on a status of 400 or more, and still prints the body. Use only a body that comes with the
-statuses below. For any other status, including a redirect, stop: the answer is not from this
-procedure.
+`22` on a status of 400 or more, and still prints the body. Read curl's exit status with `echo $?`
+directly after the command. Use a success body (`201`, `200` or `202` below), or end pagination,
+only when curl exits `0` **and** prints that status. Curl can print a success status and still exit
+with a different code when the transfer of the answer fails. The body can then be incomplete, for
+example without its cursor: send the same request again. For any other status, including a
+redirect, stop: the answer is not from this procedure.
 
-- **Start.** `HTTP 201` is a new run. `HTTP 200` is a replay: a run with this key and request
-  exists, and the body describes it. `HTTP 409` is the same key with a different request. Record
-  `run_id` from a `201` or `200` body.
-- **Report.** `HTTP 202`: the run is still going. The body has the counts and no order rows. Wait,
-  then read the report again. `HTTP 200`: the run is complete, and the body has the order rows.
+- **Start.** With exit `0`, `HTTP 201` is a new run, and `HTTP 200` is a replay: a run with this key
+  and request exists, and the body describes it. `HTTP 409` is the same key with a different
+  request. Record `run_id` only from a `201` or `200` body with exit `0`.
+- **Report.** With exit `0`, `HTTP 202` means that the run is still going. The body has the counts
+  and no order rows. Wait, then read the report again. With exit `0`, `HTTP 200` means that the run
+  is complete, and the body has the order rows.
 - **Not found.** `HTTP 404` from the start means that the credential is wrong. `HTTP 404` from the
   report means one of these: the run does not exist, the organizer is wrong, or the credential is
   wrong. Commerce gives the same answer for all three.
-- **Pages.** Apply this rule only to an `HTTP 200` report. If the page does not contain the order
-  and returns `next_after_order_id`, set `AFTER_ORDER_ID` to that value and read the report again.
-  Repeat until you find the order or an `HTTP 200` page returns no cursor.
+- **Pages.** Apply this rule only to an `HTTP 200` report with exit `0`. If the page does not
+  contain the order and returns `next_after_order_id`, set `AFTER_ORDER_ID` to that value and read
+  the report again. Repeat until you find the order or an `HTTP 200` page with exit `0` returns no
+  cursor.
 
 Reading the outcomes:
 

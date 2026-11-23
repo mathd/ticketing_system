@@ -8,6 +8,7 @@
 // the staff token, the organizer assertion, the password or the guest capability
 // to the target. Each case then asserts the outcome the fetch inventory gives the
 // caller: an unavailable read, an ambiguous write, or no confirmation.
+import { connect } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -410,6 +411,44 @@ describe('direct first-hop answers still decide (wire)', () => {
     await direct(jsonAnswer({ error: 'not found' }, 404));
     const { getOrderTickets } = await import('../src/lib/access');
     await expect(getOrderTickets(GUEST_REF)).resolves.toEqual({ ok: false, kind: 'not-found' });
+  });
+});
+
+// The fixture itself. The headers already carry the credentials, so the target
+// must count a request whose upload stops before the body ends.
+describe('the counting target (wire fixture)', () => {
+  it('counts a request at its headers, also when the body never ends', async () => {
+    const p = await startRedirectPair({ firstHop: () => jsonAnswer({}) });
+    pair = p;
+    const port = Number(new URL(p.target.origin).port);
+    const path = `/internal/orders/${ORDER}/refunds`;
+    const socket = connect(port, '127.0.0.1');
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.once('connect', resolve);
+        socket.once('error', reject);
+      });
+      const interim = new Promise<string>((resolve, reject) => {
+        socket.once('data', (chunk) => resolve(String(chunk)));
+        socket.once('error', reject);
+      });
+      // Headers and 11 of the 64 announced body bytes. Node writes 100 Continue
+      // and calls the request handler in one turn, so the reply below means the
+      // target has the headers.
+      socket.write(
+        `POST ${path} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n` +
+          `X-Commerce-Staff-Write-Token: ${COMMERCE_TOKEN}\r\nContent-Type: application/json\r\n` +
+          'Content-Length: 64\r\nExpect: 100-continue\r\n\r\n{"quantity"',
+      );
+      expect(await interim).toMatch(/^HTTP\/1\.1 100 Continue/);
+    } finally {
+      // The upload stops here: the body never ends.
+      socket.destroy();
+    }
+    expect(() => expectNoTargetRequest(p)).toThrow();
+    expect(markers(p.target.hits)).toEqual([
+      { method: 'POST', path, 'x-commerce-staff-write-token': COMMERCE_TOKEN },
+    ]);
   });
 });
 

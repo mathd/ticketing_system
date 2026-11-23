@@ -118,17 +118,19 @@ const DETAIL_READ = /^\/internal\/orders\/([^/?]+)$/;
 
 // The address a redirect sends a request to. Every request it receives is
 // recorded with its method, path and the names (never the values) of the
-// credential headers, and answered as a hostile host would answer.
+// credential headers, and answered as a hostile host would answer. It is
+// recorded when its headers arrive, because they carry the credentials, also
+// when the body never ends.
 function countingTarget(savedKeys) {
   const received = [];
   const server = createServer(async (req, res) => {
-    await readBody(req).catch(() => Buffer.alloc(0));
     const path = new URL(req.url, 'http://target').pathname;
     received.push({
       method: req.method,
       path,
       credentials: Object.keys(req.headers).filter((h) => /token|assertion/i.test(h)),
     });
+    await readBody(req).catch(() => Buffer.alloc(0));
     let match;
     if (req.method === 'POST' && (match = REFUND_POST.exec(path))) {
       res.writeHead(409, { 'content-type': 'application/json' });
@@ -211,7 +213,11 @@ async function startBackOffice(port, commerceUrl) {
   });
   child.stdout.on('data', (chunk) => output.push(String(chunk)));
   child.stderr.on('data', (chunk) => output.push(String(chunk)));
-  const exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal })));
+  // A spawn failure emits 'error', maybe with no 'exit': it is a failed start.
+  const exited = new Promise((resolve) => {
+    child.once('exit', (code, signal) => resolve({ code, signal }));
+    child.once('error', (error) => resolve({ error: error.message }));
+  });
   let gone = null;
   exited.then((result) => {
     gone = result;
@@ -220,12 +226,19 @@ async function startBackOffice(port, commerceUrl) {
   const stop = async () => {
     if (gone) return;
     child.kill('SIGTERM');
-    const timer = new Promise((resolve) => setTimeout(() => resolve('timeout'), STOP_MS));
-    if ((await Promise.race([exited, timer])) === 'timeout') {
+    let timeout;
+    const timer = new Promise((resolve) => {
+      timeout = setTimeout(() => resolve('timeout'), STOP_MS);
+    });
+    const first = await Promise.race([exited, timer]);
+    clearTimeout(timeout);
+    if (first === 'timeout') {
       child.kill('SIGKILL');
       await exited;
     }
   };
+  // A signal can stop the spec before this function returns.
+  stopBackOffice = stop;
 
   // Bounded readiness: the health route answers 200, or the process exits, or
   // the deadline passes. On failure the process is stopped here, because the
@@ -277,18 +290,42 @@ const readOrder = seedPaidOrder(PG, 'redirected-read', 2, 1250, stamp);
 const savedKeys = new Map();
 const target = countingTarget(savedKeys);
 let redirector = null;
-let backOffice = null;
+let stopBackOffice = null;
 let browser = null;
+
+// One bounded cleanup for the end of the spec, a failure and a signal: stop the
+// second Back Office, which holds the stack credentials, then close the
+// listeners and the browser.
+let cleaning = null;
+function cleanUp() {
+  cleaning ??= (async () => {
+    await stopBackOffice?.().catch(() => {});
+    if (redirector?.server.listening) await close(redirector.server);
+    if (target.server.listening) await close(target.server);
+    await browser?.close().catch(() => {});
+  })();
+  return cleaning;
+}
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, () => {
+    console.error(`refund-redirected browser spec: ${signal}, stopping`);
+    // Bounded: exit also when the browser does not close.
+    setTimeout(() => process.exit(1), STOP_MS + 5_000);
+    cleanUp().finally(() => process.exit(1));
+  });
+}
 
 try {
   const targetPort = await listen(target.server);
   redirector = commerceRedirector(targetPort);
   const redirectorPort = await listen(redirector.server);
   const port = await freePort();
-  backOffice = await startBackOffice(port, `http://${LOOPBACK}:${redirectorPort}`);
+  await startBackOffice(port, `http://${LOOPBACK}:${redirectorPort}`);
   const origin = `http://${LOOPBACK}:${port}`;
 
-  browser = await chromium.launch({ channel: 'chrome' });
+  // The spec's signal handlers above close the browser, after the child.
+  browser = await chromium.launch({ channel: 'chrome', handleSIGINT: false, handleSIGTERM: false });
   const context = await browser.newContext({
     baseURL: origin,
     // What the gateway sets for this address (see the header comment).
@@ -376,10 +413,7 @@ try {
 } catch (error) {
   check('the spec ran to the end', false, error instanceof Error ? error.message : String(error));
 } finally {
-  await browser?.close().catch(() => {});
-  await backOffice?.stop().catch(() => {});
-  if (redirector?.server.listening) await close(redirector.server);
-  if (target.server.listening) await close(target.server);
+  await cleanUp();
 }
 
 // ---- (c) The redirect target received nothing. Checked after the finally, so

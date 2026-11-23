@@ -107,7 +107,9 @@ We adopt Option 4.
    and configuration code of `web/backoffice`: every TypeScript, JavaScript and Astro file in the
    package, including `src` with its `.tsx` islands, the production entry point `start.mjs`,
    `credentials.mjs`, `astro.config.mjs` and any new directory. Only `test`, `dist`,
-   `node_modules` and the generated `.astro` directory are outside. The scan parses each file with
+   `node_modules` and the generated `.astro` directory at the package root are outside. A
+   directory with one of these names deeper down, such as `src/lib/test`, is scanned. The scan
+   parses each file with
    the parsers that the build uses: the Astro compiler for `.astro` files (frontmatter, template
    expressions and `<script>` bodies) and the rolldown parser for scripts. Comments, page text and
    JSX text therefore cannot hide or fake a reference. It requires exactly one reference to
@@ -122,11 +124,18 @@ We adopt Option 4.
    The same test also refuses every other outbound transport in first-party code. No file may load
    `http`, `https`, `http2`, `net` or `tls`, with or without the `node:` prefix, `undici`, or a
    common HTTP client package (`axios`, `got`, `node-fetch`, `ky`, `superagent` and the others in
-   the test's list), also by a subpath. The scan finds a static import or re-export, a type-only
-   import, `import x = require()`, a dynamic `import()`, `require()`, `module.require()`,
-   `createRequire(...)()` and `process.getBuiltinModule()`. It also refuses a module load whose name
-   is not a literal, because it cannot tell what that load gives. A string that only equals a module
-   name, such as `'https'`, is not a load and does not count. Each form has a case in the test.
+   the test's list), also by a subpath. The scan finds a static import or re-export, a side-effect
+   import (`import 'node:https'`), `import x = require()`, a dynamic `import()`, `require()`,
+   `module.require()`, `createRequire(...)()` and `process.getBuiltinModule()`, also with the
+   member name in brackets (`process['getBuiltinModule']()`). It also refuses a module load whose
+   name is not a literal, because it cannot tell what that load gives. This computed-load rule
+   fails closed for the whole package, also for a load that is not about HTTP; the decision is
+   recorded on the ticket. A declaration that the build removes loads nothing and does not count:
+   `import type`, `export type ... from` and `export type * from`. An import whose every specifier
+   is a type (`import { type Agent } from 'node:https'`) still counts: the package's TypeScript
+   configuration sets `verbatimModuleSyntax`, so the build keeps it as `import 'node:https'`. A
+   string that only equals a module name, such as `'https'`, is not a load and does not count. Each
+   form has a case in the test.
 
    Known limits: the scan does not see a name built at run time (`globalThis['fe' + 'tch']`), a
    loader reached through an alias (`const r = require`), or a transport that is not in its list.

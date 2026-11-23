@@ -3,6 +3,8 @@
 // The FIRST HOP stands in for a configured service URL. It records every request
 // and answers either directly or with a redirect to the TARGET, a second listener
 // on a different origin. The target counts and records every request it receives.
+// A listener records a request when its headers arrive, so a request whose body
+// never ends still counts. The body is added to the record when it ends.
 // A target request after a redirect means that native fetch followed the redirect
 // and sent the request, with its credentials, past the configured first hop.
 //
@@ -16,6 +18,7 @@ export type Hit = {
   /** Path and query string, exactly as received. */
   path: string;
   headers: IncomingHttpHeaders;
+  /** The whole body once it has ended. Empty until then. */
   body: string;
 };
 
@@ -49,16 +52,13 @@ export function redirectAnswer(targetOrigin: string, path: string, status = 307)
 async function listen(answer: (hit: Hit) => Answer): Promise<{ listener: Listener; server: Server }> {
   const hits: Hit[] = [];
   const server = createServer((req, res) => {
+    // Count at the headers: they already carry the credentials.
+    const hit: Hit = { method: req.method ?? '', path: req.url ?? '', headers: req.headers, body: '' };
+    hits.push(hit);
     const chunks: Buffer[] = [];
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
     req.on('end', () => {
-      const hit: Hit = {
-        method: req.method ?? '',
-        path: req.url ?? '',
-        headers: req.headers,
-        body: Buffer.concat(chunks).toString('utf8'),
-      };
-      hits.push(hit);
+      hit.body = Buffer.concat(chunks).toString('utf8');
       let reply: Answer;
       try {
         reply = answer(hit);

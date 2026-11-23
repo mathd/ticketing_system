@@ -226,10 +226,13 @@ commerce unwind-exchange <organizer-id> <exchange-id> "<reason>"
 
 `unwind-exchange` needs `DATABASE_URL` set to the intended Commerce database, `PAYMENTS_URL`, and
 the dedicated `PAYMENTS_INTERNAL_TOKEN`. The token must have at least 32 bytes and must differ from
-`INTERNAL_SERVICE_TOKEN`. There is no fallback to the shared token. Before it opens the database, the
-command checks that the Payments URL is present and validates the token. It refuses immediately if
-payments is not configured — it cannot do its job without asking payments, and finding that out
-after reading a row helps nobody.
+`INTERNAL_SERVICE_TOKEN`. There is no fallback to the shared token. At startup, before it opens the
+database, the command checks these Payments settings: the Payments URL is present and the token is
+valid. It refuses immediately if they are missing or not valid. It calls Payments only for an
+exchange with a recorded nonzero delta. For an exchange with no recorded basis, or with a zero
+delta, it uses local evidence and makes no Payments request
+([service](../../services/commerce/internal/exchangeunwind/service.go)). A Payments outage
+therefore does not stop those two cases.
 
 Before you run the command, confirm that `PAYMENTS_URL` reaches the Payments service with no
 redirect. The current client follows redirects and accepts a 404 from the final address as absence
@@ -542,10 +545,13 @@ For a bulk refund, use the procedure below only for a money refund that the prov
    shared internal credential in `X-Internal-Token`. Use the
    [report example](payments.md#event-cancellation-bulk-refunds-tkt-159) as written: `-q` first, the
    header on standard input, `--noproxy '*'`, `--fail-with-body` and the printed HTTP status. Do not
-   put the token in a command line. On `HTTP 202` the run is still going: wait and read again. Read
-   the order rows only from an `HTTP 200` report. Record the run's `slot_id`. If an `HTTP 200` page
-   does not contain the order and returns `next_after_order_id`, use that value as `after_order_id`
-   in the next request. Repeat until you find the order or an `HTTP 200` page returns no cursor.
+   put the token in a command line. Use an answer only when curl exits `0` and prints the status.
+   If curl prints `HTTP 200` or `HTTP 202` and exits with a different code, the body can be
+   incomplete: read again. On `HTTP 202` with exit `0` the run is still going: wait and read again.
+   Read the order rows only from an `HTTP 200` report with exit `0`. Record the run's `slot_id`. If
+   such a page does not contain the order and returns `next_after_order_id`, use that value as
+   `after_order_id` in the next request. Repeat until you find the order or an `HTTP 200` page with
+   exit `0` returns no cursor.
 2. Find the row of the order. A row can include `refund_id`. A row with `outcome` `failed` and
    `failure.code` `reversal_outstanding` has a refund whose money moved and whose ticket or capacity
    reversal is outstanding. Do not record an outcome for it. Use

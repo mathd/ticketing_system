@@ -11,8 +11,9 @@ the plan-review critique, the self-made decisions and any overridden objections 
 the dedicated Payments credential, validated as Payments validates it, before it opens the
 database. The fallback to `INTERNAL_SERVICE_TOKEN` is removed.
 
-**Amended by TKT-602 (2026-11-22)** — *§3 and the testing note only.* §3 limits the 404 rule to an
-exchange with a recorded nonzero delta. The testing note describes what the unwind fixture proves.
+**Amended by TKT-602 (2026-11-22)** — *§3, the testing note and the operational section only.* §3
+limits the 404 rule to an exchange with a recorded nonzero delta. The testing note describes what
+the unwind fixture proves. The operational section states when the command calls Payments.
 
 Closes the gap [ADR-039](./ADR-039-exchange-settles-the-difference.md) leaves open and that
 TKT-167's adversarial review found and pinned. Inherits ADR-039's exchange lifecycle,
@@ -270,9 +271,11 @@ needs `DATABASE_URL`, `PAYMENTS_URL` and the dedicated `PAYMENTS_INTERNAL_TOKEN`
 with `runtimecfg.PaymentsTokenFromEnv`, the validator payments uses: at least 32 bytes, different
 from `INTERNAL_SERVICE_TOKEN`, and no fallback to the shared token. Payments refuses the shared
 token, so the fallback could only send a credential that payments rejects. The command checks that
-`PAYMENTS_URL` is present and validates the token before it opens the database, because its
-no-basis and zero-delta branches change Commerce without a payments request. A command that cannot
-ask payments cannot do its job.
+`PAYMENTS_URL` is present and validates the token at startup, before it opens the database, because
+its no-basis and zero-delta branches change Commerce without a payments request. The command calls
+Payments only for an exchange with a recorded nonzero delta. For a missing basis or a zero delta, it
+uses local evidence (`Service.Evidence` in `services/commerce/internal/exchangeunwind/service.go`),
+so a Payments outage does not block those two cases.
 
 > **Amended by TKT-595.** The original text was: "`unwind-exchange` needs `DATABASE_URL`,
 > `PAYMENTS_URL` and `PAYMENTS_INTERNAL_TOKEN` (falling back to `INTERNAL_SERVICE_TOKEN`, as
