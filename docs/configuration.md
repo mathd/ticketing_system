@@ -91,19 +91,21 @@ commit real credentials or reuse local values outside development. See
 
 ## Back-office staff sign-in
 
-No environment variable configures it, and that is the point: the back office reaches catalog's
-public `POST /staff/authenticate` **through the gateway** (`GATEWAY_URL`, already set), exactly
-like every other call it makes. It deliberately does **not** hold `INTERNAL_SERVICE_TOKEN` — that
-one shared value opens most services' internal surfaces, including inventory's operational holds,
-and a public-facing SSR process is the wrong place for it (ADR-042). Commerce's staff refund, void
+Back Office sends staff sign-in to Catalog's `POST /staff/authenticate` through `GATEWAY_URL`.
+It also uses `GATEWAY_URL` for the public venue list, other gateway Catalog routes, the public
+order state, and ticket bundles. Back Office deliberately runs without `INTERNAL_SERVICE_TOKEN`.
+That shared value opens most services' internal surfaces, including Inventory's operational holds.
+Keep it out of the public-facing SSR process (ADR-042). Commerce's staff refund, void
 and order read take neither that token nor a tenant from the request: they require
 `COMMERCE_STAFF_WRITE_TOKEN` and the staff session's organizer assertion, which commerce verifies
 with `COMMERCE_ORGANIZER_ASSERTION_PUBLIC_KEYS` (TKT-287).
 
-Set `GATEWAY_URL`, `CATALOG_URL`, `COMMERCE_URL`, `INVENTORY_URL`, and `ACCESS_URL` to their final
-service URLs with no trailing slash, since a `3xx` response fails the call closed as an ambiguous
-write or an unavailable read
-([ADR-088](adr/ADR-088-backoffice-upstream-redirects.md)).
+Direct `/internal/` calls use the service URL. `CATALOG_URL` serves the operator channel list.
+`COMMERCE_URL` serves staff order detail and refund writes. `INVENTORY_URL` serves staff
+availability and channel allocations. `ACCESS_URL` serves ticket redelivery.
+
+Set all five URLs to their final addresses with no trailing slash. A `3xx` leaves a write ambiguous
+or a read unavailable ([ADR-088](adr/ADR-088-backoffice-upstream-redirects.md)).
 
 `scripts/smoke.sh` provisions a throwaway account per run and passes it to the test process as
 `SMOKE_STAFF_IDENTIFIER` / `SMOKE_STAFF_PASSWORD`. The password is generated per run and never

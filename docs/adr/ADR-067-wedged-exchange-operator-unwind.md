@@ -15,6 +15,9 @@ database. The fallback to `INTERNAL_SERVICE_TOKEN` is removed.
 limits the 404 rule to an exchange with a recorded nonzero delta. The testing note describes what
 the unwind fixture proves. The operational section states when the command calls Payments.
 
+**Amended by TKT-607 (2026-11-23)** — *§3 and the operational routing check only.* §3 records
+the shipped client's evidence checks and their limits.
+
 Closes the gap [ADR-039](./ADR-039-exchange-settles-the-difference.md) leaves open and that
 TKT-167's adversarial review found and pinned. Inherits ADR-039's exchange lifecycle,
 [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md)'s adversary language,
@@ -99,12 +102,22 @@ it is structurally incapable of moving money, the same guarantee ADR-063 §2 bui
 
 ### 3. Only a Payments 404 proves absence for a recorded nonzero delta
 
-For a recorded nonzero delta, a Payments 404 permits the unwind. Every other Payments answer refuses
-the unwind. If the basis is missing or the delta is zero, Commerce uses local evidence after the
-configuration checks. A 200 with no capture evidence, a 200 that is resolved-but-declined, a
-bound-but-uncompleted refund leg, a 5xx, a transport failure, a body with trailing content — all
-**indeterminate**, all refusing, and all reported distinguishably from *"the buyer was charged"*,
-because the two send an operator to different places.
+For a recorded nonzero delta, the rule requires a 404 from the correct Payments evidence endpoint
+to establish absence. Every other result refuses the unwind. Commerce reports confirmed money
+movement and inconclusive evidence separately. If the basis is missing or the delta is zero,
+Commerce uses local evidence after the configuration checks.
+
+At `1f3dd231`, the client uses Go's default redirect policy. A followed redirect can pass
+`X-Internal-Token` to the next address. This follows from Go's header policy. TKT-589 tracks the
+client fix. The client accepts any final 404 by status on both lookups. It decodes the body only
+on 200 and checks that it contains one JSON value. Malformed JSON or trailing content on a 200
+makes the result inconclusive. A charge response without capture evidence and a bound refund leg
+also leave the result inconclusive.
+
+`unwind-exchange` checks only that `PAYMENTS_URL` is set. A wrong base path can return 404 for
+every lookup. The client treats each of those answers as absence. Use the
+[routing check in the runbook](../runbooks/order-recovery.md#wedged-exchange-operator-unwind)
+before an unwind that calls Payments.
 
 The `MoneyEvidence` zero value is `Indeterminate` deliberately: a caller that forgets to decide, or
 a future branch that falls through, refuses rather than permits. The guard fails closed by
