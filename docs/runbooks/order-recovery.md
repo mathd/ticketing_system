@@ -580,12 +580,14 @@ For a bulk refund, use the procedure below only for a money refund that the prov
 6. Read the `refund_id`, stored `amount` in minor units, and `currency` of that refund.
 
 **Agree on the disposition first.** Agree with the other operators before any money action or
-outcome command. Keep that agreement in effect through the transfer and the recording. Stop and
-investigate if another operator is taking a different action on the same refund.
+outcome command. Include other refunds and outside transfers on the same charge in that
+agreement. Keep it in effect through the transfer and the recording. Stop and investigate if
+another operator is taking a conflicting action.
 
-For a bulk refund, wait for the terminal report. A terminal report covers that run only. Wait for
-any known overlapping cancellation run or staff retry for the same refund attempt to finish.
-Reconcile its result before you continue.
+For a bulk refund, wait for the terminal report. A terminal report covers that run only. Before
+a replay, a new-key refund, or an outside transfer, wait for any known overlapping cancellation
+run, staff retry, Payments dispatch, or outside transfer on the charge to finish. Reconcile the
+result before you continue.
 
 <a name="prove-the-provider-failure"></a>
 
@@ -667,15 +669,19 @@ letters for the currency; and no more than 64 KiB. The refusal of a `200` does n
 2. List every refund on the charge with the provider, all pages. Every refund that Payments
    sends for a refund leg carries `metadata.compensation_key`. An unstamped refund came from
    outside the platform, for example from the provider dashboard. The proof does not see it.
-   Stop and reconcile the charge if any refund other than the failed original returned money
-   for this order, with or without the stamp.
+   Stop if the listing is incomplete or unclear. Stop if any refund other than the refund from
+   step 1 returned money, can still move money, or has an unknown status. This includes
+   `pending` refunds, with or without the stamp. Wait for each of these refunds to reach a
+   terminal status. Reconcile each result against the amount still owed before you continue.
 3. Immediately before the transfer, run the Commerce query under
    [Inspect one refund's disposition](#inspect-one-refunds-disposition). Use the intended Commerce
    database. Require exactly one row for the organizer, order, and refund you selected. Require
    `refund_status = pending`, the stored amount and currency, and NULL in both `state` and `kind`.
    Stop on a read error, zero rows, more than one row, any mismatch, a disposition, or an outcome.
-4. Send the full stored amount in its stored currency only after all three checks pass. The checks
-   reserve nothing. Keep the other operators' agreement in effect until you record the outcome.
+4. Send the full stored amount in its stored currency only after all three checks pass and you
+   confirm that the buyer is still owed that amount for this refund. The checks reserve nothing.
+   A dispatch can still submit after the listing (ADR-087 §13). Keep the other operators'
+   agreement in effect until you record the outcome.
 5. Confirm that the full transfer settled. Record it with the command below. Use the bank or PSP
    transfer reference and your own name. The command copies the stored amount and currency. The
    command also records the shared Commerce database login as `session_user`.
@@ -689,11 +695,11 @@ Confirm that no outside transfer occurred or remains in flight. After you resolv
 finish the abandonment with the original operator name and reason. After the abandonment, the
 Back Office offers a fresh refund under a new key (ADR-087 §16). Run [Detect a late provider
 refund](#detect-a-late-provider-refund) for the original attempt before staff refund the buyer
-under a new key. Stop and reconcile if the check finds a `succeeded` refund or other evidence
-that money moved. The check detects a refund that already happened. A dispatch that Payments
-admitted before the abandonment marker can still send its POST after the check. A new-key refund
-keeps the residual risk accepted in ADR-087 §13. The buyer can receive two refunds. Run the same
-check again during reconciliation (ADR-087 §13).
+under a new key. Apply its stop conditions. Apply the stop and reconciliation rules in step 2
+above to the other refunds on the charge. A dispatch that Payments admitted before the
+abandonment marker can still send its POST after the check. A new-key refund keeps the residual
+risk accepted in ADR-087 §13. The buyer can receive two refunds. Run the same check again
+during reconciliation (ADR-087 §13).
 
 What the command does (ADR-087 §3–§6): it asks Payments, read-only, to prove that the leg is still
 bound and unmarked and that the provider's stamped refund is `failed` or `canceled` for the stored
@@ -861,11 +867,11 @@ WHERE r.organizer_id = :'organizer_id' AND r.id = :'refund_id';
 - After abandonment finishes, the original attempt cannot record an outside transfer. The Back
   Office then offers a fresh refund under a new key (ADR-087 §16). Run [Detect a late provider
   refund](#detect-a-late-provider-refund) for the original attempt before staff refund the buyer
-  under a new key. Stop and reconcile if the check finds a `succeeded` refund or other evidence
-  that money moved. The check detects a refund that already happened. A dispatch that Payments
-  admitted before the abandonment marker can still send its POST after the check. A new-key refund
-  keeps the residual risk accepted in ADR-087 §13. The buyer can receive two refunds. Run the same
-  check again during reconciliation (ADR-087 §13).
+  under a new key. Apply its stop conditions. Apply the stop and reconciliation rules in step 2
+  of the [outside-transfer checks](#before-an-outside-transfer) to the other refunds on the
+  charge. A dispatch that Payments admitted before the abandonment marker can still send its
+  POST after the check. A new-key refund keeps the residual risk accepted in ADR-087 §13. The
+  buyer can receive two refunds. Run the same check again during reconciliation (ADR-087 §13).
 - An outcome `refunded_outside` together with a Payments marker on the same leg is an invariant
   violation. Stop further money actions on the order and its charge. Investigate both records.
 
@@ -904,8 +910,9 @@ stamp (commit `9b1d6a86`, 2026-07-30) is older than refund legs (commit `f7f419c
 An unstamped refund on the charge therefore came from outside the platform, for example from the
 provider dashboard. The proof and the same-key replay ignore it as evidence for the original
 attempt. Before a same-key replay or an outside transfer, list every refund on the charge with
-the provider. If an unstamped refund already returned this money, stop money actions and reconcile
-the charge. Otherwise a same-key replay or an outside transfer can refund the buyer twice.
+the provider. Apply the stop and reconciliation rules in step 2 of the [outside-transfer
+checks](#before-an-outside-transfer) to every refund other than the matching refund in the table.
+Apply those rules to refunds with and without the stamp.
 
 **Find the Payments leg** for a refund with the scoped leg key: the organizer, the order's checkout
 idempotency key (`orders.idempotency_key`) and the refund id as the refund key.
@@ -947,8 +954,11 @@ error. Run this check as part of provider reconciliation for every refund closed
 
 2. List the PaymentIntent's refunds at the provider (`GET /v1/refunds?payment_intent=<payment_intent>`
    in Stripe, all pages) and keep each refund whose `metadata.compensation_key` equals
-   `compensation_stamp`.
-3. A `succeeded` refund in that list, or a leg with `status = 'refunded'` and a `fact_id` (a
+   `compensation_stamp`. Stop if the listing is incomplete or unclear.
+3. Stop further money actions if a matching refund can still move money or has an unknown status.
+   This includes a `pending` refund. Wait for a terminal status and reconcile the result before
+   you continue.
+4. A `succeeded` refund in that list, or a leg with `status = 'refunded'` and a `fact_id` (a
    `payment.refunded` journal fact), is an invariant violation for an attempt that an operator
    closed as refunded outside or abandoned. Stop all further money actions on the order and its
    charge. A journal fact alone does not prove that money moved: the fact can record a success the
