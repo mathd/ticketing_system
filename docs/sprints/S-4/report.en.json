@@ -1,0 +1,1209 @@
+{
+ "schemaVersion": 1,
+ "report": {
+  "id": "S-4-release",
+  "version": 1,
+  "language": "en",
+  "generatedAt": "2026-11-23T07:00:36+00:00",
+  "preparedBy": "claude-opus-5-5",
+  "packetDigest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+ },
+ "project": {
+  "key": "ticketing_system",
+  "name": "Ticketing system"
+ },
+ "sprint": {
+  "vault": "sdlc",
+  "key": "S-4",
+  "name": "Sprint 4: refunds and exchanges reach one final state",
+  "goal": "A voided ticket is never refunded or re-delivered again, the bulk refund budget rule is pinned, and an operator can close a provider-failed staff or bulk refund and a settled exchange whose switch was refused (TKT-527, TKT-526, TKT-521, TKT-525, TKT-498).",
+  "state": "active",
+  "startDate": "2026-11-23T09:00:00-05:00",
+  "endDate": "2026-12-07T17:00:00-05:00",
+  "scopeDigest": "05854c6b8a1d0ec4c991440700b13b8056eaca5b162fa90894c57b032c4c5ffe",
+  "closureTask": "TKT-580"
+ },
+ "release": {
+  "repository": "https://github.com/mathd/ticketing_system",
+  "base": {
+   "ref": null,
+   "sha": "fd390ee53f8929a927312997cfb009b61fd50910"
+  },
+  "candidate": {
+   "sha": "00e6019980432d4672a8285b267fea26730f5732",
+   "url": "https://github.com/mathd/ticketing_system/commit/00e6019980432d4672a8285b267fea26730f5732"
+  },
+  "publishTag": false,
+  "tag": null
+ },
+ "outcome": {
+  "readiness": "ready",
+  "headline": "S-4 makes voided tickets impossible to refund or re-send at claim time, pins the bulk refund budget rule, and gives operators a recorded end state for provider-failed refunds and refused exchange switches. Ready for the owner close decision; no tag or deployment.",
+  "summary": "All twelve non-closure members are Done on main 00e60199: the five planned stories (TKT-527, TKT-526, TKT-521, TKT-525, TKT-498), the simplification (TKT-579) and six members the owner added during the sprint (TKT-596 dependency updates; TKT-598, TKT-594, TKT-595 after round 1; TKT-602 after round 2; TKT-607 after round 3).\n\nEvery receipt at the candidate passed: the gate, the hermetic smoke with production images, the smoke-stack PostgreSQL service tests the owner ruled as the required tier, the focused tests, a host-Chrome browser run, the security workflow and CI. Every High from the four final-review rounds and the member reviews was fixed; none was overridden. Round 4, the last under the cap, returned HUMAN_REVIEW in all four areas.\n\nWhat the owner should weigh at close: the security council never ran (claude-mythos-5-2 unavailable, no substitute); the outside-transfer path holds no reservation, so the runbook narrows but cannot close the race with an abandonment; ADR-087 accepts that a dispatch admitted before an abandonment can still move money; IMPL2-4 (Stripe duplicate JSON members, TKT-604) is an open Medium and an owner choice at close; DOC4-1 and IMPL4-1 (an impossible example in ADR-087 §14 and the same premise in the CLI refusal text, TKT-608) are deferred. The resend guarantee is at claim time, narrower than the goal's wording."
+ },
+ "scope": {
+  "summary": "The original scope was TKT-527, TKT-526, TKT-521, TKT-525, TKT-498, the simplification task TKT-579 and the closure task TKT-580. The owner added six members during the sprint: TKT-596 (dependency updates), TKT-598 (round-1 verification and documentation corrections), TKT-594 and TKT-595 (round-1 IMPL-1 and IMPL-7), TKT-602 (round-2 IMPL2-1, High, security, and DOC2-1..7) and TKT-607 (round-3 documentation corrections). Nothing was removed or carried out. All twelve non-closure members are Done.",
+  "items": [
+   {
+    "key": "TKT-527",
+    "title": "RefundOrderTickets counts an already-exchanged ticket as refundable",
+    "origin": "planned",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "PR #531, merge cfde192d. Member accepted on its own ticket (PO note and closeout). The round 4 sprint review covers it as part of the combined candidate."
+   },
+   {
+    "key": "TKT-526",
+    "title": "Resend re-delivers voided (refunded or exchanged) tickets",
+    "origin": "planned",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "PR #532, merge 31ccb4d4. The guarantee holds at claim time; see risk R2. Member accepted on its own ticket (PO note and closeout). The round 4 sprint review covers it as part of the combined candidate."
+   },
+   {
+    "key": "TKT-521",
+    "title": "Bulk refund charges an attempt for a retryable failure that happened before any refund was driven",
+    "origin": "planned",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "PR #533, merge 83e7e7ac. The owner kept the behaviour and pinned the rule (ADR-040 amendment); TKT-598 added the PostgreSQL runner tests. Member accepted on its own ticket (PO note and closeout). The round 4 sprint review covers it as part of the combined candidate."
+   },
+   {
+    "key": "TKT-525",
+    "title": "No operator surface can record a provider-failed refund resolved outside the platform",
+    "origin": "planned",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "PR #534, merge 9e689a94. TKT-594 and TKT-595 later hardened its Payments clients and command setup. Member accepted on its own ticket (PO note and closeout). The round 4 sprint review covers it as part of the combined candidate."
+   },
+   {
+    "key": "TKT-498",
+    "title": "A settled exchange whose ticket switch was refused (source already admitted) has no operator resolution",
+    "origin": "planned",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "PR #535, merge ba25e888. Member accepted on its own ticket (PO note and closeout). The round 4 sprint review covers it as part of the combined candidate."
+   },
+   {
+    "key": "TKT-579",
+    "title": "S-4: simplify the combined sprint diff before final validation",
+    "origin": "planned",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "PR #538, merge commit abeb97a2 of head 3a12ddd2 (the owner merged it as a merge commit). Net -13 lines. Member accepted on its own ticket (PO note and closeout). The round 4 sprint review covers it as part of the combined candidate."
+   },
+   {
+    "key": "TKT-596",
+    "title": "S-4: apply or close the open Dependabot updates and update the remaining outdated dependencies",
+    "origin": "added",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "Added by the owner on 2026-11-22. PR #539, merge d615faeb. Member accepted on its own ticket (PO note and closeout). The round 4 sprint review covers it as part of the combined candidate."
+   },
+   {
+    "key": "TKT-598",
+    "title": "S-4 review corrections: PostgreSQL runner tests for TKT-521's charge paths, the void-replay guard test, refund-outcome runbook and ADR-087 fixes",
+    "origin": "added",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "Added by the owner after review round 1 (DOC-1/VER-1 High). PR #540, merge 79e7096d. Member accepted on its own ticket (PO note and closeout). The round 4 sprint review covers it as part of the combined candidate."
+   },
+   {
+    "key": "TKT-594",
+    "title": "refundoutcome Payments clients decode loosely and follow redirects",
+    "origin": "added",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "Added by the owner after review round 1 (IMPL-1 High, security); narrowed by the owner to the refundoutcome clients after the council. PR #541, merge 5bf31ce9. Member accepted on its own ticket (PO note and closeout). The round 4 sprint review covers it as part of the combined candidate."
+   },
+   {
+    "key": "TKT-595",
+    "title": "record-refund-outcome and unwind-exchange fall back to the shared token for Payments calls",
+    "origin": "added",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "Added by the owner after review round 1 (IMPL-7); widened by the owner to the URL and database checks. PR #542, merge 4575b39e. Member accepted on its own ticket (PO note and closeout). The round 4 sprint review covers it as part of the combined candidate."
+   },
+   {
+    "key": "TKT-602",
+    "title": "Back Office credentialed upstream calls follow redirects (S-4 review IMPL2-1), with the refund-recovery runbook and ADR corrections (DOC2-1..7)",
+    "origin": "added",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "Added by the owner after review round 2 (IMPL2-1 High, security; DOC2-1..7); the owner chose one corrections member covering all credentialed Back Office calls. PR #543, merge 1f3dd231. Its records hold 53 red and restored Vitest mutations (46 + 7); the Chrome fixture runs are counted separately. Member accepted on its own ticket (PO note and closeout). The round 4 sprint review covers it as part of the combined candidate."
+   },
+   {
+    "key": "TKT-607",
+    "title": "S-4 round-3 documentation corrections: outside-transfer precondition, lost-reply proof, unwind 404 limitation, Back Office routing, seated returns, ADR-088 attribution",
+    "origin": "added",
+    "outcome": "delivered",
+    "destination": null,
+    "note": "Added by the owner after review round 3 (\"Corrections member (Recommended)\"), validated by a council of claude-fable-5-2 and gpt-6.2-astra. PR #544, merge 00e60199. Documentation only. Member accepted on its own ticket (PO note and closeout). The round 4 sprint review covers it as part of the combined candidate."
+   }
+  ]
+ },
+ "areas": {
+  "implementation": {
+   "status": "passed",
+   "decision": "HUMAN_REVIEW",
+   "round": 4,
+   "reviewers": [
+    "gpt-6-luna"
+   ],
+   "findings": {
+    "raised": 1,
+    "resolved": 0,
+    "deferred": 1
+   },
+   "summary": "Round 4 initial inspection approved with zero findings: the reviewer traced the refund and resend void checks, the bulk refund limits, the refund-outcome evidence paths, operator configuration and organizer scope, the migrations, TKT-498 decisions D40 and D41, the Back Office redirect guard and TKT-607's runbook statements against the code at 00e60199. The decision audit raised IMPL4-1 (Medium): the record-refund-outcome refusal text still says an unstamped refund can never be proven. It is the same defect as DOC4-1 and is deferred to TKT-608; the runbook takes precedence. The outside-transfer checks narrow the race but do not reserve the refund (risk R-OUTSIDE).",
+   "evidence": [
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    },
+    {
+     "label": "Round 4 area records",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "a7662eee39b1eb3d88a118cafa40b47de1f1a5b5df844b94508d72cc8da09a2c"
+     }
+    }
+   ]
+  },
+  "verification": {
+   "status": "passed",
+   "decision": "HUMAN_REVIEW",
+   "round": 4,
+   "reviewers": [
+    "gpt-6-luna"
+   ],
+   "findings": {
+    "raised": 1,
+    "resolved": 1,
+    "deferred": 0
+   },
+   "summary": "Round 4 initial inspection approved with zero findings: every required receipt at 00e60199 is present and matches the packet, the named smoke-stack PostgreSQL tests meet the owner tier ruling, and the round-3 fixture mutations went red at the intended assertions before six green runs. The decision audit raised VER4-1 (Low): the frozen packet still gave the old TKT-602 mutation count in one place; this report states 53. Live Stripe and mixed-version rollout are not verified.",
+   "evidence": [
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    },
+    {
+     "label": "Round 4 area records",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "a7662eee39b1eb3d88a118cafa40b47de1f1a5b5df844b94508d72cc8da09a2c"
+     }
+    }
+   ]
+  },
+  "documentation": {
+   "status": "passed",
+   "decision": "HUMAN_REVIEW",
+   "round": 4,
+   "reviewers": [
+    "gpt-6-luna"
+   ],
+   "findings": {
+    "raised": 1,
+    "resolved": 0,
+    "deferred": 1
+   },
+   "summary": "Round 4 initial inspection raised DOC4-1 (Medium): ADR-087 §14 gives an unstamped platform leg as an example, which the stamp history rules out; the rule it states stays true. Deferred to TKT-608 with the CLI text, because round 4 is the last round under the cap and a fix would change the reviewed candidate. The decision audit checked this report's draft and approved: its 49 board references match sprint records by digest. The audit could not view the page at narrow width, in dark theme or in print preview.",
+   "evidence": [
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    },
+    {
+     "label": "Round 4 area records",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "a7662eee39b1eb3d88a118cafa40b47de1f1a5b5df844b94508d72cc8da09a2c"
+     }
+    }
+   ]
+  },
+  "retrospective": {
+   "status": "passed",
+   "decision": "HUMAN_REVIEW",
+   "round": 4,
+   "reviewers": [
+    "gpt-6-luna"
+   ],
+   "findings": {
+    "raised": 3,
+    "resolved": 3,
+    "deferred": 0
+   },
+   "summary": "Round 4 initial inspection approved with zero findings in the packet and reconciled the review counts. The decision audit raised RETRO4-1 to RETRO4-3 (Medium) against the report draft: per-member board intervals, the repeated writer-window cause, and the review-independence and routing limits. All three are fixed in this report.",
+   "evidence": [
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    },
+    {
+     "label": "Round 4 area records",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "a7662eee39b1eb3d88a118cafa40b47de1f1a5b5df844b94508d72cc8da09a2c"
+     }
+    }
+   ]
+  }
+ },
+ "checks": [
+  {
+   "id": "C1",
+   "name": "Exact-candidate local gate",
+   "kind": "gate",
+   "required": true,
+   "status": "passed",
+   "command": "make check",
+   "detail": "Standalone run in the TKT-580 worktree at 00e60199: PASS exit=0, gate input digest 28a4c0af equal to scripts/gate.sh --digest; 187 top-level PASS, 0 FAIL (gate.log SHA-256 f8f82b8a...). The tree field is the gate input digest, not the Git tree.",
+   "evidence": [
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    }
+   ],
+   "cost": null
+  },
+  {
+   "id": "C2",
+   "name": "Hermetic smoke with production images (e2e and e2e-slow)",
+   "kind": "e2e",
+   "required": true,
+   "status": "passed",
+   "command": "make smoke-hermetic",
+   "detail": "Exit 0 at 00e60199, 06:34:28-06:43:00Z, 187 top-level PASS, 0 FAIL. Includes the running-stack journeys for TKT-525 and TKT-498 and the TKT-526 delivery and replay tests.",
+   "evidence": [
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    }
+   ],
+   "cost": null
+  },
+  {
+   "id": "C3",
+   "name": "DB-backed service tests on the smoke stack's PostgreSQL (owner tier ruling)",
+   "kind": "integration",
+   "required": true,
+   "status": "passed",
+   "command": "GOFLAGS=-v SMOKE_PARTS=services-rest make smoke",
+   "detail": "Exit 0 at 00e60199, 06:43:00-06:47:14Z, 1,950 top-level PASS, 0 FAIL, 5 SKIP. Named results: the TKT-527 refund selection tests, the TKT-526 claim and mark tests, the TKT-521 charge paths on PostgreSQL as TKT-598 D1 names them (pre-drive retryable, the two driven-retry runner tests, interrupted undriven), the void-replay guard, the TKT-594 evidence and redirect tests. The skips: one pre-existing blind subtest (risk R5) and four opt-in migration-volume measurements.",
+   "evidence": [
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    }
+   ],
+   "cost": null
+  },
+  {
+   "id": "C4",
+   "name": "Focused tests: bulk runner charge rules, resend route refusal, command configuration checks, Back Office redirect suites",
+   "kind": "unit",
+   "required": true,
+   "status": "passed",
+   "command": "go test -count=1 -v (bulkrefund runner, access api redelivery route, commerce cmd record-refund-outcome and unwind-exchange); pnpm exec vitest run (three TKT-602 Back Office suites)",
+   "detail": "Go: all ok at 00e60199, exit 0. Back Office: 3 files, 157/157 passed, exit 0.",
+   "evidence": [
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    }
+   ],
+   "cost": null
+  },
+  {
+   "id": "C5",
+   "name": "Real-browser submits of the changed back-office refund form",
+   "kind": "e2e",
+   "required": true,
+   "status": "passed",
+   "command": "bash docs/sprints/S-2/evidence/TKT-563/run-make-browser.sh --historical-backup <file> --receipts <dir>",
+   "detail": "One guarded run at 00e60199 with host Chrome 158: exit 0 on the first run, 16 spec invocations, 0 failed; refund-abandoned (TKT-525) and refund-redirected (TKT-602) passed; timing bytes restored and the worktree clean. Round-3 fixture receipt at 1f3dd231 (fixtures unchanged since): three red mutations (the shared seed, the case-sensitive order read, a followed redirect), each restored byte-identical, then six unmutated full runs, all green. Earlier S-4 runs had checkout races (risk R6).",
+   "evidence": [
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    }
+   ],
+   "cost": null
+  },
+  {
+   "id": "C6",
+   "name": "Security workflow: repository scan, pnpm audit, govulncheck",
+   "kind": "other",
+   "required": true,
+   "status": "passed",
+   "command": "gh workflow run security --ref main",
+   "detail": "workflow_dispatch on main at 00e60199 (run 45122971534): success for repository-scan, pnpm-audit and govulncheck on all eight modules; the two scheduled-notification jobs skipped by design.",
+   "evidence": [
+    {
+     "label": "Security run 45122971534",
+     "url": "https://github.com/mathd/ticketing_system/actions/runs/45122971534"
+    },
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    }
+   ],
+   "cost": null
+  },
+  {
+   "id": "C7",
+   "name": "CI check on the last PR head and on the push to main",
+   "kind": "gate",
+   "required": true,
+   "status": "passed",
+   "command": null,
+   "detail": "check on PR #544 head 325e81b7 (first attempt) and check on the push to main at 00e60199 (run 45122865667): success.",
+   "evidence": [
+    {
+     "label": "CI check on the push to main",
+     "url": "https://github.com/mathd/ticketing_system/actions/runs/45122865667"
+    }
+   ],
+   "cost": null
+  },
+  {
+   "id": "C8",
+   "name": "Four independent final review pairs",
+   "kind": "manual",
+   "required": true,
+   "status": "passed",
+   "command": null,
+   "detail": "Round 4 (the last under the cap) on packet 4b4c7ae5, reviewer gpt-6-luna for all four areas and both lenses: review_round.py sprint-round returned HUMAN_REVIEW. Findings: IMPL4-1 and DOC4-1 (Medium) deferred to TKT-608; VER4-1 (Low) and RETRO4-1 to RETRO4-3 (Medium) fixed in this report. Rounds 1 to 3 led to the owner-added members TKT-598, TKT-594, TKT-595, TKT-602 and TKT-607.",
+   "evidence": [
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    }
+   ],
+   "cost": null
+  },
+  {
+   "id": "C9",
+   "name": "LLM evaluation",
+   "kind": "llm_eval",
+   "required": false,
+   "status": "not_applicable",
+   "command": null,
+   "detail": "No LLM feature is in the sprint scope.",
+   "evidence": [],
+   "cost": null
+  }
+ ],
+ "measurements": [
+  {
+   "metric": "Sprint diff size",
+   "scope": "fd390ee5..00e60199 (release range); simplification measure fd390ee5..ba25e888 and ..3a12ddd2",
+   "baseline": "136 files; +24,820/-489 (before simplification)",
+   "candidate": "203 files; +29,802/-1,789",
+   "tool": "git diff --shortstat",
+   "observation": "The simplification task TKT-579 measured 137 files +24,812/-494 after simplification (net -13 lines). The release range adds #537 (46 files +1,098/-1,154), TKT-596 (15 files +100/-82), TKT-598 (5 files +412/-22), TKT-594 (7 files +940/-91), TKT-595 (9 files +248/-117), TKT-602 (21 files +2,303/-103) and TKT-607 (9 files +239/-76, documentation)."
+  },
+  {
+   "metric": "Review convergence: plan review",
+   "scope": "twelve non-closure members",
+   "baseline": null,
+   "candidate": "20 rounds; 94 raw entries; 93 groups after 1 documented link (87 fixed, 5 noted, 1 deferred)",
+   "tool": "member kind=review records",
+   "observation": "TKT-525 used 4 plan-review rounds and TKT-607 all 4 (one High, P3-1, fixed). Groups are counts after documented links, not a confirmed distinct-defect count; baseline n/a (no earlier comparable measure)."
+  },
+  {
+   "metric": "Review convergence: code review",
+   "scope": "twelve non-closure members",
+   "baseline": null,
+   "candidate": "23 rounds; 138 raw entries; 127 groups after 11 documented links (122 fixed, 3 noted, 2 deferred)",
+   "tool": "member kind=review records",
+   "observation": "TKT-525 used 6 code-review rounds (5 and 6 owner-authorized, delta initial inspection with a complete audit), TKT-498 4, TKT-602 3, TKT-607 2. Highs: TKT-525 9, TKT-498 3, TKT-607 1, all fixed. An exact distinct-defect count is n/a because lineage is incomplete."
+  },
+  {
+   "metric": "Below-threshold fix share after the cost test",
+   "scope": "from TKT-521 code review (515e3856) to TKT-602",
+   "baseline": null,
+   "candidate": "plan 50/56; code 105/113 raw entries below High fixed",
+   "tool": "member kind=review records",
+   "observation": "Recorded cost decisions: TKT-498 code R4-2, TKT-596 code R1-1. Missing cost comparisons: TKT-498 plan P1-5, TKT-596 code R1-3. Sprint-wide compliance and savings: n/a."
+  },
+  {
+   "metric": "Final review rounds",
+   "scope": "S-4 sprint review",
+   "baseline": null,
+   "candidate": "4 of 4",
+   "tool": "sprint-review records",
+   "observation": "Round 1 (d615faeb) and round 2 (4575b39e) each led to owner-added correction members; round 3 (1f3dd231) to TKT-607; round 4 on 00e60199."
+  },
+  {
+   "metric": "Board elapsed intervals per member",
+   "scope": "twelve non-closure members, board transition history through the cutoff 2026-11-23T06:15:48+00:00; no history gaps, no unreadable members",
+   "baseline": null,
+   "candidate": "TKT-527 Planning 0.3 h, Building 1.2 h; TKT-526 0.4 h, 1.0 h; TKT-521 0.3 h, 6.4 h; TKT-525 1.3 h, 14.1 h; TKT-498 0.8 h, 8.8 h; TKT-579 0.4 h, 1.1 h; TKT-596 0.5 h, 8.5 h; TKT-598 0.3 h, 1.0 h; TKT-594 1.2 h, 1.1 h; TKT-595 0.3 h, 2.0 h; TKT-602 0.8 h, 4.8 h; TKT-607 0.7 h, 1.5 h; PO Review under 0.1 h each",
+   "tool": "board GET /metrics?sprint=S-4 (frozen snapshot 9bdd3378…)",
+   "observation": "Elapsed board time per status, not labour time. It includes outages (TKT-521 records about five hours), owner waits and idle periods (TKT-596 records a mostly idle Building interval). Observed active work per member is in each closeout; sprint-wide active work, CI wait and model spend are n/a where the records cannot separate them."
+  }
+ ],
+ "risks": [
+  {
+   "id": "IMPL-1",
+   "severity": "High",
+   "area": "implementation",
+   "title": "Refund-outcome Payments clients followed redirects and forwarded the dedicated credential (round 1, security)",
+   "status": "resolved",
+   "blocking": true,
+   "resolution": "Fixed by TKT-594 (owner: \"Add TKT-594 + TKT-595 (Recommended)\"): the refundoutcome clients refuse redirects and decode evidence exactly; merged 5bf31ce9. Re-reviewed in rounds 2 to 4.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Owner decision on IMPL-1",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "577c44af28f2e236512d6785bfd6c5627be337f87f5faff8b7c81235bbdc7880"
+     }
+    },
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    }
+   ]
+  },
+  {
+   "id": "DOC-1",
+   "severity": "High",
+   "area": "documentation",
+   "title": "TKT-521 charge paths were not proven on PostgreSQL (round 1)",
+   "status": "resolved",
+   "blocking": true,
+   "resolution": "Fixed by TKT-598 (PostgreSQL runner tests) and the owner tier ruling; merged 79e7096d.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Round 1 dispositions",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "45a4536557b97a5c73800450980c291c6516ac01c2c9eadfb4801e4f3cf6f128"
+     }
+    },
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    }
+   ]
+  },
+  {
+   "id": "VER-1",
+   "severity": "High",
+   "area": "verification",
+   "title": "Required DB-backed proof for the changed refund paths was missing (round 1)",
+   "status": "resolved",
+   "blocking": true,
+   "resolution": "Fixed by TKT-598 and the owner tier ruling (smoke-stack PostgreSQL tests); receipts C3.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Round 1 dispositions",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "45a4536557b97a5c73800450980c291c6516ac01c2c9eadfb4801e4f3cf6f128"
+     }
+    },
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    }
+   ]
+  },
+  {
+   "id": "IMPL2-1",
+   "severity": "High",
+   "area": "implementation",
+   "title": "Back Office credentialed upstream calls followed redirects (round 2, security)",
+   "status": "resolved",
+   "blocking": true,
+   "resolution": "Fixed by TKT-602 (owner: \"One corrections member (Recommended)\", \"All credentialed calls (Recommended)\"): every Back Office upstream request refuses any 3xx before reading the body; merged 1f3dd231. Security council did not run (risk R-SEC).",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Owner decision on IMPL2-1",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "7579b5b921caf84ca3842a04d8f4fa1096600e7767ed985181002ce34f076c16"
+     }
+    },
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R-SEC",
+   "severity": "Medium",
+   "area": "implementation",
+   "title": "The security council did not validate TKT-602 or any S-4 change",
+   "status": "open",
+   "blocking": false,
+   "resolution": "claude-mythos-5-2 failed three times with \"400 unknown provider\"; no Daybreak model was listed; no model was substituted (council decision accepted by the owner). The security claims rest on red-on-base tests, mutants and cross-model reviews.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Security council retry before round 3",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "394ea8ead842e7e9365513bd0eb0f45058a672b21c0578708c669096a471b7ea"
+     }
+    },
+    {
+     "label": "Council decision on the round-2 questions",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "8abf289024f71098203a818684554d44741811dc00140a03c3fdc4c0b7200d7a"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R-OUTSIDE",
+   "severity": "Medium",
+   "area": "implementation",
+   "title": "The outside-transfer path holds no reservation; only operator agreement stops an abandonment between the proof and an outside transfer",
+   "status": "open",
+   "blocking": false,
+   "resolution": "TKT-607 narrowed the window in the runbook (Commerce read last, stop on any doubt, incident procedure for any refusal after money left). Closing it needs a code decision by the owner.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "TKT-607 council validation",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "2032c9506deda258bae9737e6aa94dcc498e50e9a15ee76df0b2de8f283b4f92"
+     }
+    },
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R2",
+   "severity": "Medium",
+   "area": "implementation",
+   "title": "ADR-087 accepted residual risks: an admitted dispatch can still POST after an abandonment or an outside outcome (24 h key retention), and the provider re-read and the journal commit are separate steps",
+   "status": "open",
+   "blocking": false,
+   "resolution": "Accepted in ADR-087 §13 (TKT-525). Reconciliation finds a late refund from the stamp (order-recovery.md, Detect a late provider refund). Past retention, refunded_outside can lead Payments to journal payment.refunded and Commerce to forward order.refunded.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R1",
+   "severity": "Medium",
+   "area": "implementation",
+   "title": "Resend guarantee is at claim time: a refund or exchange that commits between the claim and the transport hand-off does not stop the message",
+   "status": "open",
+   "blocking": false,
+   "resolution": "Owner accepted with the round-1 IMPL-1 decision; the sprint goal \"never re-delivered\" is intent, not this guarantee.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Round 1 dispositions",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "45a4536557b97a5c73800450980c291c6516ac01c2c9eadfb4801e4f3cf6f128"
+     }
+    }
+   ]
+  },
+  {
+   "id": "IMPL2-4",
+   "severity": "Medium",
+   "area": "implementation",
+   "title": "Payments Stripe adapter keeps the last duplicate JSON member in the refund listing and the post-success re-read",
+   "status": "deferred",
+   "blocking": false,
+   "resolution": "Deferred by the council decision the owner accepted; an open Medium and an owner choice at close. ADR-087 §3 does not cover duplicate member names.",
+   "followup": "TKT-604",
+   "evidence": [
+    {
+     "label": "Council decision on the round-2 questions",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "8abf289024f71098203a818684554d44741811dc00140a03c3fdc4c0b7200d7a"
+     }
+    }
+   ]
+  },
+  {
+   "id": "IMPL-3",
+   "severity": "Medium",
+   "area": "implementation",
+   "title": "Payments post-purchase abandon and proof endpoints cannot tell a post-purchase leg from an upgrade-abandonment leg",
+   "status": "deferred",
+   "blocking": false,
+   "resolution": "Owner ruled it outside the S-4 conditions of success.",
+   "followup": "TKT-599",
+   "evidence": [
+    {
+     "label": "Round 1 dispositions",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "45a4536557b97a5c73800450980c291c6516ac01c2c9eadfb4801e4f3cf6f128"
+     }
+    }
+   ]
+  },
+  {
+   "id": "IMPL-4",
+   "severity": "Medium",
+   "area": "implementation",
+   "title": "Operator recovery budget: 10 s per Payments call in a 30 s command deadline; slow pagination (up to ten pages) can exhaust it",
+   "status": "deferred",
+   "blocking": false,
+   "resolution": "Deferred by the owner; the later-page adapter test uses a stub.",
+   "followup": "TKT-590",
+   "evidence": [
+    {
+     "label": "Round 1 dispositions",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "45a4536557b97a5c73800450980c291c6516ac01c2c9eadfb4801e4f3cf6f128"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R-UPGRADE",
+   "severity": "Medium",
+   "area": "implementation",
+   "title": "A provider-refused upgrade abandonment stops before capacity release and journal completion; the buyer stays charged with the target held",
+   "status": "deferred",
+   "blocking": false,
+   "resolution": "Brief exclusion, stated as a residual.",
+   "followup": "TKT-588",
+   "evidence": [
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R-CLASS",
+   "severity": "Medium",
+   "area": "implementation",
+   "title": "The credentialed-call class has open instances outside S-4 (Commerce shared transport, two Commerce clients, Storefront)",
+   "status": "deferred",
+   "blocking": false,
+   "resolution": "Fixed in S-4 for the refundoutcome clients (TKT-594) and every Back Office call (TKT-602).",
+   "followup": "TKT-589",
+   "evidence": [
+    {
+     "label": "Council decision on the round-2 questions",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "8abf289024f71098203a818684554d44741811dc00140a03c3fdc4c0b7200d7a"
+     }
+    }
+   ]
+  },
+  {
+   "id": "DOC4-1",
+   "severity": "Medium",
+   "area": "documentation",
+   "title": "ADR-087 §14 and the record-refund-outcome refusal text still describe an unstamped platform refund leg, which cannot exist",
+   "status": "deferred",
+   "blocking": false,
+   "resolution": "Round 4 DOC4-1 (ADR-087:405-406) and the TKT-607 plan-review finding (refund_outcomes.go:159, :212). The rule stated there stays true; only the example and the CLI premise are wrong. The runbook takes precedence. Deferred: round 4 is the last round under the cap and a fix would change the reviewed candidate.",
+   "followup": "TKT-608",
+   "evidence": [
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R-TABLE",
+   "severity": "Low",
+   "area": "documentation",
+   "title": "The payments.md cancellation-report outcome table overstates what some outcomes establish",
+   "status": "deferred",
+   "blocking": false,
+   "resolution": "TKT-602 R1-2 and R2-3; TKT-607 corrected the seated-return line of that family.",
+   "followup": "TKT-605",
+   "evidence": [
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R5",
+   "severity": "Low",
+   "area": "verification",
+   "title": "Pre-existing blind subtest: voids_smoke_test.go:287 \"an exchanged order is not voidable\" skips on a fixture column that never existed",
+   "status": "open",
+   "blocking": false,
+   "resolution": "Unchanged since before S-4; reported, not fixed.",
+   "followup": null,
+   "evidence": [
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R6",
+   "severity": "Low",
+   "area": "verification",
+   "title": "Browser checkout races: checkout-fr.mjs \"the confirmation is French\" failed twice and checkout.mjs once in S-4 runs; each passed on re-run",
+   "status": "deferred",
+   "blocking": false,
+   "resolution": "Neither spec changed in S-4. Occurrences recorded on TKT-573 and TKT-513.",
+   "followup": "TKT-573",
+   "evidence": [
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R7",
+   "severity": "Low",
+   "area": "verification",
+   "title": "CI smoke race: the reseller-revocation check fails under pipefail (SIGPIPE, inferred)",
+   "status": "deferred",
+   "blocking": false,
+   "resolution": "Filed in S-3; recurred three times in S-4; same-revision recovery confirmed only at a2fa1a21.",
+   "followup": "TKT-584",
+   "evidence": [
+    {
+     "label": "Correction: the race is TKT-584",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "35a31c9fbd9f4a955a12932bee21da9ab40b9ded63e6fe60b81aefda2e3b8a6b"
+     }
+    }
+   ]
+  },
+  {
+   "id": "R8",
+   "severity": "Low",
+   "area": "verification",
+   "title": "web/scanner jsdom tests time out under make check load",
+   "status": "deferred",
+   "blocking": false,
+   "resolution": "Seen twice in TKT-602 local gate runs; owner: \"File flake, re-run (Recommended)\".",
+   "followup": "TKT-606",
+   "evidence": [
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    }
+   ]
+  },
+  {
+   "id": "IMPL4-1",
+   "severity": "Medium",
+   "area": "implementation",
+   "title": "The record-refund-outcome refusal text says an unstamped refund can never be proven, which conflicts with the corrected lost-reply procedure",
+   "status": "deferred",
+   "blocking": false,
+   "resolution": "Same defect as DOC4-1 (refund_outcomes.go:159, :212). The runbook takes precedence; the command behaviour is correct. Code change deferred after the last review round.",
+   "followup": "TKT-608",
+   "evidence": [
+    {
+     "label": "Frozen round 4 review packet",
+     "url": null,
+     "ref": {
+      "key": "S-4",
+      "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+     }
+    }
+   ]
+  }
+ ],
+ "followups": [
+  {
+   "key": "TKT-585",
+   "title": "Back-office resend replay confirmation claims nothing was sent again",
+   "reason": "TKT-526 review R1-3"
+  },
+  {
+   "key": "TKT-586",
+   "title": "Checkout and exchange replacements can share one Payments charge key across Commerce orders",
+   "reason": "TKT-525 review RA1-1"
+  },
+  {
+   "key": "TKT-587",
+   "title": "CompleteOrderRefund locks the order without the organizer predicate",
+   "reason": "TKT-525 review R2-3 class"
+  },
+  {
+   "key": "TKT-588",
+   "title": "A TKT-498 exchange abandonment whose upgrade refund failed at the provider has no end state",
+   "reason": "TKT-498 review"
+  },
+  {
+   "key": "TKT-589",
+   "title": "Commerce's shared HTTP transport follows redirects and picks the internal credential by URL prefix",
+   "reason": "TKT-498 review; holds the exchangeunwind client (TKT-594 D4) and the unwind preflight (TKT-595 D4)"
+  },
+  {
+   "key": "TKT-590",
+   "title": "Payments partial refund can outlive its own 30 s response-write deadline on a slow Stripe exchange",
+   "reason": "TKT-498 review; round 1 IMPL-4 (risk R3)"
+  },
+  {
+   "key": "TKT-597",
+   "title": "Upgrade PostgreSQL 18.7 to 19 (major)",
+   "reason": "TKT-596 scope"
+  },
+  {
+   "key": "TKT-599",
+   "title": "Payments post-purchase abandon and proof endpoints cannot tell a post-purchase refund leg from an upgrade-abandonment leg",
+   "reason": "Round 1 IMPL-3 (risk R4)"
+  },
+  {
+   "key": "TKT-600",
+   "title": "Move exchangeabandon.send and accessadmission.NewCaller onto the exactcall helper",
+   "reason": "TKT-594 review"
+  },
+  {
+   "key": "TKT-584",
+   "title": "smoke.sh: grep -q under pipefail makes the reseller revocation check flaky (SIGPIPE)",
+   "reason": "Check C7 history: filed in S-3; recurred three times in S-4 (risk R7)"
+  },
+  {
+   "key": "TKT-603",
+   "title": "Storefront server-side calls follow redirects with the customer assertion (same class as S-4 IMPL2-1)",
+   "reason": "Council on round 2 (claude-fable-5-2): same class as IMPL2-1, outside the owner's TKT-602 scope"
+  },
+  {
+   "key": "TKT-604",
+   "title": "Payments Stripe adapter keeps the last duplicate JSON member in the refund listing and the refund re-read (S-4 IMPL2-4)",
+   "reason": "Round 2 IMPL2-4 (Medium), deferred by the council decision the owner accepted (open risk)"
+  },
+  {
+   "key": "TKT-605",
+   "title": "payments.md cancellation-report outcome table overstates what unavailable, internal, comped and seated-reversal outcomes establish",
+   "reason": "TKT-602 review R1-2 and R2-3 (pre-existing text)"
+  },
+  {
+   "key": "TKT-606",
+   "title": "web/scanner App jsdom tests time out or miss text under make check load",
+   "reason": "TKT-602 gate flakes (two local gate runs at 1134981e)"
+  },
+  {
+   "key": "TKT-513",
+   "title": "Storefront: after a confirmed order the hold countdown restarts and later says 'Hold expired'",
+   "reason": "Risk R6: checkout.mjs race in a TKT-602 browser run"
+  },
+  {
+   "key": "TKT-573",
+   "title": "Investigate French checkout confirmation timeout after a successful payment response",
+   "reason": "Risk R6: checkout-fr.mjs failed twice in S-4 browser runs"
+  },
+  {
+   "key": "TKT-608",
+   "title": "record-refund-outcome refusal text says an unstamped refund can never be proven",
+   "reason": "TKT-607 plan review (risk R-CLI)"
+  }
+ ],
+ "retrospective": {
+  "summary": "S-4 delivered its five planned stories, but each of the first three final-review rounds found a defect class that the member reviews had missed, and the owner added six correction members. Four patterns repeat. First, credentialed outbound calls and provider evidence decoding were checked caller by caller, so the class surfaced late (round 1 IMPL-1, round 2 IMPL2-1 and IMPL2-4). Second, plan narrowing and post-review fixes went forward without a repeat review (TKT-594 D4, TKT-498 D40 and D41). Third, concurrent writers of one row or leg across services opened windows that each review found late (TKT-525, TKT-498). Fourth, operator money procedures stated checks that a reader could take as clearance (TKT-607 P3-1, R1-1, RA2-1). The candidates below are proposals for the owner; none is adopted yet. Board status intervals are not labour time: they include outages, owner waits and idle periods, so active work is n/a where the records cannot separate it. Review limits: gpt-6-luna reviewed TKT-607's plan (rounds 2 to 4) and code and was the round-4 sprint reviewer; gpt-6.2-sol reviewed the first eleven members and sprint rounds 1 to 3. The owner moved routing to codex models during the run (OD2), and the security council never ran.",
+  "candidates": [
+   {
+    "id": "P1",
+    "type": "process",
+    "observation": "The credentialed-call and evidence-decoding class was found late and caller by caller: round 1 IMPL-1 (refundoutcome clients, TKT-594), round 2 IMPL2-1 (Back Office, TKT-602) and IMPL2-4 (Stripe adapter, TKT-604), with open instances TKT-589, TKT-600 and TKT-603.",
+    "proposal": "Add to the ticket plan template an inventory of credentialed outbound calls for any change that adds or touches one: producer, credential, redirect policy, evidence decoding and deadline, across all callers of the same transport. Plan review checks the inventory.",
+    "recommendation": "trial",
+    "humanChoice": "pending",
+    "destination": null,
+    "evidence": [
+     {
+      "label": "Frozen round 4 review packet",
+      "url": null,
+      "ref": {
+       "key": "S-4",
+       "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+      }
+     },
+     {
+      "label": "Council decision on the round-2 questions",
+      "url": null,
+      "ref": {
+       "key": "S-4",
+       "digest": "8abf289024f71098203a818684554d44741811dc00140a03c3fdc4c0b7200d7a"
+      }
+     }
+    ]
+   },
+   {
+    "id": "P2",
+    "type": "skill",
+    "observation": "TKT-607 used all four plan-review rounds and two code-review rounds on one family: checks in an operator money procedure that a reader could take as clearance (P2-2, P3-1 High, P4-1, R1-1 High, RA2-1).",
+    "proposal": "In references/quality-practices.md §1 (pre-mortem), require a table for operator money procedures before plan review: each state, the permitted action, the stop condition and the residual risk.",
+    "recommendation": "trial",
+    "humanChoice": "pending",
+    "destination": null,
+    "evidence": [
+     {
+      "label": "Frozen round 4 review packet",
+      "url": null,
+      "ref": {
+       "key": "S-4",
+       "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+      }
+     },
+     {
+      "label": "TKT-607 council validation",
+      "url": null,
+      "ref": {
+       "key": "S-4",
+       "digest": "2032c9506deda258bae9737e6aa94dcc498e50e9a15ee76df0b2de8f283b4f92"
+      }
+     }
+    ]
+   },
+   {
+    "id": "P3",
+    "type": "skill",
+    "observation": "Plan narrowing and post-review behaviour changes went forward without a repeat review: TKT-594 D4 narrowed the plan after its only plan review (round 2 RETRO2-5); TKT-498 D40 and D41 changed replay behaviour after code review round 4 with materialChange false (RETRO2-6).",
+    "proposal": "In the sdlc-ticket skill, require a plan-review round on the final plan when a decision narrows or widens scope after the last round, and classify a fix's observable changes before materialChange is frozen.",
+    "recommendation": "adopt",
+    "humanChoice": "pending",
+    "destination": null,
+    "evidence": [
+     {
+      "label": "Frozen round 4 review packet",
+      "url": null,
+      "ref": {
+       "key": "S-4",
+       "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+      }
+     },
+     {
+      "label": "Round 3 raw lens results",
+      "url": null,
+      "ref": {
+       "key": "S-4",
+       "digest": "ef2f2060734b72f423771b2dbb23e2d9cf0f21f652ca53fa378575df060b2d9d"
+      }
+     }
+    ]
+   },
+   {
+    "id": "P4",
+    "type": "process",
+    "observation": "A premise about code history reached a council-approved ticket and a plan before one git command disproved it (TKT-607 P1-1: no pre-stamp refund leg exists). The same premise remains in ADR-087 §14 and the CLI text (DOC4-1, TKT-608).",
+    "proposal": "When a plan or runbook states what happened in the past (a commit order, a migration date, a field that did not exist), cite the git command that shows it.",
+    "recommendation": "trial",
+    "humanChoice": "pending",
+    "destination": null,
+    "evidence": [
+     {
+      "label": "Frozen round 4 review packet",
+      "url": null,
+      "ref": {
+       "key": "S-4",
+       "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+      }
+     }
+    ]
+   },
+   {
+    "id": "P5",
+    "type": "process",
+    "observation": "Model routing failed several times: claude-mythos-5-2 returned \"400 unknown provider\" three times and no Daybreak model was listed, so the security council never ran; gpt-6.2-astra refused relayed review requests; codex children refused tasks that only pointed at a brief file.",
+    "proposal": "Before a sprint starts, check that each configured and council model can start a read-only call, record the result on the sprint, and always put the full brief in the task text.",
+    "recommendation": "adopt",
+    "humanChoice": "pending",
+    "destination": null,
+    "evidence": [
+     {
+      "label": "Security council retry before round 3",
+      "url": null,
+      "ref": {
+       "key": "S-4",
+       "digest": "394ea8ead842e7e9365513bd0eb0f45058a672b21c0578708c669096a471b7ea"
+      }
+     },
+     {
+      "label": "Council decision on the round-2 questions",
+      "url": null,
+      "ref": {
+       "key": "S-4",
+       "digest": "8abf289024f71098203a818684554d44741811dc00140a03c3fdc4c0b7200d7a"
+      }
+     }
+    ]
+   },
+   {
+    "id": "P6",
+    "type": "skill",
+    "observation": "Concurrent writers of one row or leg across services opened windows found late in review: TKT-525 (refund outcome against bulk and staff writers, R1-3, R2-4, R3-1) and TKT-498 (exchange abandonment against binding and replay, D40 and D41); both closeouts list writer windows as a defect class.",
+    "proposal": "In the plan template, for a change that adds a writer to a shared row or leg, list each writer, the lock or constraint that serializes them, the gaps across remote calls, and one schedule test per promised result.",
+    "recommendation": "trial",
+    "humanChoice": "pending",
+    "destination": null,
+    "evidence": [
+     {
+      "label": "Frozen round 4 review packet",
+      "url": null,
+      "ref": {
+       "key": "S-4",
+       "digest": "4b4c7ae5bda0d4ef6483a09f30c4a99e4c4041b7777c2ee48616b69b2e42606b"
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "decision": {
+  "approval": {
+   "status": "pending",
+   "approver": null,
+   "decidedAt": null,
+   "ref": null,
+   "sprint": null,
+   "scopeDigest": null,
+   "candidate": null,
+   "reportDigest": null,
+   "reportUrl": null,
+   "tag": null,
+   "note": "Exact owner close approval is requested after report publication, byte read-back and matching board pointers."
+  },
+  "tagPublication": {
+   "status": "not_required",
+   "tag": null,
+   "candidate": null,
+   "object": null,
+   "verifiedAt": null,
+   "evidence": []
+  }
+ }
+}
