@@ -24,6 +24,11 @@ the Back Office replacement (§10–§16).
 check `PAYMENTS_URL`, the dedicated Payments credential and `DATABASE_URL` before they open the
 database. The fallback to `INTERNAL_SERVICE_TOKEN` is removed.
 
+**Amended by TKT-602 (2026-11-22)** — *§8 and §14 only.* §8 states when a later cancellation run
+replays an outside completion and when it refunds a remaining quantity. §14 states that a Payments
+marker can exist after a redirect on the first attempt. The Back Office redirect rule is
+[ADR-088](ADR-088-backoffice-upstream-redirects.md).
+
 ## Context
 
 A staff refund or an event-cancellation (bulk) refund that the provider marks `failed` or
@@ -200,9 +205,11 @@ caller for the operator workflow.
 
 An outside completion is a `completed` refund, so the reversal reconciler claims it and drives the
 tickets and then the capacity, with its ordering guard and retries unchanged. A pending refund is
-still never claimed. A later bulk run over the slot derives the same refund key
-(`cancel:<slot>:<order>`), replays the completed refund with no Payments call, and reports
-`already_refunded` once the reversal is complete.
+still never claimed. If the outside transfer completed an earlier cancellation refund, a later run
+for the same slot uses the same cancellation key (`cancel:<slot>:<order>`) and replays that refund
+without calling Payments. It reports `already_refunded` after the order is fully refunded and all
+reversals are complete. After a partial staff refund, a cancellation run can refund the remaining
+quantity under the cancellation key and report `refunded`.
 
 ### 9. Payments schema for S2
 
@@ -382,8 +389,9 @@ answer below.
 
 Any non-200 answer, a transport failure, unusable evidence or a failed Commerce finish leaves the
 reservation `pending`, unless another run already finalized it. A 404 or 409 describes one abandon
-request: an overlapping request for the same leg can still commit the marker. The next run uses the
-same command. Payments answers from a committed marker without asking the provider (§11), and
+request: an overlapping request for the same leg can still commit the marker. The Payments marker
+can exist even on the first attempt. A redirect leaves the outcome of the initial request unknown.
+The next run uses the same command. Payments answers from a committed marker without asking the provider (§11), and
 Commerce finishes once. While the reservation is pending and Payments has no marker, both allowances
 stay reserved. After a marker and before the finish, Payments has released its allowance and
 Commerce still counts the quantity: the stricter ceiling.

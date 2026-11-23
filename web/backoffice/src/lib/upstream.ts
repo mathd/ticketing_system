@@ -28,6 +28,55 @@ export async function withUpstreamDeadline<T>(
   }
 }
 
+/**
+ * An upstream answered with a redirect, and this process did not follow it
+ * (TKT-602, ADR-088).
+ *
+ * Carries only the status. The request URL can hold a guest retrieval
+ * capability (ADR-012), and the `Location` value is chosen by whoever answered,
+ * so neither goes into the message or a property that a log can print.
+ */
+export class UpstreamRedirectError extends Error {
+  readonly status: number;
+
+  constructor(status: number) {
+    super(`upstream answered with a redirect (status ${status}), which this process does not follow`);
+    this.name = 'UpstreamRedirectError';
+    this.status = status;
+  }
+}
+
+/**
+ * The only `fetch` in the Back Office (ADR-088; test/upstream-policy.test.ts).
+ *
+ * Default fetch follows a redirect and sends custom headers, such as a staff
+ * token or the organizer assertion, and a 307 or 308 request body to the new
+ * address, on any origin. Every upstream request therefore stops at its
+ * configured first hop: manual mode, then refusal of every 3xx and of an
+ * `opaqueredirect` before anything reads the body. On Node, manual mode returns
+ * the 3xx itself with type `basic`, so the status range is the guard that
+ * applies. The `opaqueredirect` check covers a runtime that returns status 0.
+ *
+ * `redirect` is set after the spread, so a caller cannot turn following back on.
+ *
+ * A regular function, not `async`: a synchronous fetch failure still throws to
+ * the caller before a promise exists. `fetchMutation` depends on that boundary.
+ * The caller keeps its deadline signal in `init`, and its own failure mapping
+ * decides what a refused redirect means: an unavailable read, an ambiguous
+ * write, or no confirmation.
+ */
+export function fetchUpstream(input: RequestInfo | URL, init: RequestInit): Promise<Response> {
+  return fetch(input, { ...init, redirect: 'manual' }).then((response) => {
+    if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
+      // Release the connection without reading the body. A failed cancel must
+      // not replace the redirect error or become an unhandled rejection.
+      response.body?.cancel().catch(() => {});
+      throw new UpstreamRedirectError(response.status);
+    }
+    return response;
+  });
+}
+
 /** A read that can be absent or broken, and must never confuse the two. */
 export type Read<T> = { ok: true; value: T } | { ok: false; kind: 'not-found' | 'unavailable' };
 
@@ -54,8 +103,9 @@ export async function fetchMutation(
 ): Promise<Response> {
   // Keep this call outside the catch below. A synchronous fetch failure occurs
   // before fetch takes ownership of the request and remains a definite local
-  // failure, while a later promise rejection has an unknown commit outcome.
-  const pending = fetch(input, init);
+  // failure, while a later promise rejection has an unknown commit outcome. A
+  // refused redirect is such a rejection: the first hop received the write.
+  const pending = fetchUpstream(input, init);
 
   let response: Response;
   try {
@@ -97,7 +147,8 @@ export async function readJson<T>(
 ): Promise<Read<T>> {
   try {
     return await withUpstreamDeadline(async (signal) => {
-      const res = await fetch(url, { signal });
+      // A refused redirect throws, and the catch below makes it unavailable.
+      const res = await fetchUpstream(url, { signal });
       if (res.status === 404) return { ok: false, kind: 'not-found' };
       if (!res.ok) return { ok: false, kind: 'unavailable' };
       return { ok: true, value: project(await res.json()) };

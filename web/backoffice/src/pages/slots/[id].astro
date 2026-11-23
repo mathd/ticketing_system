@@ -268,7 +268,9 @@ if (isPost && postedForm && operations.length > 0 && !(operations.length === 1 &
 // The registry is a LOOKUP, NOT A CONSTRAINT (TKT-235 / ADR-024): a channel code needs no
 // registry row to sell, and codes recorded on live claims may name channels that were
 // never registered. So a registry miss marks the row, and never hides or disables it.
-let registered = new Set<string>();
+// `null` means the read failed (TKT-602): the page then does not know which codes are
+// registered, so it marks no row and shows one notice. An empty set is a successful read.
+let registered: Set<string> | null = null;
 try {
   registered = new Set(
     (await listChannelsForOperator(staff.organizerAssertion, staff.organizerId)).map(
@@ -276,9 +278,9 @@ try {
     ),
   );
 } catch {
-  // A registry outage costs the display names only. Editing must still work, so this is
-  // deliberately not `readFailed`.
-  registered = new Set();
+  // A registry outage costs the registration markers only. Editing must still work, so
+  // this is deliberately not `readFailed`.
+  registered = null;
 }
 
 const stored: ChannelAvailability[] = availability?.channels ?? [];
@@ -309,6 +311,13 @@ const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confir
   {readFailed && (
     <p class="error" role="alert">
       Inventory is unavailable, so this slot's allocations cannot be shown or edited.
+    </p>
+  )}
+
+  {!readFailed && availability && registered === null && (
+    <p data-registry-unavailable>
+      The channel registry could not be read, so this page does not show which channels are
+      registered.
     </p>
   )}
 
@@ -344,12 +353,12 @@ const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confir
           </thead>
           <tbody>
             {stored.map((c) => {
-              const known = registered.has(c.channel);
+              const known = registered?.has(c.channel);
               return (
-                <tr data-channel={c.channel} data-registered={String(known)}>
+                <tr data-channel={c.channel} data-registered={registered ? String(known) : 'unknown'}>
                   <td data-field="channel">
                     <code>{c.channel}</code>
-                    {!known && (
+                    {registered && !known && (
                       <span data-unregistered title="No registry entry for this code">
                         {' '}— not in the channel registry
                       </span>
@@ -427,14 +436,14 @@ const consumption = new Map(stored.map((c) => [c.channel, { held: c.held, confir
             <tbody>
               {rows.map((row, i) => {
                 const used = consumption.get(row.channel);
-                const known = registered.has(row.channel);
+                const known = registered?.has(row.channel);
                 return (
-                  <tr data-channel={row.channel} data-registered={String(known)}>
+                  <tr data-channel={row.channel} data-registered={registered ? String(known) : 'unknown'}>
                     <td>
                       <code>{row.channel}</code>
                       {/* The registry is a lookup, not a constraint: an unregistered
                           code still sells and stays editable. Marked, never hidden. */}
-                      {!known && (
+                      {registered && !known && (
                         <span data-unregistered title="No registry entry for this code">
                           {' '}— not in the channel registry
                         </span>

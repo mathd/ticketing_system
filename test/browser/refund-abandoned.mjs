@@ -17,7 +17,7 @@
 //
 // Run through ./scripts/browser.sh (make browser) with host Chrome.
 
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { chromium } from 'playwright-core';
 import {
   ORGANIZER,
@@ -27,6 +27,7 @@ import {
   sql,
   submitForm,
 } from './lib/support.mjs';
+import { seedPaidOrder } from './lib/refund-orders.mjs';
 
 const BASE = process.env.BASE ?? 'http://localhost:18080';
 const PG = process.env.POSTGRES_CONTAINER;
@@ -45,36 +46,6 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // provider idempotency key, derived exactly as the store derives it.
 function refundLegKey(org, sourceKey, refundKey) {
   return `psp-refund-leg-v1:${createHash('sha256').update(`${org}\0${sourceKey}\0${refundKey}`).digest('hex')}`;
-}
-
-// A paid, completed commerce order with NO payments operation behind it yet:
-// payments answers its first refund with 404, which commerce reports as 502, and
-// the page saves the request as an unresolved retry.
-function seedPaidOrder(label, quantity, unit) {
-  const o = {
-    reservation: randomUUID(),
-    order: randomUUID(),
-    ref: randomUUID(),
-    buyer: randomUUID(),
-    chargeKey: `browser-${label}-${stamp}`,
-    quantity,
-    unit,
-  };
-  sql(
-    PG,
-    'commerce',
-    `INSERT INTO reservations
-       (id, organizer_id, hold_id, slot_id, ticket_type_id, buyer_id, quantity,
-        unit_amount, total_amount, face_value_amount, currency, status)
-     VALUES
-       ('${o.reservation}', '${ORGANIZER}', '${randomUUID()}', '${randomUUID()}',
-        '${randomUUID()}', '${o.buyer}', ${quantity}, ${unit}, ${quantity * unit}, ${quantity * unit}, 'EUR', 'completed');
-     INSERT INTO orders
-       (id, reservation_id, status, idempotency_key, request_fingerprint, guest_order_ref)
-     VALUES
-       ('${o.order}', '${o.reservation}', 'completed', '${o.chargeKey}', '${o.chargeKey}', '${o.ref}');`,
-  );
-  return o;
 }
 
 // The captured charge behind an order, as payments records it after checkout.
@@ -132,9 +103,9 @@ const refundRows = (order) =>
 const { check, finish } = resultRecorder('refund-abandoned browser spec');
 provisionAdmin(CATALOG, identifier, password);
 provisionAdmin(CATALOG, identifierB, password);
-const abandonedOrder = seedPaidOrder('abandoned', 2, 1250);
-const controlOrder = seedPaidOrder('control', 1, 1250);
-const handoffOrder = seedPaidOrder('handoff', 2, 1250);
+const abandonedOrder = seedPaidOrder(PG, 'abandoned', 2, 1250, stamp);
+const controlOrder = seedPaidOrder(PG, 'control', 1, 1250, stamp);
+const handoffOrder = seedPaidOrder(PG, 'handoff', 2, 1250, stamp);
 const browser = await chromium.launch({ channel: 'chrome' });
 
 try {

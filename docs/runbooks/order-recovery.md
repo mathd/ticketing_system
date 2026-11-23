@@ -226,10 +226,17 @@ commerce unwind-exchange <organizer-id> <exchange-id> "<reason>"
 
 `unwind-exchange` needs `DATABASE_URL` set to the intended Commerce database, `PAYMENTS_URL`, and
 the dedicated `PAYMENTS_INTERNAL_TOKEN`. The token must have at least 32 bytes and must differ from
-`INTERNAL_SERVICE_TOKEN`. There is no fallback to the shared token. Before it opens the database, the
-command checks that the Payments URL is present and validates the token. It refuses immediately if
-payments is not configured — it cannot do its job without asking payments, and finding that out
-after reading a row helps nobody.
+`INTERNAL_SERVICE_TOKEN`. There is no fallback to the shared token. At startup, before it opens the
+database, the command checks these Payments settings: the Payments URL is present and the token is
+valid. It refuses immediately if they are missing or not valid. It calls Payments only for an
+exchange with a recorded nonzero delta. For an exchange with no recorded basis, or with a zero
+delta, it uses local evidence and makes no Payments request
+([service](../../services/commerce/internal/exchangeunwind/service.go)). A Payments outage
+therefore does not stop those two cases.
+
+Before you run the command, confirm that `PAYMENTS_URL` reaches the Payments service with no
+redirect. The current client follows redirects and accepts a 404 from the final address as absence
+(TKT-589).
 
 **The listing reports CANDIDATES, not confirmed wedges.** Commerce holds no copy of inventory's
 claim state, so it cannot tell a genuinely terminal target claim from an exchange that is in flight
@@ -262,10 +269,12 @@ payments, and an even exchange calls nobody. `possible` means only that a call c
 | `settled` | the exchange settled; it is not wedged | A settled exchange's remaining obligations belong to the sweep above. If Access refused its switch because a source ticket was already admitted, use [Settled exchange without a ticket switch](#settled-exchange-without-a-ticket-switch-tkt-498). |
 | `not found` | no such organizer/exchange pair | Check the ids against the listing. |
 
-**Only a 404 from payments permits an unwind.** Everything else refuses: a bound-but-unresolved
-operation, a resolved-but-declined one, an uncompleted refund leg, a 5xx, a timeout. That is
-deliberate under-approximation — a wedge that stays wedged is visible and reversible, and deleting a
-charged buyer's binding is neither.
+**If the exchange has a recorded nonzero delta, the Payments lookup must return 404 before Commerce
+can unwind.** Commerce refuses an unresolved operation, a declined operation, an uncompleted refund
+leg, and an unavailable or inconclusive answer. This is a deliberate under-approximation. A wedge
+remains visible and reversible, while deleting a charged buyer's binding removes evidence needed for
+recovery. If the exchange has no recorded basis or its delta is zero, Commerce uses local evidence.
+The command still checks the Payments URL and dedicated credential before it opens the database.
 
 **A charged buyer of an UNSETTLED exchange is NOT compensated by this command, by design.** It
 refuses and leaves everything intact. Choosing between refunding them and re-selling them a target
@@ -532,8 +541,17 @@ stored `amount` in minor units, and `currency`.
 For a bulk refund, use the procedure below only for a money refund that the provider failed:
 
 1. Read the organizer's cancellation report with
-   `GET /internal/cancellation-refunds/<run-id>?organizer_id=<organizer-id>`. Report rows are
-   available only after the run completes. Record the run's `slot_id`.
+   `GET /internal/cancellation-refunds/<run-id>?organizer_id=<organizer-id>`. Send the Commerce
+   shared internal credential in `X-Internal-Token`. Use the
+   [report example](payments.md#event-cancellation-bulk-refunds-tkt-159) as written: `-q` first, the
+   header on standard input, `--noproxy '*'`, `--fail-with-body` and the printed HTTP status. Do not
+   put the token in a command line. Use an answer only when curl exits `0` and prints the status.
+   If curl prints `HTTP 200` or `HTTP 202` and exits with a different code, the body can be
+   incomplete: read again. On `HTTP 202` with exit `0` the run is still going: wait and read again.
+   Read the order rows only from an `HTTP 200` report with exit `0`. Record the run's `slot_id`. If
+   such a page does not contain the order and returns `next_after_order_id`, use that value as
+   `after_order_id` in the next request. Repeat until you find the order or an `HTTP 200` page with
+   exit `0` returns no cursor.
 2. Find the row of the order. A row can include `refund_id`. A row with `outcome` `failed` and
    `failure.code` `reversal_outstanding` has a refund whose money moved and whose ticket or capacity
    reversal is outstanding. Do not record an outcome for it. Use
@@ -553,6 +571,57 @@ For a bulk refund, use the procedure below only for a money refund that the prov
 **Agree on the disposition first.** Before you transfer money or run a command, agree with the
 other operators what this refund's outcome is. Do not run two different commands for one refund. If
 you find a conflict, stop and investigate before any further money action.
+
+**Before you send money outside the platform**, verify that the provider marked the exact original
+refund `failed` or `canceled` for the stored amount and currency. From a client on the platform
+network, use the Payments service address. Base Compose uses `http://payments:8080` on its network.
+The Commerce container's `PAYMENTS_URL` is a setting for the Commerce command. For local work, the
+opt-in `compose.direct-ports.yaml` overlay makes Payments available from the host at
+`http://127.0.0.1:${PAYMENTS_PORT:-8093}`. Both the Payments and Commerce containers use distroless
+images without a shell or `curl`.
+
+For `organizer_id`, use the refund's organizer. For `idempotency_key`, read the order's stored
+checkout key from the intended Commerce database. Staff order detail shows the refund attempt's own
+`idempotency_key`. Use the checkout key from the Commerce query for the Payments request.
+
+```sh
+docker compose exec postgres psql -U postgres -d commerce
+```
+
+```sql
+SELECT o.idempotency_key
+FROM orders o
+JOIN reservations r ON r.id = o.reservation_id
+WHERE o.id = '<order-id>' AND r.organizer_id = '<organizer-id>';
+```
+
+For `refund_key`, copy `refund_id` exactly as staff order detail shows it, as a canonical lowercase
+UUID. Set `ORGANIZER_ID`, `CHECKOUT_KEY`, and `REFUND_ID` to these three values. Export the dedicated
+`PAYMENTS_INTERNAL_TOKEN` in your shell. For base Compose, use a throwaway, digest-pinned curl
+container on the `ticketing_default` network. The image runs curl as its entry point. Your host
+shell writes the header to the container's standard input, and curl reads it with `--header @-`.
+`printf` is a shell builtin, so the token is in no command line, and it is not in the container's
+environment or configuration. `-q` (`--disable`) is the first curl option, so curl reads no curl
+configuration file that could turn on redirects or verbose output. `--noproxy '*'` sends the request
+directly to Payments, also when Docker gives the container proxy settings.
+
+```sh
+printf 'X-Internal-Token: %s\n' "$PAYMENTS_INTERNAL_TOKEN" |
+  docker run --rm -i --network ticketing_default \
+    curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93 \
+    -q --silent --show-error --fail-with-body --noproxy '*' --header @- --get \
+    --data-urlencode "organizer_id=$ORGANIZER_ID" \
+    --data-urlencode "idempotency_key=$CHECKOUT_KEY" \
+    --data-urlencode "refund_key=$REFUND_ID" \
+    --write-out '\nHTTP %{http_code}\n' \
+    http://payments:8080/internal/psp/partial-refund/failure-proof
+```
+
+Continue only when curl exits `0` and prints `HTTP 200` with the provider reference and matching
+amount and currency. Stop if the provider refund is still pending or the proof is missing,
+contradictory, or inconclusive. The proof is read-only: after a successful proof, Commerce still
+shows the refund as `pending` until you record the outcome below
+([ADR-087](../adr/ADR-087-operator-outcomes-for-failed-post-purchase-refunds.md) §3).
 
 Run either command with `docker compose exec commerce /app record-refund-outcome …`. This uses the
 `commerce` container's Compose values. It ignores values set in your shell unless you pass each one
@@ -600,8 +669,11 @@ After success: both allowances stay consumed. No Commerce `order.refunded` fact 
 journal entry is written, so a report that reads only `order_facts` or the Payments journal does not
 see this refund; read `refund_outcomes`. The reversal reconciler then voids the tickets and, only
 after that, returns the capacity. Follow it in [Refund reversal reconciliation](#refund-reversal-reconciliation).
-A later bulk run over the same slot uses the same refund key and reports `already_refunded` once the
-reversal is complete.
+If the outside transfer completed an earlier cancellation refund, a later run for the same slot uses
+the same cancellation key and replays that refund without calling Payments. It reports
+`already_refunded` after the order is fully refunded and all reversals are complete. After a partial
+staff refund, a cancellation run can refund the remaining quantity under the cancellation key and
+report `refunded`.
 
 **Run the same command again** after a timeout or a lost reply. An identical command returns the
 original record (`replay=true`) with its original time and attribution, and asks Payments nothing.
@@ -693,7 +765,7 @@ and Commerce finishes once. An identical command after success returns the origi
 | `is completed` | The refund completed, through Payments or outside | Nothing to abandon. A pending reservation on it is inert. |
 | `payments refused this abandon request` (404 or 409) | No such leg, the leg completed, its money differs, or the provider says the refund did not fail | The reservation stays. Correct the cause, or reconcile the original refund; then run the same command again. |
 | `UNCERTAIN: payments' answer … is unknown` | Timeout, 5xx, provider inconclusive, or an answer for other money | Run the same command again. If Payments keeps answering 502, see the unstamped case below. |
-| `UNCERTAIN` with `payments redirect refused (HTTP <status>)` | The answer to the request at `PAYMENTS_URL` was a redirect (3xx). The command did not follow it and did not send the credential to another address. | The reservation stays `pending` and the quantity stays counted. The Payments marker can exist, from an earlier run or another request. Check the routing from `PAYMENTS_URL` to the Payments service: it must reach Payments with no redirect. Correct the routing or the URL, then run the same command again. |
+| `UNCERTAIN` with `payments redirect refused (HTTP <status>)` | The answer to the request at `PAYMENTS_URL` was a redirect (3xx). The command did not follow it and did not send the credential to another address. | The reservation stays `pending` and the quantity stays counted. The Payments marker can exist even on the first attempt. A redirect leaves the outcome of the initial request unknown. Check the routing from `PAYMENTS_URL` to the Payments service: it must reach Payments with no redirect. Correct the routing or the URL, then run the same command again. |
 | `UNCERTAIN` with `payments returned invalid refund evidence` | A `200` answer is not exactly the evidence that Payments writes. This can occur when `PAYMENTS_URL` is correct. | The reservation stays `pending` and the quantity stays counted. The Payments marker can exist: Payments can have written it before the answer. Find which service sent the answer: Payments, or a proxy or another service on the route. Correct the cause, then run the same command again. |
 | `changed while the command ran` | The refund or its order changed between the read and the write | Run the same command again. |
 | `FAILED: … was not recorded in Commerce` | A Commerce error after Payments may have accepted | Run the same command again. |
@@ -750,7 +822,7 @@ error. Run this check as part of provider reconciliation for every refund closed
    ```sql
    -- payments database
    SELECT l.provider_idempotency_key AS compensation_stamp, o.provider_payment_ref AS payment_intent,
-          l.status, l.fact_id
+          l.status, l.fact_id, l.provider_ref
    FROM payment_refund_legs l
    JOIN payment_operations o
      ON (o.organizer_id, o.idempotency_key) = (l.organizer_id, l.source_idempotency_key)
@@ -766,9 +838,9 @@ error. Run this check as part of provider reconciliation for every refund closed
    `payment.refunded` journal fact), is an invariant violation for an attempt that an operator
    closed as refunded outside or abandoned. Stop all further money actions on the order and its
    charge. A journal fact alone does not prove that money moved: the fact can record a success the
-   provider reported just before the refund failed. When the journal fact is the only signal,
-   confirm the refund's current state with the provider (`GET /v1/refunds/<re_ id>`) before you
-   reconcile by hand with the buyer and the provider.
+   provider reported just before the refund failed. If the journal fact is the only signal, use the
+   completed leg's `provider_ref` for `GET /v1/refunds/<re_ id>`. Confirm the current refund state
+   before you reconcile with the buyer and the provider.
 
 **Roll forward, not back.** Commerce migration 0027 refuses to roll back while `refund_outcomes` or
 `order_refund_abandonment_dispositions` holds a row, and Payments migration 0007 refuses while

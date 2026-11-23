@@ -141,6 +141,14 @@ run_specs() {
   access="$(compose ps -q access)"
   [ -n "$access" ] || { echo "browser: access container not found" >&2; exit 1; }
 
+  # The back office container, for refund-redirected.mjs (TKT-602): it starts a
+  # second back office on the host with this one's staff credentials, read from
+  # the container's configuration so no credential goes on a command line, and
+  # points it at the published service ports below.
+  local backoffice
+  backoffice="$(compose ps -q backoffice)"
+  [ -n "$backoffice" ] || { echo "browser: backoffice container not found" >&2; exit 1; }
+
   local failed=0
   for spec in "${specs[@]}"; do
     echo "=== $(basename "$spec")"
@@ -150,6 +158,8 @@ run_specs() {
         INTERNAL_SERVICE_TOKEN="$INTERNAL_SERVICE_TOKEN" node "$spec" || failed=1
     else
       BASE="http://localhost:${GATEWAY_PORT}" POSTGRES_CONTAINER="$pg" CATALOG_CONTAINER="$catalog" ACCESS_CONTAINER="$access" \
+        BACKOFFICE_CONTAINER="$backoffice" CATALOG_PORT="$CATALOG_PORT" INVENTORY_PORT="$INVENTORY_PORT" \
+        COMMERCE_PORT="$COMMERCE_PORT" ACCESS_PORT="$ACCESS_PORT" \
         node "$spec" || failed=1
     fi
   done

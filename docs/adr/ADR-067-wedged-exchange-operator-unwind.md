@@ -11,6 +11,10 @@ the plan-review critique, the self-made decisions and any overridden objections 
 the dedicated Payments credential, validated as Payments validates it, before it opens the
 database. The fallback to `INTERNAL_SERVICE_TOKEN` is removed.
 
+**Amended by TKT-602 (2026-11-22)** — *§3, the testing note and the operational section only.* §3
+limits the 404 rule to an exchange with a recorded nonzero delta. The testing note describes what
+the unwind fixture proves. The operational section states when the command calls Payments.
+
 Closes the gap [ADR-039](./ADR-039-exchange-settles-the-difference.md) leaves open and that
 TKT-167's adversarial review found and pinned. Inherits ADR-039's exchange lifecycle,
 [ADR-021](./ADR-021-ticket-lifecycle-trail-integrity.md)'s adversary language,
@@ -91,9 +95,13 @@ is what makes them safe for this use. The port the unwind holds exposes exactly 
 it is structurally incapable of moving money, the same guarantee ADR-063 §2 builds for
 `DriveExchange`.
 
-### 3. 404 is the ONLY proof of absence
+<a name="3-404-is-the-only-proof-of-absence"></a>
 
-Every other answer refuses. A 200 with no capture evidence, a 200 that is resolved-but-declined, a
+### 3. Only a Payments 404 proves absence for a recorded nonzero delta
+
+For a recorded nonzero delta, a Payments 404 permits the unwind. Every other Payments answer refuses
+the unwind. If the basis is missing or the delta is zero, Commerce uses local evidence after the
+configuration checks. A 200 with no capture evidence, a 200 that is resolved-but-declined, a
 bound-but-uncompleted refund leg, a 5xx, a transport failure, a body with trailing content — all
 **indeterminate**, all refusing, and all reported distinguishably from *"the buyer was charged"*,
 because the two send an operator to different places.
@@ -241,7 +249,7 @@ delete rows in `order_exchange_unwinds`. The signed, append-only payments journa
 evidence that money moved — which is exactly why §2 decides the refusal on payments' answer and
 never on a commerce flag.
 
-### Testing note — what the api-tier proof is and is not
+### Testing note for the terminal-target unwind fixture
 
 COS 1 asks for a proof against *"a real terminal claim, not a stubbed conflict"*. The previous
 fixture used a boolean that made `finalize` refuse unconditionally, which could not distinguish *"the
@@ -250,11 +258,11 @@ perfectly healthy claim. The stub now carries inventory's **transition table, tr
 `Postgres.Transition`** including its three already-satisfied cases, and the tests drive a claim
 terminal by releasing it, as the threat model's service-token holder would.
 
-That is a **reproduction** of inventory's rule, not inventory itself: commerce's api smoke package
-gets a database and stubs, and no exchange test exists at the `smoke/` gateway tier where the real
-service runs. Building the first is a candidate follow-up, recorded here rather than glossed —
-the distinction between *"the rule is reproduced"* and *"the rule is used"* is one this repo has been
-burned by before.
+The wedged-unwind API fixture runs Commerce with PostgreSQL and uses a transcribed Inventory
+transition table. It checks the unwind's Payments evidence request against an HTTP stub, which must
+receive exactly one operations read. The proof uses no real Inventory service and no real Payments
+service. Gateway smoke tests separately cover exchange admission and abandonment with the running
+services.
 
 ### Operational
 
@@ -263,9 +271,11 @@ needs `DATABASE_URL`, `PAYMENTS_URL` and the dedicated `PAYMENTS_INTERNAL_TOKEN`
 with `runtimecfg.PaymentsTokenFromEnv`, the validator payments uses: at least 32 bytes, different
 from `INTERNAL_SERVICE_TOKEN`, and no fallback to the shared token. Payments refuses the shared
 token, so the fallback could only send a credential that payments rejects. The command checks that
-`PAYMENTS_URL` is present and validates the token before it opens the database, because its
-no-basis and zero-delta branches change Commerce without a payments request. A command that cannot
-ask payments cannot do its job.
+`PAYMENTS_URL` is present and validates the token at startup, before it opens the database, because
+its no-basis and zero-delta branches change Commerce without a payments request. The command calls
+Payments only for an exchange with a recorded nonzero delta. For a missing basis or a zero delta, it
+uses local evidence (`Service.Evidence` in `services/commerce/internal/exchangeunwind/service.go`),
+so a Payments outage does not block those two cases.
 
 > **Amended by TKT-595.** The original text was: "`unwind-exchange` needs `DATABASE_URL`,
 > `PAYMENTS_URL` and `PAYMENTS_INTERNAL_TOKEN` (falling back to `INTERNAL_SERVICE_TOKEN`, as

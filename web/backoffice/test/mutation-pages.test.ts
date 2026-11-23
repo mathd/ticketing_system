@@ -1,6 +1,17 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  type Answer,
+  clearClientUrls,
+  type Hit,
+  jsonAnswer,
+  pointClientsAt,
+  type RedirectPair,
+  redirectAnswer,
+  startRedirectPair,
+} from './redirect-fixture';
+
 const STAFF = '60000000-0000-4000-8000-000000000001';
 const ORGANIZER = '00000000-0000-4000-8000-000000000001';
 const VENUE = '10000000-0000-4000-8000-000000000001';
@@ -393,6 +404,123 @@ describe('another staff member retires a saved retry that an operator abandoned'
     expect(unresolvedRefunds.find(ORGANIZER, ORDER)).toMatchObject({ idempotencyKey: REFUND_KEY, reason: 'original request' });
     expect(html).toContain('Retry the same refund');
     expect(html).toContain(`name="idempotency_key" value="${REFUND_KEY}"`);
+  }, 30_000);
+});
+
+// TKT-602 (COS2, ADR-088). A redirect from Commerce is not an answer from
+// Commerce. Native fetch and the shared loopback fixture: the first hop stands in
+// for COMMERCE_URL and GATEWAY_URL, and the target is another origin whose answer
+// would settle the saved key if fetch followed the redirect. The page must keep
+// the original key K, its terms and the retry form, and must not offer a fresh
+// refund form.
+describe('a redirected Commerce answer keeps the saved refund retry', () => {
+  let pair: RedirectPair | undefined;
+
+  afterEach(async () => {
+    await pair?.close();
+    pair = undefined;
+    clearClientUrls();
+  });
+
+  const orderPath = `/api/commerce/orders/${ORDER}`;
+  const refundPath = `/internal/orders/${ORDER}/refunds`;
+  const staffDetailPath = `/internal/orders/${ORDER}`;
+
+  function staffDetail(abandoned: boolean) {
+    return jsonAnswer({
+      order_id: ORDER,
+      organizer_id: ORGANIZER,
+      status: 'completed',
+      refunds: [{ refund_id: 'b0000000-0000-4000-8000-000000000001', idempotency_key: REFUND_KEY, abandoned }],
+    });
+  }
+
+  async function withSavedRetry(
+    firstHop: (hit: Hit, targetOrigin: string) => Answer,
+    target: (hit: Hit) => Answer,
+    fields: Record<string, string>,
+  ) {
+    pair = await startRedirectPair({ firstHop, target });
+    // Before the page imports its clients: they read their base URLs at import.
+    pointClientsAt(pair.firstHop.origin);
+    const { unresolvedRefunds } = await import('../src/lib/unresolved-refunds');
+    unresolvedRefunds.note(ORGANIZER, {
+      orderId: ORDER,
+      quantity: 2,
+      reason: 'original request',
+      idempotencyKey: REFUND_KEY,
+    });
+    const response = await renderPage('../src/pages/orders.astro', post('/admin/orders', fields));
+    return { html: await response.text(), unresolvedRefunds, p: pair };
+  }
+
+  const ABANDONED_TEXT = 'An operator recorded this refund as abandoned.';
+
+  function expectSavedRetryKept(html: string, saved: unknown) {
+    expect(saved).toMatchObject({ idempotencyKey: REFUND_KEY, quantity: 2, reason: 'original request' });
+    // The order loaded, so the retry is not kept only because nothing rendered.
+    expect(html).toMatch(/Commerce reports this order as <strong[^>]*>completed<\/strong>/);
+    expect(html).toContain('Retry the same refund');
+    expect(html).toContain(`name="idempotency_key" value="${REFUND_KEY}"`);
+    expect(html).toContain('name="quantity" value="2"');
+    expect(html).not.toContain('Refund this order');
+    expect(html).not.toContain(ABANDONED_TEXT);
+  }
+
+  it('keeps K after the saved retry POST is redirected to a coded refund_abandoned', async () => {
+    const { html, unresolvedRefunds, p } = await withSavedRetry(
+      (hit, targetOrigin) => {
+        if (hit.method === 'GET' && hit.path === orderPath) return jsonAnswer({ order_id: ORDER, status: 'completed' });
+        if (hit.method === 'POST' && hit.path === refundPath) return redirectAnswer(targetOrigin, refundPath);
+        // The independent staff read answers directly, without a confirmation.
+        if (hit.method === 'GET' && hit.path === staffDetailPath) return staffDetail(false);
+        return jsonAnswer({ error: 'unexpected' }, 404);
+      },
+      (hit) =>
+        hit.method === 'POST' && hit.path === refundPath
+          ? jsonAnswer({ error: 'refund abandoned', code: 'refund_abandoned' }, 409)
+          : { status: 418 },
+      {
+        _action: 'refund',
+        order_id: ORDER,
+        quantity: '2',
+        reason: 'original request',
+        idempotency_key: REFUND_KEY,
+      },
+    );
+
+    expectSavedRetryKept(html, unresolvedRefunds.find(ORGANIZER, ORDER));
+    // The ambiguous outcome, not a decided refusal: a decided refusal also keeps K,
+    // but it tells the operator that Commerce answered (R1-4).
+    expect(html).toContain('Commerce could not be reached.');
+    expect(html).toContain('This refund may or may not have been applied.');
+    expect(p.target.hits).toEqual([]);
+    const refundWrites = p.firstHop.hits.filter((hit) => hit.method === 'POST');
+    expect(refundWrites.map((hit) => hit.headers['idempotency-key'])).toEqual([REFUND_KEY]);
+    expect(p.firstHop.hits.filter((hit) => hit.path === staffDetailPath)).toHaveLength(1);
+  }, 30_000);
+
+  it('keeps K after a plain lookup whose staff detail read is redirected to a matching abandonment', async () => {
+    const { html, unresolvedRefunds, p } = await withSavedRetry(
+      (hit, targetOrigin) => {
+        if (hit.method === 'GET' && hit.path === orderPath) return jsonAnswer({ order_id: ORDER, status: 'completed' });
+        if (hit.method === 'GET' && hit.path === staffDetailPath) return redirectAnswer(targetOrigin, staffDetailPath);
+        return jsonAnswer({ error: 'unexpected' }, 404);
+      },
+      // An exact committed abandonment for this organizer, order and key.
+      (hit) => (hit.method === 'GET' && hit.path === staffDetailPath ? staffDetail(true) : { status: 418 }),
+      { _action: 'lookup', order_id: ORDER, ticket_ref: '' },
+    );
+
+    expectSavedRetryKept(html, unresolvedRefunds.find(ORGANIZER, ORDER));
+    expect(p.target.hits).toEqual([]);
+    expect(p.firstHop.hits.filter((hit) => hit.method === 'POST')).toEqual([]);
+    // The redirecting first hop received the staff-detail read, so K was kept
+    // because the redirect was refused, not because no lookup was made (R1-4).
+    const detailReads = p.firstHop.hits.filter((hit) => hit.method === 'GET' && hit.path === staffDetailPath);
+    expect(detailReads).toHaveLength(1);
+    expect(detailReads[0].headers['x-commerce-staff-write-token']).toBe('commerce-test-token');
+    expect(detailReads[0].headers['x-catalog-organizer-assertion']).toBe(ASSERTION);
   }, 30_000);
 });
 
@@ -1077,4 +1205,96 @@ describe('the slot page when the pool kind is unknown', () => {
     expect(response.status).toBe(400);
     expect(puts).toHaveLength(0);
   }, 30_000);
+});
+
+// TKT-602 (R1-1, ADR-088). A failed channel-registry read is not an empty registry.
+// Inventory answers directly with two allocations. The Catalog operator read is
+// redirected, so it fails. The page must keep every row (and the GA editor) and
+// show one notice. It must not mark each row as missing from the registry: that
+// claim is only true after a successful read. The control case reads the
+// registry successfully and marks only the code that the registry does not hold.
+describe('the slot page when the channel registry cannot be read', () => {
+  let pair: RedirectPair | undefined;
+
+  afterEach(async () => {
+    await pair?.close();
+    pair = undefined;
+    clearClientUrls();
+  });
+
+  const availabilityPath = `/internal/slots/${SLOT}/availability?organizer_id=${ORGANIZER}`;
+  const channelsPath = '/internal/channels';
+  const REGISTRY_NOTICE = 'The channel registry could not be read';
+  const registryRow = {
+    id: '70000000-0000-4000-8000-000000000001',
+    organizer_id: ORGANIZER,
+    code: 'reseller-acme',
+    display_name: 'Acme',
+    kind: 'reseller',
+    enabled: true,
+    revision: 1,
+    created_at: '2026-09-01T10:00:00Z',
+    updated_at: '2026-09-01T10:00:00Z',
+  };
+
+  async function renderSlot(kind: 'ga' | 'seated', registry: 'redirect' | 'read') {
+    pair = await startRedirectPair({
+      firstHop: (hit, targetOrigin) => {
+        if (hit.method === 'GET' && hit.path === availabilityPath) return jsonAnswer(availabilityBody(kind));
+        if (hit.method === 'GET' && hit.path === channelsPath) {
+          return registry === 'redirect'
+            ? redirectAnswer(targetOrigin, channelsPath)
+            : jsonAnswer({ channels: [registryRow] });
+        }
+        return jsonAnswer({ error: 'unexpected' }, 404);
+      },
+      target: () => jsonAnswer({ channels: [registryRow] }),
+    });
+    // Before the page imports its clients: they read their base URLs at import.
+    pointClientsAt(pair.firstHop.origin);
+    const response = await renderPage(SLOT_PAGE, new Request(`http://backoffice.test${slotPath}`), { id: SLOT });
+    return { status: response.status, html: await response.text(), p: pair };
+  }
+
+  it.each(['ga', 'seated'] as const)(
+    'keeps every %s row, marks none as unregistered and shows one notice when the read is redirected',
+    async (kind) => {
+      const { status, html, p } = await renderSlot(kind, 'redirect');
+
+      expect(status).toBe(200);
+      expect(p.target.hits).toEqual([]);
+      expect(p.firstHop.hits.filter((hit) => hit.path === channelsPath)).toHaveLength(1);
+      expect(html).not.toContain('Inventory is unavailable');
+      expect(html).toMatch(/<tr[^>]*data-channel="reseller-acme"/);
+      expect(html).toMatch(/<tr[^>]*data-channel="pos"/);
+      expect(html).not.toContain('data-unregistered');
+      expect(html).not.toContain('not in the channel registry');
+      expect(html.split(REGISTRY_NOTICE)).toHaveLength(2);
+      if (kind === 'ga') {
+        // Still editable: the registry is a lookup, not a constraint.
+        expect(html).toContain('data-action="save-allocations"');
+        expect(html).toContain('name="cap.0"');
+        expect(html).toContain('name="cap.1"');
+      } else {
+        expect(html).toContain('data-action="clear-allocations"');
+      }
+    },
+    30_000,
+  );
+
+  it.each(['ga', 'seated'] as const)(
+    'marks only the unregistered %s row after a successful read, with no notice',
+    async (kind) => {
+      const { html } = await renderSlot(kind, 'read');
+
+      const acme = /<tr[^>]*data-channel="reseller-acme"[^>]*>([\s\S]*?)<\/tr>/.exec(html)?.[1] ?? '';
+      const pos = /<tr[^>]*data-channel="pos"[^>]*>([\s\S]*?)<\/tr>/.exec(html)?.[1] ?? '';
+      expect(acme).not.toBe('');
+      expect(pos).not.toBe('');
+      expect(acme).not.toContain('data-unregistered');
+      expect(pos).toContain('data-unregistered');
+      expect(html).not.toContain(REGISTRY_NOTICE);
+    },
+    30_000,
+  );
 });
