@@ -10,7 +10,7 @@
 // debug dump of `customer` to this template.
 import Layout from '../../../layouts/Layout.astro';
 import { listCustomerOrders } from '../../../lib/customer-api';
-import { formatMoney } from '../../../lib/format';
+import { accountDateFormatter, formatMoney } from '../../../lib/format';
 import { UI_STRINGS, isLocale } from '../../../lib/locales';
 
 const locale = Astro.params.locale;
@@ -27,7 +27,7 @@ const after = Astro.url.searchParams.get('after') ?? undefined;
 // that gets a support call.
 const page = await listCustomerOrders(customer.customerId, customer.assertion, locale, after);
 
-const dates = new Intl.DateTimeFormat(locale, { dateStyle: 'long' });
+const dates = accountDateFormatter(locale);
 ---
 
 <Layout locale={locale} title={t.wallet}>

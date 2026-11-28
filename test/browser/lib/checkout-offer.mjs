@@ -29,9 +29,13 @@ async function saveVenueCapacity(page, check, capacity, assertion) {
 /**
  * Signs in, sets the shared venue to `capacity`, creates and publishes one priced GA
  * performance, and restores the venue's capacity. Returns the event and performance ids.
+ * `amountMinor` is the EUR price in minor units; the French spec needs a thousands group.
  */
 export async function publishOffer(page, check, offer) {
-  const { identifier, password, capacity, nameEn, nameFr, startsAt, timezone } = offer;
+  const { identifier, password, capacity, nameEn, nameFr, startsAt, timezone, amountMinor = 1250 } = offer;
+  if (!Number.isSafeInteger(amountMinor) || amountMinor < 1) {
+    throw new Error(`the checkout fixture price must be a positive integer of minor units, got ${amountMinor}`);
+  }
   await signIn(page, identifier, password);
 
   const venuePath = `/admin/venues/${VENUE}`;
@@ -68,7 +72,7 @@ export async function publishOffer(page, check, offer) {
 
     await page.fill('#tt_name_en', 'General admission');
     await page.fill('#tt_name_fr', 'Admission générale');
-    await page.fill('#amount', '1250');
+    await page.fill('#amount', String(amountMinor));
     await page.fill('#currency', 'EUR');
     await submitForm(page, page.getByRole('button', { name: 'Set the price' }));
 

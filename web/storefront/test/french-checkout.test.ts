@@ -119,12 +119,8 @@ describe('formatHistoryTime', () => {
 
   it('shows the instant in the performance zone, with the zone named', () => {
     // Kolkata is UTC+05:30: the minutes move too, so no whole-hour default matches.
-    const fr = formatHistoryTime(instant, 'Asia/Kolkata', 'fr');
-    expect(fr).toContain('15');
-    expect(fr).toContain('juil.');
-    expect(fr).toContain('04:00:05');
-    expect(fr).toContain('UTC+5:30');
-    expect(fr).not.toContain('22:30');
+    // fr displays as fr-CA (ADR-089): "juill.", "04 h 00 min 05 s", plain spaces.
+    expect(formatHistoryTime(instant, 'Asia/Kolkata', 'fr')).toBe('15 juill. 2026, 04 h 00 min 05 s UTC+5:30');
     const en = formatHistoryTime(instant, 'Asia/Kolkata', 'en');
     expect(en).toContain('Jul 15');
     expect(en).toContain('04:00:05');
@@ -134,15 +130,18 @@ describe('formatHistoryTime', () => {
   it('follows daylight saving time in the performance zone', () => {
     const winter = formatHistoryTime('2026-01-15T12:00:00Z', 'Europe/Paris', 'fr');
     const summer = formatHistoryTime('2026-07-15T12:00:00Z', 'Europe/Paris', 'fr');
-    expect(winter).toContain('13:00:00');
-    expect(winter).toContain('UTC+1');
-    expect(summer).toContain('14:00:00');
-    expect(summer).toContain('UTC+2');
+    expect(winter).toBe('15 janv. 2026, 13 h 00 min 00 s UTC+1');
+    expect(summer).toBe('15 juill. 2026, 14 h 00 min 00 s UTC+2');
+  });
+
+  it('names a North American zone with its fr-CA abbreviation', () => {
+    // July in Toronto is daylight time: HAE, heure avancée de l’Est (ADR-083 §7, ADR-089).
+    expect(formatHistoryTime(instant, 'America/Toronto', 'fr')).toBe('14 juill. 2026, 18 h 30 min 05 s HAE');
   });
 
   it('crosses the date line by zone, not by the UTC date', () => {
-    expect(formatHistoryTime(instant, 'America/Los_Angeles', 'fr')).toContain('14 juil.');
-    expect(formatHistoryTime(instant, 'Asia/Kolkata', 'fr')).toContain('15 juil.');
+    expect(formatHistoryTime(instant, 'America/Los_Angeles', 'fr')).toContain('14 juill.');
+    expect(formatHistoryTime(instant, 'Asia/Kolkata', 'fr')).toContain('15 juill.');
   });
 
   // The fallback must name UTC itself, not inherit the process zone. CI and the storefront
@@ -169,11 +168,7 @@ describe('formatHistoryTime', () => {
       ['a zone the runtime does not know', 'Mars/Olympus_Mons'],
       ['an empty zone', ''],
     ])('formats %s in labelled UTC', (_name, zone) => {
-      const fr = formatHistoryTime(instant, zone, 'fr');
-      expect(fr).toContain('22:30:05');
-      expect(fr).toContain('14 juil.');
-      expect(fr).toContain('UTC');
-      expect(fr).not.toContain('UTC+');
+      expect(formatHistoryTime(instant, zone, 'fr')).toBe('14 juill. 2026, 22 h 30 min 05 s UTC');
       const en = formatHistoryTime(instant, zone, 'en');
       expect(en).toContain('10:30:05');
       expect(en).toContain('UTC');

@@ -48,7 +48,8 @@ const canManageChannels = canAccessRoute(`${base}/channels`, staff.role);
         venues.map((v) => (
           <tr>
             <td>{v.name}</td>
-            <td class="num">{v.ga_capacity.toLocaleString(lang)}</td>
+            {/* fr is shown as Québec French (ADR-089): U+00A0 groups the thousands. */}
+            <td class="num">{v.ga_capacity.toLocaleString(lang === 'fr' ? 'fr-CA' : lang)}</td>
             <td>
               {canAuthorSeatMaps ? (
                 <a href={`${base}/venues/${v.id}`}>{t.authorSeatMaps}</a>

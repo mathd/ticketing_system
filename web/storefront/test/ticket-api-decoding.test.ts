@@ -112,11 +112,9 @@ describe('ticket bundle response decoding', () => {
     expect(kolkata.history).toHaveLength(1);
     expect(kolkata.history[0].label).toBe(UI_STRINGS.fr.historyIssued);
     expect(kolkata.history[0].occurredAt).toBe('2026-07-14T22:30:05Z');
-    expect(kolkata.history[0].time).toContain('04:00:05');
-    expect(kolkata.history[0].time).toContain('UTC+5:30');
+    expect(kolkata.history[0].time).toBe('15 juill. 2026, 04 h 00 min 05 s UTC+5:30');
     expect(unknownZone.history[0].label).toBe(UI_STRINGS.fr.historyOther);
-    expect(unknownZone.history[0].time).toContain('22:30:05');
-    expect(unknownZone.history[0].time).toContain('UTC');
+    expect(unknownZone.history[0].time).toBe('14 juill. 2026, 22 h 30 min 05 s UTC');
   });
 
   it('accepts and canonicalises an order identity that differs from the request only by case', async () => {

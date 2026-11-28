@@ -118,8 +118,9 @@ describe('the shell (Layout + venue list)', () => {
     // The role-filtered nav links are built from import.meta.env.BASE_URL, which
     // is "/" under the container, so the matrix hides them here. The browser spec
     // checks them in French on the real stack.
-    // French grouping for the capacity, not English digits.
-    expect(html).toContain('1\u202f200');
+    // French grouping for the capacity, not English digits. fr is shown as fr-CA
+    // (ADR-089), which groups with U+00A0; fr would group with U+202F.
+    expect(html).toContain('1\u00a0200');
     // One button, naming the OTHER language in that language.
     expect(html).toMatch(/<form[^>]*method="post"[^>]*action="\/admin\/ui-language"/);
     expect(html).toMatch(/<button[^>]*name="ui_language"[^>]*value="en"[^>]*lang="en"[^>]*>English<\/button>/);

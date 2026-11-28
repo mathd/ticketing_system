@@ -116,6 +116,7 @@ this register when adding an ADR or changing its status. Preserve existing decis
 | ADR-086 | [Parallel CI gate parts](ADR-086-parallel-ci-gate-parts.md) | Accepted |
 | ADR-087 | [Operator outcomes for failed post-purchase refunds](ADR-087-operator-outcomes-for-failed-post-purchase-refunds.md) | Accepted; amends ADR-032, ADR-037 §4 and ADR-040 §3; amended by TKT-595, TKT-602 and TKT-607 |
 | ADR-088 | [Back Office upstream calls refuse redirects](ADR-088-backoffice-upstream-redirects.md) | Accepted; amended by TKT-607 |
+| ADR-089 | [Québec French typography and display formatting](ADR-089-quebec-french-typography-and-display-formatting.md) | Accepted; working typography rule pending TKT-593 |
 
 Use [the ADR template](<[template].md>) for a new decision. Record current implementation and
 future requirements separately. Historical context inside an ADR is not an operator procedure.

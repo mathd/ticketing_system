@@ -1,15 +1,31 @@
 // Locale-aware display formatting. Money stays integer minor units end to
 // end (ADR-001): the decimal string handed to Intl is built with integer
 // arithmetic only — no float ever holds a monetary value.
+//
+// Every display format of the storefront is built in this file, so that each one
+// goes through displayLocale (ADR-089). A source scan in test/format.test.ts
+// refuses Intl and toLocale*String anywhere else in src/.
 
-import { UI_STRINGS, type Locale, type MessageKey } from './locales';
+import { UI_STRINGS, isLocale, type Locale, type MessageKey } from './locales';
+
+// The content locale selects the strings, the route (/fr/) and the lang attribute.
+// The display locale formats numbers, money and dates. French content is shown in
+// Québec French (ADR-089, owner decision): fr-CA groups thousands with U+00A0 and
+// writes times as "19 h 30". A France French variant would be a new entry here, and
+// in the back office's one capacity sink (web/backoffice/src/pages/index.astro).
+const DISPLAY_LOCALES = { en: 'en', fr: 'fr-CA' } as const satisfies Record<Locale, string>;
+
+/** The Intl locale for a content locale. A string outside the set passes through. */
+function displayLocale(locale: string): string {
+  return isLocale(locale) ? DISPLAY_LOCALES[locale] : locale;
+}
 
 /** Formats integer minor units as a localized currency string. */
 export function formatMoney(amountMinor: number, currency: string, locale: string): string {
   if (!Number.isSafeInteger(amountMinor)) {
     throw new TypeError(`money must be an integer amount of minor units, got ${amountMinor}`);
   }
-  const formatter = new Intl.NumberFormat(locale, { style: 'currency', currency });
+  const formatter = new Intl.NumberFormat(displayLocale(locale), { style: 'currency', currency });
   const digits = formatter.resolvedOptions().maximumFractionDigits ?? 2;
   return formatter.format(minorToDecimalString(amountMinor, digits) as unknown as number);
 }
@@ -27,7 +43,7 @@ export function minorToDecimalString(amountMinor: number, fractionDigits: number
 
 /** Localized date + time, rendered in the performance's own timezone. */
 export function formatStartsAt(isoDate: string, timezone: string, locale: string): string {
-  return new Intl.DateTimeFormat(locale, {
+  return new Intl.DateTimeFormat(displayLocale(locale), {
     dateStyle: 'full',
     timeStyle: 'short',
     timeZone: timezone,
@@ -58,12 +74,21 @@ export function formatHistoryTime(iso: string, timezone: string | null, locale: 
   const instant = new Date(iso);
   if (timezone) {
     try {
-      return new Intl.DateTimeFormat(locale, { ...HISTORY_TIME_OPTIONS, timeZone: timezone }).format(instant);
+      return new Intl.DateTimeFormat(displayLocale(locale), { ...HISTORY_TIME_OPTIONS, timeZone: timezone }).format(instant);
     } catch (error) {
       if (!(error instanceof RangeError)) throw error;
     }
   }
-  return new Intl.DateTimeFormat(locale, { ...HISTORY_TIME_OPTIONS, timeZone: 'UTC' }).format(instant);
+  return new Intl.DateTimeFormat(displayLocale(locale), { ...HISTORY_TIME_OPTIONS, timeZone: 'UTC' }).format(instant);
+}
+
+/**
+ * The wallet's purchase date (TKT-222): a long date in the display locale. Build it once
+ * per render. It formats in the process zone, as the wallet did before ADR-089; ADR-083 §7
+ * governs ticket history times, not this date.
+ */
+export function accountDateFormatter(locale: Locale): Intl.DateTimeFormat {
+  return new Intl.DateTimeFormat(displayLocale(locale), { dateStyle: 'long' });
 }
 
 // Access's lifecycle types (the CHECK constraint in access migration 0011). A Map, not an

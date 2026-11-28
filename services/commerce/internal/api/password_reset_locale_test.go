@@ -6,8 +6,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
+	"unicode"
 
 	commercestore "ticketing/services/commerce/internal/store"
 	"ticketing/shared/mail"
@@ -40,7 +42,7 @@ const wantSubjectFR = "Réinitialisez votre mot de passe"
 func wantBodyFR(link string) string {
 	return "Quelqu’un a demandé la réinitialisation du mot de passe associé à cette adresse.\n" +
 		"\n" +
-		"Ouvrez ce lien pour en choisir un nouveau :\n" +
+		"Ouvrez ce lien pour en choisir un nouveau\u00a0:\n" +
 		"\n" +
 		link + "\n" +
 		"\n" +
@@ -332,6 +334,132 @@ func TestTheResetCopyStatesTheTokenLifetime(t *testing.T) {
 				"Add one to its resetCopies entry in password_reset.go, AND update the storefront's\n"+
 				"resetRequested strings in web/storefront/src/lib/locales.ts (en: \"expires in an hour\",\n"+
 				"fr: \"expire dans une heure\").", locale, commercestore.ResetTokenTTL)
+		}
+	}
+}
+
+// Québec French typography (ADR-089, TKT-531). The rule is the owner's working rule until
+// TKT-593 confirms or changes it. This helper stays local to this test file; the storefront
+// and the back office keep their own copies.
+//
+// typographyViolations returns the rules text breaks, in rule order. Each rule is its own
+// check, so each one can be tested and mutated alone. unicode.IsSpace is the Unicode
+// White_Space set: a tab, U+00A0 and U+202F count as spaces, not only U+0020.
+//
+//   - P1: no space of any kind before ? ! ;
+//   - P2a: the only space allowed directly before : is U+00A0, whatever follows the colon.
+//   - P2b: a colon followed by a space, or at the end of the text, needs U+00A0 before it.
+//     A colon inside a token (https://, 19:30) has neither, so it passes.
+//   - P3a: U+00A0 directly after «, also when « ends the text.
+//   - P3b: U+00A0 directly before », also when » starts the text.
+func typographyViolations(text string) []string {
+	const nbsp = '\u00a0'
+	runes := []rune(text)
+	at := func(i int) (rune, bool) {
+		if i < 0 || i >= len(runes) {
+			return 0, false
+		}
+		return runes[i], true
+	}
+	broken := map[string]bool{}
+	for i, r := range runes {
+		prev, hasPrev := at(i - 1)
+		next, hasNext := at(i + 1)
+		switch r {
+		case '?', '!', ';':
+			if hasPrev && unicode.IsSpace(prev) {
+				broken["P1"] = true
+			}
+		case ':':
+			if hasPrev && prev != nbsp && unicode.IsSpace(prev) {
+				broken["P2a"] = true
+			}
+			if (!hasNext || unicode.IsSpace(next)) && (!hasPrev || prev != nbsp) {
+				broken["P2b"] = true
+			}
+		case '«':
+			if !hasNext || next != nbsp {
+				broken["P3a"] = true
+			}
+		case '»':
+			if !hasPrev || prev != nbsp {
+				broken["P3b"] = true
+			}
+		}
+	}
+	var rules []string
+	for _, rule := range []string{"P1", "P2a", "P2b", "P3a", "P3b"} {
+		if broken[rule] {
+			rules = append(rules, rule)
+		}
+	}
+	return rules
+}
+
+func TestTypographyViolationsFindsEachRule(t *testing.T) {
+	const nbsp, nnbsp = "\u00a0", "\u202f"
+	broken := []struct {
+		text string
+		want []string
+	}{
+		// P1, one case per mark, then a tab and both no-break spaces.
+		{"Vraiment ?", []string{"P1"}},
+		{"Bravo !", []string{"P1"}},
+		{"Oui ; puis non", []string{"P1"}},
+		{"Vraiment\t?", []string{"P1"}},
+		{"Vraiment" + nbsp + "?", []string{"P1"}},
+		{"Bravo" + nnbsp + "!", []string{"P1"}},
+		// P2a alone: the colon is followed by neither a space nor the end of the text.
+		{"Salle :{name}", []string{"P2a"}},
+		{"Salle" + nnbsp + ":{name}", []string{"P2a"}},
+		{"Salle\t:{name}", []string{"P2a"}},
+		// P2b alone: no space at all before the colon.
+		{"Salle: A", []string{"P2b"}},
+		{"Salle:", []string{"P2b"}},
+		{"Salle:\n", []string{"P2b"}},
+		// Both: a wrong space before a colon that needs U+00A0.
+		{"Salle : A", []string{"P2a", "P2b"}},
+		{"Salle" + nnbsp + ": A", []string{"P2a", "P2b"}},
+		{"Salle :", []string{"P2a", "P2b"}},
+		// P3, each side alone, with the other side correct.
+		{"« mot" + nbsp + "»", []string{"P3a"}},
+		{"«" + nnbsp + "mot" + nbsp + "»", []string{"P3a"}},
+		{"fin «", []string{"P3a"}},
+		{"«" + nbsp + "mot »", []string{"P3b"}},
+		{"«" + nbsp + "mot" + nnbsp + "»", []string{"P3b"}},
+		{"» début", []string{"P3b"}},
+	}
+	for _, tc := range broken {
+		if got := typographyViolations(tc.text); !slices.Equal(got, tc.want) {
+			t.Errorf("typographyViolations(%q) = %q, want %q", tc.text, got, tc.want)
+		}
+	}
+	for _, text := range []string{
+		"Vraiment?", "Bravo!", "Oui; puis non",
+		"Salle" + nbsp + ": A", "Salle" + nbsp + ":", "Salle" + nbsp + ":{name}", "Salle" + nbsp + ":\n",
+		"https://example.test", "19:30", "«" + nbsp + "mot" + nbsp + "»", "",
+	} {
+		if got := typographyViolations(text); len(got) != 0 {
+			t.Errorf("typographyViolations(%q) = %q, want none", text, got)
+		}
+	}
+}
+
+// The scan reads the copy itself: the subject, the body TEMPLATE and every lifetime
+// phrase. Not the composed message: the link and its ?token= are not French text, and
+// TestAFrenchResetRequestMailsTheFrenchMessage pins the composed body in full.
+func TestTheFrenchResetCopyFollowsTheTypographyRule(t *testing.T) {
+	c, ok := resetCopies["fr"]
+	if !ok {
+		t.Fatal(`resetCopies has no "fr" entry`)
+	}
+	parts := map[string]string{"subject": c.subject, "body": c.body}
+	for ttl, phrase := range c.lifetime {
+		parts["lifetime "+ttl.String()] = phrase
+	}
+	for name, text := range parts {
+		if rules := typographyViolations(text); len(rules) != 0 {
+			t.Errorf("fr %s breaks %q (ADR-089):\n%s", name, rules, text)
 		}
 	}
 }

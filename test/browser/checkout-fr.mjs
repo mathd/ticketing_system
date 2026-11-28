@@ -11,6 +11,9 @@
 // The offer's zone is Asia/Kolkata (UTC+05:30): neither UTC (the storefront container's
 // zone) nor a whole-hour offset, so a history time that fell back to the server default,
 // or to UTC, shows different minutes and fails.
+//
+// TKT-531 (ADR-089): French is displayed as fr-CA. The price has a thousands group, the
+// only part of a EUR amount where fr (U+202F) and fr-CA (U+00A0) differ.
 
 import { chromium } from 'playwright-core';
 import { provisionAdmin, resultRecorder } from './lib/support.mjs';
@@ -21,6 +24,7 @@ const CATALOG = process.env.CATALOG_CONTAINER;
 if (!CATALOG) throw new Error('CATALOG_CONTAINER is unset. Run this spec through ./scripts/browser.sh');
 
 const FIXTURE_CAPACITY = 2;
+const PRICE_MINOR = 123450;
 const ZONE = 'Asia/Kolkata';
 const stamp = Date.now();
 const identifier = `checkout-fr-${stamp}@example.test`;
@@ -48,14 +52,26 @@ const FR = {
   paymentDeclined: 'Paiement refusé — réessayez',
 };
 
-// The storefront's history format (formatHistoryTime in web/storefront/src/lib/format.ts),
-// applied here with the zone this spec CHOSE, to the instant Access recorded.
-const HISTORY_TIME_OPTIONS = {
-  year: 'numeric', month: 'short', day: 'numeric',
-  hour: '2-digit', minute: '2-digit', second: '2-digit', timeZoneName: 'short',
-};
-const historyTime = (iso, timeZone) =>
-  new Intl.DateTimeFormat('fr', { ...HISTORY_TIME_OPTIONS, timeZone }).format(new Date(iso));
+// The Pay label for PRICE_MINOR, written out (ADR-089): U+00A0 groups the thousands and
+// comes before the symbol. The space after "Payer" is the page's own U+0020.
+const PAY_LABEL = `${FR.pay} 1\u00a0234,50\u00a0€`;
+
+// The storefront's French history format (fr-CA, ADR-089), written out. An expected value
+// built with Intl would use the locale the spec passes, so it could agree with a storefront
+// that uses the wrong one. The pattern is "D MMM YYYY, HH h MM min SS s <zone>", with plain
+// spaces and no leading zero on the day.
+const FR_CA_MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juill.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+// Kolkata has no daylight saving time, so its offset is always +05:30.
+const ZONE_OFFSET_MINUTES = 330;
+const ZONE_LABEL = 'UTC+5:30';
+const twoDigits = (n) => String(n).padStart(2, '0');
+/** The instant moved by `offsetMinutes`, read in UTC fields and written in the fr-CA pattern. */
+function frCaHistoryTime(iso, offsetMinutes, label) {
+  const local = new Date(Date.parse(iso) + offsetMinutes * 60_000);
+  return `${local.getUTCDate()} ${FR_CA_MONTHS[local.getUTCMonth()]} ${local.getUTCFullYear()}, ` +
+    `${twoDigits(local.getUTCHours())} h ${twoDigits(local.getUTCMinutes())} min ` +
+    `${twoDigits(local.getUTCSeconds())} s ${label}`;
+}
 
 const recorder = resultRecorder('French checkout browser spec');
 const { check } = recorder;
@@ -104,6 +120,7 @@ try {
     nameFr,
     startsAt,
     timezone: ZONE,
+    amountMinor: PRICE_MINOR,
   });
   await waitForOffer(adminPage, { eventId, performanceId, capacity: FIXTURE_CAPACITY, locale: 'fr', reserveLabel: FR.reserve });
   await admin.close();
@@ -140,11 +157,12 @@ try {
     check('the hold countdown is French, with a space before the unit',
       new RegExp(`^${FR.heldFor} \\d+\\u00a0s$`).test(status), JSON.stringify(status));
 
-    // Money is formatted from integer minor units; the expected text comes from Intl
-    // with the same decimal STRING the storefront builds (no float).
-    const amount = new Intl.NumberFormat('fr', { style: 'currency', currency: 'EUR' }).format('12.50');
-    const pay = page.getByRole('button', { name: `${FR.pay} ${amount}`, exact: true });
-    check('the Pay control shows the French amount', (await pay.count()) === 1, amount);
+    // Found by its "Payer" prefix, so the purchase still submits when the amount check
+    // records a failure. textContent is the raw text: it keeps each no-break space.
+    const pay = page.getByRole('button', { name: new RegExp(`^${FR.pay} `) });
+    const payText = await pay.textContent();
+    check('the Pay control shows the French amount', payText === PAY_LABEL,
+      `${JSON.stringify(payText)} want ${JSON.stringify(PAY_LABEL)}`);
 
     await page.getByRole('textbox', { name: FR.nameLabel, exact: true }).fill('Élise Martin');
     await page.getByRole('textbox', { name: FR.emailLabel, exact: true }).fill(`buyer-fr-${stamp}@example.test`);
@@ -201,13 +219,13 @@ try {
     check('Access sends the performance zone', ticket.performance_timezone === ZONE, ticket.performance_timezone);
     const issued = ticket.history.find((entry) => entry.type === 'issued');
     if (!issued) throw new Error(`the ticket has no issued event: ${JSON.stringify(ticket.history)}`);
-    const expected = `${FR.historyIssued} — ${historyTime(issued.occurred_at, ZONE)}`;
+    const expected = `${FR.historyIssued} — ${frCaHistoryTime(issued.occurred_at, ZONE_OFFSET_MINUTES, ZONE_LABEL)}`;
     const line = page.locator(`li:has(time[datetime="${issued.occurred_at}"])`).first();
     const rendered = (await line.innerText()).trim();
     check('the issued history line is French and in the performance zone', rendered === expected,
       `${JSON.stringify(rendered)} want ${JSON.stringify(expected)}`);
     check('the issued time is not the UTC time',
-      !rendered.includes(historyTime(issued.occurred_at, 'UTC')));
+      !rendered.includes(frCaHistoryTime(issued.occurred_at, 0, 'UTC')));
     check('no raw lifecycle type is shown',
       (await page.getByText(/^(issued|delivered)\b/).count()) === 0);
   });
