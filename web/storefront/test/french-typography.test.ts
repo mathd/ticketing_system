@@ -47,6 +47,9 @@ describe('typographyViolations (ADR-089)', () => {
     // P2b alone: no space at all before the colon.
     ['Salle: A', ['P2b']],
     ['Salle:', ['P2b']],
+    // P2b alone: any White_Space after the colon counts, not only U+0020.
+    ['Salle:\nA', ['P2b']],
+    [`Salle:${NNBSP}A`, ['P2b']],
     // Both: a wrong space before a colon that needs U+00A0.
     ['Salle : A', ['P2a', 'P2b']],
     [`Salle${NNBSP}: A`, ['P2a', 'P2b']],

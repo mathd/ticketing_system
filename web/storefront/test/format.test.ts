@@ -73,7 +73,10 @@ describe('accountDateFormatter', () => {
 // Limit: the scan reads text. It does not see Intl reached by destructuring or by a
 // computed member, such as Intl['DateTimeFormat'].
 const SRC = fileURLToPath(new URL('../src/', import.meta.url));
-const SOURCE_FILE = /\.(?:ts|tsx|js|jsx|mjs|astro)$/;
+// Every TypeScript and JavaScript module extension that Vite and TypeScript resolve, and
+// .astro. The walker test below pins each one.
+const SOURCE_EXTENSIONS = ['ts', 'tsx', 'mts', 'cts', 'js', 'jsx', 'mjs', 'cjs', 'astro'] as const;
+const SOURCE_FILE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|astro)$/;
 const INTL_MEMBER = /\bIntl\s*\.\s*([A-Za-z_$][\w$]*)/g;
 const TO_LOCALE_STRING = /\b(toLocale\w*String)\s*\(/g;
 const LOCALES_EXEMPTIONS = [/\bIntl\.LDMLPluralRule\b/g, /\bnew Intl\.PluralRules\(locale\)/g];
@@ -95,12 +98,17 @@ function intlSinkViolations(relativePath: string, text: string): string[] {
     .map(({ at, sink }) => `${relativePath}:${lineOf(at)}: ${sink}`);
 }
 
-/** Every storefront source file, relative to src/ with forward slashes. */
-function sourceFiles(): string[] {
-  return readdirSync(SRC, { recursive: true, encoding: 'utf8' })
+/** The source files in `paths`, with forward slashes, sorted. */
+function selectSourceFiles(paths: readonly string[]): string[] {
+  return paths
     .map((path) => path.split(sep).join('/'))
     .filter((path) => SOURCE_FILE.test(path))
     .sort();
+}
+
+/** Every storefront source file, relative to src/ with forward slashes. */
+function sourceFiles(): string[] {
+  return selectSourceFiles(readdirSync(SRC, { recursive: true, encoding: 'utf8' }));
 }
 
 describe('intlSinkViolations', () => {
@@ -123,6 +131,16 @@ describe('intlSinkViolations', () => {
     ['components/X.tsx', 'String(count); text.toLowerCase(); locale.toString();'],
   ])('does not report %s: %j', (path, text) => {
     expect(intlSinkViolations(path, text)).toEqual([]);
+  });
+});
+
+describe('selectSourceFiles', () => {
+  it.each(SOURCE_EXTENSIONS)('scans a .%s file', (extension) => {
+    expect(selectSourceFiles([`lib/x.${extension}`, 'lib/x.json'])).toEqual([`lib/x.${extension}`]);
+  });
+
+  it('skips files that are not modules', () => {
+    expect(selectSourceFiles(['styles/a.css', 'data/b.json', 'README.md', 'lib/ts', 'lib/x.mtsx'])).toEqual([]);
   });
 });
 
