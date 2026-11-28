@@ -109,7 +109,7 @@ this register when adding an ADR or changing its status. Preserve existing decis
 | ADR-079 | [Disable persisted Astro image stale-if-error reuse](ADR-079-persisted-image-cache-without-stale-if-error.md) | Superseded; TKT-504 upgraded Astro and accepted the residual |
 | ADR-080 | [Optimistic revision on the catalog channel PUT](ADR-080-channel-optimistic-revision.md) | Accepted |
 | ADR-081 | [Reviewed, expiring vulnerability scan exceptions](ADR-081-reviewed-expiring-vulnerability-scan-exceptions.md) | Accepted |
-| ADR-082 | [A coded refusal for a GA sellout](ADR-082-ga-sellout-refusal-code.md) | Accepted |
+| ADR-082 | [A coded refusal for a GA sellout](ADR-082-ga-sellout-refusal-code.md) | Accepted; amended by TKT-530 |
 | ADR-083 | [Access reads performance time zones from Catalog](ADR-083-access-reads-performance-time-zones-from-catalog.md) | Accepted |
 | ADR-084 | [Promotion storage and redemption contract](ADR-084-promotion-storage-and-redemption-contract.md) | Proposed; no implementation authority |
 | ADR-085 | [Scanner local outcome model](ADR-085-scanner-local-outcome-model.md) | Accepted model; staged delivery and venue qualification limits |

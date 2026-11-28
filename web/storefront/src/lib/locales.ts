@@ -140,11 +140,10 @@ const ENGLISH_UI_STRINGS = {
     heldFor: 'Held for',
     holdExpired: 'Hold expired',
     quantityUnavailable: 'Quantity unavailable',
-    // Only for commerce's exact 409 `sold_out` on a GA reserve (TKT-341, ADR-082): zero
-    // public headroom at the locked decision. Point-in-time, so the copy does not say
-    // "permanently". Every other GA refusal keeps quantityUnavailable; seated
-    // refusals keep their own messages.
-    soldOut: 'Sold out',
+    // Only for commerce's exact GA 409 `sold_out` (TKT-341, ADR-082). Every other GA refusal
+    // keeps quantityUnavailable; seated refusals keep their own messages. Point-in-time:
+    // capacity can come back when holds expire, so the copy never says "permanently" (TKT-530).
+    soldOut: 'Sold out for now — check back later',
     orderConfirmed: 'Order confirmed',
     viewMyTickets: 'View my tickets',
     paymentDeclined: 'Payment declined — try again',
@@ -284,7 +283,7 @@ const FRENCH_UI_STRINGS = {
     heldFor: 'Réservé pendant',
     holdExpired: 'Réservation expirée',
     quantityUnavailable: 'Quantité indisponible',
-    soldOut: 'Complet',
+    soldOut: 'Complet pour le moment — revenez plus tard',
     orderConfirmed: 'Commande confirmée',
     viewMyTickets: 'Voir mes billets',
     paymentDeclined: 'Paiement refusé — réessayez',
