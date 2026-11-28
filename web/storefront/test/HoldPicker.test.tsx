@@ -690,6 +690,9 @@ describe('a released checkout says the order was not completed', () => {
     expect.soft(liveText(), 'right after the 408').toBe(NOT_COMPLETED);
     expect.soft(checkoutForms(), 'checkout forms right after the 408').toBe(0);
     expect.soft(reserveButton().disabled, 'Reserve right after the 408').toBe(false);
+    // Dropping the hold stops the countdown. The ref guard alone would make the DOM
+    // assertions below pass with the interval still running for the life of the page.
+    expect.soft(vi.getTimerCount(), 'countdown intervals right after the 408').toBe(0);
 
     await advance(HOLD_MS + 250);
     expect.soft(liveText(), 'past the old hold deadline').toBe(NOT_COMPLETED);
@@ -752,11 +755,16 @@ describe('a released checkout says the order was not completed', () => {
   // R1. React commits the release setters only when the event-loop turn ends. A tick of
   // the old countdown that runs between the setters and that commit must not queue a
   // countdown value or, at the deadline, the expiry message over the copy. One act scope
-  // holds that window open deterministically, as in the TKT-513 D2 test.
+  // holds that window open deterministically, as in the TKT-513 D2 test. The 402 decline
+  // shares the guard, so it gets the same window. Its body stays timeout-shaped: only the
+  // status selects the branch.
+  const DECLINED = 'Payment declined — try again';
   it.each([
-    ['a countdown tick', 250],
-    ['the old hold deadline', HOLD_MS + 250],
-  ])('ignores %s that runs before the release commits', async (_name, ms) => {
+    ['a countdown tick', 'released 408', 408, 250, NOT_COMPLETED],
+    ['the old hold deadline', 'released 408', 408, HOLD_MS + 250, NOT_COMPLETED],
+    ['a countdown tick', '402 decline', 402, 250, DECLINED],
+    ['the old hold deadline', '402 decline', 402, HOLD_MS + 250, DECLINED],
+  ])('ignores %s that runs before the %s commits', async (_name, _answer, status, ms, copy) => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] });
     let answer: (response: Response) => void = () => {};
     const pending = new Promise<Response>((resolve) => { answer = resolve; });
@@ -767,15 +775,18 @@ describe('a released checkout says the order was not completed', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /^Pay / })); });
 
     await act(async () => {
-      answer(new Response(JSON.stringify(RELEASED), { status: 408 }));
+      answer(new Response(JSON.stringify(RELEASED), { status }));
       for (let turn = 0; turn < 3; turn += 1) await realTurn();
       vi.advanceTimersByTime(ms);
     });
 
     // Exact: no countdown suffix and no expiry message.
-    expect.soft(liveText(), 'after the 408 commits').toBe(NOT_COMPLETED);
-    expect.soft(checkoutForms(), 'checkout forms after the 408 commits').toBe(0);
-    expect(reserveButton().disabled, 'Reserve after the 408 commits').toBe(false);
+    expect.soft(liveText(), `after the ${status} commits`).toBe(copy);
+    expect.soft(checkoutForms(), `checkout forms after the ${status} commits`).toBe(0);
+    expect.soft(reserveButton().disabled, `Reserve after the ${status} commits`).toBe(false);
+    // Dropping the hold stops the countdown. The ref guard alone would hide the ticks
+    // but leave the interval running for the life of the page.
+    expect(vi.getTimerCount(), `countdown intervals after the ${status} commits`).toBe(0);
   });
 
   // R1. The guard that stops the released hold's countdown must not stop the next one.
