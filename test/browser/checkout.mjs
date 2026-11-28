@@ -29,11 +29,14 @@ const { check } = recorder;
 provisionAdmin(CATALOG, identifier, password);
 const scannerToken = enrolScanner(ACCESS, `checkout browser ${stamp}`);
 
-async function reserve(page, scenario) {
+async function reserve(page, scenario, { installClock = false } = {}) {
   // The button is server-rendered before React attaches its click handler. Waiting
   // only for DOMContentLoaded can click inert markup, especially after returning
   // from Scanner, and then misreport the missing checkout form as a capacity issue.
   await page.waitForLoadState('networkidle');
+  // TKT-513: the hold countdown reads its deadline at Reserve, so the page clock must
+  // be installed before the click for a later runFor to move that countdown.
+  if (installClock) await page.clock.install();
   const reservationResponse = page.waitForResponse((response) =>
     response.request().method() === 'POST' &&
     new URL(response.url()).pathname === '/api/commerce/reservations');
@@ -101,7 +104,7 @@ try {
   });
   await waitForOffer(page, { eventId, performanceId, capacity: FIXTURE_CAPACITY, locale: 'en', reserveLabel: 'Reserve' });
 
-  await reserve(page, 'successful purchase');
+  await reserve(page, 'successful purchase', { installClock: true });
   await waitForAvailability(page, performanceId, {
     capacity: FIXTURE_CAPACITY,
     held: 1,
@@ -115,12 +118,26 @@ try {
   const submittedCheckout = await checkoutResponse;
   const checkoutBody = await submittedCheckout.text();
   try {
-    await page.getByText('Order confirmed', { exact: true }).waitFor();
+    // The ticket link, not the status text: the link stays when a countdown tick
+    // overwrites the confirmation, so the checks below can report that overwrite.
+    await page.getByRole('link', { name: 'View my tickets', exact: true }).waitFor();
   } catch {
     throw new Error(`checkout returned ${submittedCheckout.status()} without completing: ${checkoutBody}`);
   }
   check('the checkout form posts through the storefront bridge', new URL(submittedCheckout.url()).pathname === '/checkout');
-  check('the browser reports a completed order', await page.getByText('Order confirmed', { exact: true }).isVisible());
+  // TKT-513: a confirmed order is terminal. Move the page clock past two countdown
+  // ticks, then yield once to the page event loop so React commits what they queued.
+  await page.clock.runFor(500);
+  await page.evaluate(() => new Promise((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => resolve();
+    channel.port2.postMessage(0);
+  }));
+  const confirmation = (await page.locator('span[aria-live="polite"]').innerText()).trim();
+  check('the completed order stays exactly confirmed after countdown ticks',
+    confirmation === 'Order confirmed', JSON.stringify(confirmation));
+  check('no checkout form returns after the order is confirmed',
+    (await page.locator('.checkout-form').count()) === 0);
   await waitForAvailability(page, performanceId, {
     capacity: FIXTURE_CAPACITY,
     held: 0,

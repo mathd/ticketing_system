@@ -75,10 +75,13 @@ function postTo(page, path) {
     response.request().method() === 'POST' && new URL(response.url()).pathname === path);
 }
 
-async function reserveInFrench(page, eventId, label) {
+async function reserveInFrench(page, eventId, label, { installClock = false } = {}) {
   await page.goto(`/fr/events/${eventId}`, { waitUntil: 'domcontentloaded' });
   // The button is server-rendered before React attaches its click handler.
   await page.waitForLoadState('networkidle');
+  // TKT-513: the hold countdown reads its deadline at Réserver, so the page clock must
+  // be installed before the click for a later runFor to move that countdown.
+  if (installClock) await page.clock.install();
   const reservation = postTo(page, '/api/commerce/reservations');
   await page.getByRole('button', { name: FR.reserve, exact: true }).click();
   const response = await reservation;
@@ -123,7 +126,7 @@ try {
 
   let guestOrderRef = null;
   await scenario('French purchase', async () => {
-    await reserveInFrench(page, eventId, 'purchase');
+    await reserveInFrench(page, eventId, 'purchase', { installClock: true });
     const payment = page.getByRole('combobox', { name: FR.fakePaymentLabel, exact: true });
     const options = await payment.locator('option').evaluateAll((nodes) =>
       nodes.map((node) => ({ label: node.textContent, value: node.value })));
@@ -151,8 +154,22 @@ try {
     const response = await checkout;
     const body = await response.json();
     check('Payer posts the checkout through the storefront bridge', response.status() === 200, `${response.status()}`);
-    await page.getByText(FR.orderConfirmed, { exact: true }).waitFor();
-    check('the confirmation is French', await page.getByText(FR.orderConfirmed, { exact: true }).isVisible());
+    // The ticket link, not the status text: the link stays when a countdown tick
+    // overwrites the confirmation, so the checks below can report that overwrite.
+    await page.getByRole('link', { name: FR.viewMyTickets, exact: true }).waitFor();
+    // TKT-513: a confirmed order is terminal. Move the page clock past two countdown
+    // ticks, then yield once to the page event loop so React commits what they queued.
+    await page.clock.runFor(500);
+    await page.evaluate(() => new Promise((resolve) => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => resolve();
+      channel.port2.postMessage(0);
+    }));
+    const confirmation = (await page.locator('span[aria-live="polite"]').innerText()).trim();
+    check('the confirmation is exactly French after countdown ticks',
+      confirmation === FR.orderConfirmed, JSON.stringify(confirmation));
+    check('no checkout form returns after the order is confirmed',
+      (await page.locator('.checkout-form').count()) === 0);
     check('the confirmation stays on the French event page', new URL(page.url()).pathname === eventPath, page.url());
     guestOrderRef = body.guest_order_ref;
     await waitForAvailability(page, performanceId, { held: 0, confirmed: 1, available: 1 });
