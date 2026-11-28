@@ -219,8 +219,8 @@ try {
   });
   check('a declined payment returns to a reservable state', await page.getByRole('button', { name: 'Reserve', exact: true }).isEnabled());
 
-  // TKT-503. A fake-timeout checkout ends without a charge: commerce releases the hold
-  // and answers 408 `status: "timeout"`. No installClock here: the purchase above
+  // TKT-503. Commerce releases a fake-timeout checkout and answers 408 `status:
+  // "timeout"`. No installClock here: the purchase above
   // already installed the page clock (TKT-513).
   await page.goto(`/en/events/${eventId}`, { waitUntil: 'domcontentloaded' });
   await reserve(page, 'released checkout');
@@ -238,12 +238,12 @@ try {
   const released = await releasedResponse;
   check('a released checkout answers 408 through the storefront bridge',
     released.status() === 408, `${released.status()} ${await released.text()}`);
-  const notCharged = page.getByText(
-    'Your order was not completed and you were not charged. Please select your tickets again.',
-    { exact: true },
-  );
-  await notCharged.waitFor();
-  check('a released checkout shows the exact not-charged copy', await notCharged.isVisible());
+  // The wait is inside the check: a missing copy records a named FAIL with the rendered
+  // status, and the scenarios below still run.
+  const notCompleted = page.getByText('Your order was not completed. Please select your tickets again.', { exact: true });
+  const notCompletedShown = await notCompleted.waitFor().then(() => notCompleted.isVisible(), () => false);
+  check('a released checkout shows the exact not-completed copy', notCompletedShown,
+    JSON.stringify((await page.locator('span[aria-live="polite"]').innerText()).trim()));
   check('a released checkout closes the checkout form', (await page.locator('.checkout-form').count()) === 0);
   check('a released checkout enables Reserve', await page.getByRole('button', { name: 'Reserve', exact: true }).isEnabled());
   await waitForAvailability(page, performanceId, {

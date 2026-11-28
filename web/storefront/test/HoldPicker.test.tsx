@@ -637,12 +637,13 @@ describe('a confirmed checkout stays confirmed', () => {
 });
 
 // TKT-503. Commerce answers 408 with `status: "timeout"` and the order id when it
-// released the checkout without a charge (ADR-016 `not_attempted`). Only that exact
-// answer tells the buyer they were not charged. Any other 408, and the same body on
-// another status, keeps the hold and the ambiguous "being checked" message, so a
+// released the checkout (ADR-016 `not_attempted`). Only that exact answer tells the
+// buyer that the order was not completed and that they must select their tickets again
+// (owner decision D5: the copy makes no charge claim). Any other 408, and the same body
+// on another status, keeps the hold and the ambiguous "being checked" message, so a
 // retry replays the same checkout.
-describe('a released checkout says the buyer was not charged', () => {
-  const NOT_CHARGED = 'Your order was not completed and you were not charged. Please select your tickets again.';
+describe('a released checkout says the order was not completed', () => {
+  const NOT_COMPLETED = 'Your order was not completed. Please select your tickets again.';
   const RELEASED = { order_id: ORDER, status: 'timeout', replay: false, error: 'payment timed out' };
   const HOLD_MS = 1_000;
 
@@ -652,7 +653,7 @@ describe('a released checkout says the buyer was not charged', () => {
   }
 
   function purchaseFetch(
-    checkout: () => Response,
+    checkout: () => Response | Promise<Response>,
     hold: () => Record<string, unknown> = () => heldReservation(),
   ): ReturnType<typeof vi.fn> {
     return vi.fn(async (input: RequestInfo | URL) => {
@@ -688,12 +689,12 @@ describe('a released checkout says the buyer was not charged', () => {
     await until(() => keysFor(stub, '/checkout').length === 1 && !reserveButton().disabled, 'the checkout answer');
 
     // Exact: no countdown suffix after the copy.
-    expect.soft(liveText(), 'right after the 408').toBe(NOT_CHARGED);
+    expect.soft(liveText(), 'right after the 408').toBe(NOT_COMPLETED);
     expect.soft(checkoutForms(), 'checkout forms right after the 408').toBe(0);
     expect.soft(reserveButton().disabled, 'Reserve right after the 408').toBe(false);
 
     await advance(HOLD_MS + 250);
-    expect.soft(liveText(), 'past the old hold deadline').toBe(NOT_CHARGED);
+    expect.soft(liveText(), 'past the old hold deadline').toBe(NOT_COMPLETED);
     expect.soft(checkoutForms(), 'checkout forms past the old hold deadline').toBe(0);
     expect(reserveButton().disabled, 'Reserve past the old hold deadline').toBe(false);
   });
@@ -734,7 +735,7 @@ describe('a released checkout says the buyer was not charged', () => {
     await screen.findByText(/^Payment status is being checked/);
     // The countdown suffix shows that the hold is still live.
     expect(liveText()).toMatch(/^Payment status is being checked \d+s$/);
-    expect(screen.queryByText(NOT_CHARGED)).toBeNull();
+    expect(screen.queryByText(NOT_COMPLETED)).toBeNull();
     expect(checkoutForms()).toBe(1);
     expect(reserveButton().disabled).toBe(true);
 
@@ -748,6 +749,70 @@ describe('a released checkout says the buyer was not charged', () => {
     expect(second).toBe(first);
   });
 
+  const realTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+  // R1. React commits the release setters only when the event-loop turn ends. A tick of
+  // the old countdown that runs between the setters and that commit must not queue a
+  // countdown value or, at the deadline, the expiry message over the copy. One act scope
+  // holds that window open deterministically, as in the TKT-513 D2 test.
+  it.each([
+    ['a countdown tick', 250],
+    ['the old hold deadline', HOLD_MS + 250],
+  ])('ignores %s that runs before the release commits', async (_name, ms) => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] });
+    let answer: (response: Response) => void = () => {};
+    const pending = new Promise<Response>((resolve) => { answer = resolve; });
+    const stub = purchaseFetch(() => pending, shortHold);
+    mountGA(stub);
+    await act(async () => { fireEvent.click(reserveButton()); });
+    await until(() => screen.queryByRole('button', { name: /^Pay / }) !== null, 'the Pay button');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /^Pay / })); });
+
+    await act(async () => {
+      answer(new Response(JSON.stringify(RELEASED), { status: 408 }));
+      for (let turn = 0; turn < 3; turn += 1) await realTurn();
+      vi.advanceTimersByTime(ms);
+    });
+
+    // Exact: no countdown suffix and no expiry message.
+    expect.soft(liveText(), 'after the 408 commits').toBe(NOT_COMPLETED);
+    expect.soft(checkoutForms(), 'checkout forms after the 408 commits').toBe(0);
+    expect(reserveButton().disabled, 'Reserve after the 408 commits').toBe(false);
+  });
+
+  // R1. The guard that stops the released hold's countdown must not stop the next one.
+  it('runs the countdown of the next hold after a released checkout', async () => {
+    const NEXT_HOLD_MS = 5_000;
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] });
+    let holds = 0;
+    const stub = purchaseFetch(
+      () => new Response(JSON.stringify(RELEASED), { status: 408 }),
+      () => {
+        holds += 1;
+        const serverTime = Date.parse('2026-08-03T12:00:00Z');
+        const ms = holds === 1 ? HOLD_MS : NEXT_HOLD_MS;
+        return heldReservation({ expires_at: new Date(serverTime + ms).toISOString() });
+      },
+    );
+    mountGA(stub);
+    await act(async () => { fireEvent.click(reserveButton()); });
+    await until(() => screen.queryByRole('button', { name: /^Pay / }) !== null, 'the Pay button');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /^Pay / })); });
+    await until(() => liveText() === NOT_COMPLETED && !reserveButton().disabled, 'the released checkout');
+
+    // Same page, same quantity.
+    await act(async () => { fireEvent.click(reserveButton()); });
+    await until(() => keysFor(stub, '/reservations').length === 2 && checkoutForms() === 1, 'the next hold');
+    expect.soft(liveText(), 'the next hold').toBe('Held for 5s');
+
+    await advance(1_250);
+    expect.soft(liveText(), 'the next hold after countdown ticks').toBe('Held for 4s');
+
+    await advance(NEXT_HOLD_MS);
+    expect.soft(liveText(), 'the next hold past its deadline').toBe('Hold expired');
+    expect(checkoutForms(), 'checkout forms past the next deadline').toBe(0);
+  });
+
   it('keeps the decline copy for a 402 with the same body', async () => {
     const stub = purchaseFetch(() => new Response(JSON.stringify(RELEASED), { status: 402 }));
     mountGA(stub);
@@ -755,7 +820,7 @@ describe('a released checkout says the buyer was not charged', () => {
     fireEvent.click(await screen.findByRole('button', { name: /^Pay / }));
 
     await waitFor(() => expect(liveText()).toBe('Payment declined — try again'));
-    expect(screen.queryByText(NOT_CHARGED)).toBeNull();
+    expect(screen.queryByText(NOT_COMPLETED)).toBeNull();
     expect(checkoutForms()).toBe(0);
   });
 });

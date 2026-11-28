@@ -187,11 +187,11 @@ function decodeOrderResult(value: unknown): OrderResult {
   };
 }
 
-// isReleasedCheckout reads commerce's answer for a checkout it released without a
-// charge (TKT-503, ADR-016 `not_attempted`): HTTP 408, an object body, `status:
-// "timeout"` and a string `order_id`. `replay` and other fields are optional. Any other
-// 408, including one whose body does not parse, keeps the hold and the ambiguous
-// "being checked" message, because nothing here proves that the buyer was not charged.
+// isReleasedCheckout reads commerce's answer for a checkout it released (TKT-503,
+// ADR-016 `not_attempted`): HTTP 408, an object body, `status: "timeout"` and a string
+// `order_id`. `replay` and other fields are optional. Any other 408, including one whose
+// body does not parse, keeps the hold and the ambiguous "being checked" message, because
+// nothing here proves that the checkout ended.
 function isReleasedCheckout(
   httpStatus: number,
   value: unknown,
@@ -241,6 +241,10 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
   // that runs before React commits the confirmation must not queue a countdown value
   // or the expiry message over it (TKT-513).
   const confirmed = useRef(false);
+  // The same guard for a hold that commerce ended without a completed order: a decline or a
+  // released checkout (TKT-503). Set synchronously before the cleanup setters, and
+  // cleared when the next hold is accepted, so that hold's countdown runs.
+  const holdEnded = useRef(false);
   const map = useRef<SeatMapHandle>(null);
   // One string table. There used to be a second, inline one here, and the two had
   // colliding keys with different meanings (`tickets` was "Tickets" in one and "View my
@@ -280,7 +284,7 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
   useEffect(() => {
     if (holdId === null) return;
     const timer = window.setInterval(() => {
-      if (confirmed.current) return;
+      if (confirmed.current || holdEnded.current) return;
       const next = Math.max(0, deadline.current - performance.now());
       setRemaining(next);
       if (next === 0) {
@@ -348,6 +352,7 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
       const hold = decodeReservation(await response.json(), requestedSeats);
       const duration = remainingMilliseconds(hold);
       deadline.current = performance.now() + duration;
+      holdEnded.current = false;
       setRemaining(duration); setHoldId(hold.hold_id); setReservation(hold); setStatus(t.heldFor);
     } catch { setStatus(t.serviceUnavailable); }
     finally { setBusy(false); }
@@ -381,12 +386,15 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
       }
       const released = isReleasedCheckout(response.status, body);
       if (response.status === 402 || released) {
+        // Before any setter: a countdown tick that runs before React commits this
+        // branch must not restore the countdown or replace the message at the deadline.
+        holdEnded.current = true;
         setReservation(null); setHoldId(null); setRemaining(null);
         // Commerce released this hold. A replay of the cached reserve key would return the
         // released reservation, so the same selection must ask for a new hold. Reserve is
         // disabled while this request runs, so no reserve call can read the old key.
         if (released) reserveKey.current = null;
-        setStatus(released ? t.paymentNotCharged : t.paymentDeclined); return;
+        setStatus(released ? t.paymentNotCompleted : t.paymentDeclined); return;
       }
       // 401 = the customer assertion was refused (expired, or signed with a key
       // that has since rotated). It is NOT the payment-uncertainty answer, which

@@ -46,7 +46,7 @@ const FR = {
   ticketQrAlt: 'Code QR du billet',
   historyIssued: 'Émis',
   paymentDeclined: 'Paiement refusé — réessayez',
-  paymentNotCharged: "Votre commande n'a pas abouti et vous n'avez pas été débité. Veuillez sélectionner de nouveau vos billets.",
+  paymentNotCompleted: "Votre commande n'a pas abouti. Veuillez sélectionner de nouveau vos billets.",
 };
 
 // The storefront's history format (formatHistoryTime in web/storefront/src/lib/format.ts),
@@ -227,7 +227,7 @@ try {
       await page.getByRole('button', { name: FR.reserve, exact: true }).isEnabled());
   });
 
-  // TKT-503. A fake-timeout checkout ends without a charge. Then Réserver, on the same
+  // TKT-503. Commerce releases a fake-timeout checkout. Then Réserver, on the same
   // page with the same quantity, must take a NEW hold: a replay of the released
   // reservation also answers 201, so only the capacity tells them apart. This is the
   // last scenario, so the live hold it leaves cannot affect another one. No installClock
@@ -241,9 +241,9 @@ try {
     const response = await checkout;
     check('a released Payer answers 408 through the storefront bridge',
       response.status() === 408, `${response.status()} ${await response.text()}`);
-    const notCharged = page.getByText(FR.paymentNotCharged, { exact: true });
-    await notCharged.waitFor();
-    check('the not-charged copy is exactly French', await notCharged.isVisible());
+    const notCompleted = page.getByText(FR.paymentNotCompleted, { exact: true });
+    await notCompleted.waitFor();
+    check('the not-completed copy is exactly French', await notCompleted.isVisible());
     check('a released checkout closes the checkout form', (await page.locator('.checkout-form').count()) === 0);
     const reserve = page.getByRole('button', { name: FR.reserve, exact: true });
     check('a released checkout enables Réserver', await reserve.isEnabled());

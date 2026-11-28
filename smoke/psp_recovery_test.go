@@ -333,8 +333,8 @@ func TestCheckoutReplayAgainstRecoveredOrders(t *testing.T) {
 		t.Fatalf("replay against reconciliation_required = %d %s, want 409", code, body)
 	}
 
-	// TKT-503. A checkout released without a charge: the storefront's not-charged copy
-	// depends on this exact replay answer. The initial decline already released this
+	// TKT-503. A released checkout: the storefront's not-completed copy depends on this
+	// exact replay answer. The initial decline already released this
 	// reservation's hold. The row is fabricated as above; the runner and store smoke
 	// tests cover the transition that writes it.
 	tag, err := db.Exec(ctx, `UPDATE orders SET status='timeout', terminal_outcome='not_attempted' WHERE id=$1`, declined.OrderID)
