@@ -221,6 +221,10 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
   const [paymentToken, setPaymentToken] = useState('fake-ok');
   const [ticketLink, setTicketLink] = useState<string | null>(null);
   const deadline = useRef(0);
+  // Set synchronously when checkout completes, before any setter. A countdown tick
+  // that runs before React commits the confirmation must not queue a countdown value
+  // or the expiry message over it (TKT-513).
+  const confirmed = useRef(false);
   const map = useRef<SeatMapHandle>(null);
   // One string table. There used to be a second, inline one here, and the two had
   // colliding keys with different meanings (`tickets` was "Tickets" in one and "View my
@@ -260,6 +264,7 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
   useEffect(() => {
     if (holdId === null) return;
     const timer = window.setInterval(() => {
+      if (confirmed.current) return;
       const next = Math.max(0, deadline.current - performance.now());
       setRemaining(next);
       if (next === 0) {
@@ -354,7 +359,9 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
       const body: unknown = await response.json().catch(() => undefined);
       if (response.ok) {
         const result = decodeOrderResult(body);
-        setRemaining(0); setTicketLink(`/${locale}/tickets/${result.guest_order_ref}`); setStatus(t.orderConfirmed); return;
+        // A completed order is terminal: stop the countdown and drop the hold.
+        confirmed.current = true;
+        setRemaining(0); setHoldId(null); setTicketLink(`/${locale}/tickets/${result.guest_order_ref}`); setStatus(t.orderConfirmed); return;
       }
       if (response.status === 402 || response.status === 408) { setReservation(null); setHoldId(null); setRemaining(null); setStatus(t.paymentDeclined); return; }
       // 401 = the customer assertion was refused (expired, or signed with a key
@@ -395,7 +402,7 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
     {seated
       ? <SeatMapPicker ref={map} organizerId={organizerId} slotId={slotId!} seatMapId={seatMapId!} locale={locale} onSelectionChange={onSelectionChange} />
       : <label>{t.quantity} <input aria-label={t.quantity} type="number" min="1" max="50" value={quantity} onChange={(e) => setQuantity(Math.max(1, Math.min(50, Number(e.target.value))))} /></label>}
-    <button type="button" disabled={busy || holding || (seated && !selection.claimable)} onClick={reserve}>{seated ? t.reserveSeats : t.reserve}</button>
+    <button type="button" disabled={busy || holding || ticketLink !== null || (seated && !selection.claimable)} onClick={reserve}>{seated ? t.reserveSeats : t.reserve}</button>
     <span aria-live="polite">{status}{remaining !== null && remaining > 0 ? ` ${fill(t.holdCountdown, { n: seconds })}` : ''}</span>
     {ticketLink && <a href={ticketLink}>{t.viewMyTickets}</a>}
     {reservation && remaining !== null && remaining > 0 && <div className="checkout-form">

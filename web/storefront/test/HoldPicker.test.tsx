@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import HoldPicker, { reservationTerms } from '../src/components/HoldPicker';
@@ -504,5 +504,131 @@ describe('GA sellout refusal', () => {
     await selectAndReserve(seatedFetch({ error: 'sold out', code: 'sold_out' }, 409));
     await screen.findByText('Quantity unavailable');
     expect(screen.queryByText('Sold out')).toBeNull();
+  });
+});
+
+// TKT-513. A completed checkout is terminal. The hold countdown interval used to keep
+// running after the order was confirmed: its next tick put the countdown suffix and the
+// checkout form back, and at the old deadline it replaced the confirmation with "Hold
+// expired". Reserve stays disabled after confirmation until the page reloads (owner
+// decision D1).
+//
+// Only the interval and performance clocks are fake. Real setTimeout and setImmediate
+// still let the stubbed fetch responses settle, and the DOM is read directly, not
+// through findBy or waitFor.
+describe('a confirmed checkout stays confirmed', () => {
+  const HOLD_MS = 1_000;
+  const LABELS = {
+    en: { reserve: 'Reserve', pay: /^Pay /, confirmed: 'Order confirmed', tickets: 'View my tickets' },
+    fr: { reserve: 'Réserver', pay: /^Payer /, confirmed: 'Commande confirmée', tickets: 'Voir mes billets' },
+  } as const;
+  const COMPLETED = { order_id: ORDER, guest_order_ref: GUEST_ORDER_REF, status: 'completed' };
+
+  function shortHold() {
+    const serverTime = Date.parse('2026-08-03T12:00:00Z');
+    return heldReservation({ expires_at: new Date(serverTime + HOLD_MS).toISOString() });
+  }
+
+  function purchaseFetch(checkoutResponse: () => Response | Promise<Response>): ReturnType<typeof vi.fn> {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/reservations')) return new Response(JSON.stringify(shortHold()), { status: 200 });
+      if (url.includes('/checkout')) return checkoutResponse();
+      throw new Error(`unexpected fetch ${url}`);
+    });
+  }
+
+  const liveText = () => document.querySelector('span[aria-live="polite"]')?.textContent ?? null;
+  const checkoutForms = () => document.querySelectorAll('.checkout-form').length;
+  const realTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+  async function until(predicate: () => boolean, what: string): Promise<void> {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (predicate()) return;
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    }
+    throw new Error(`timed out waiting for ${what}`);
+  }
+
+  async function advance(ms: number): Promise<void> {
+    await act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+  }
+
+  // Fake the clocks BEFORE Reserve: the component sets its deadline from performance.now().
+  async function reserveAndPay(locale: 'en' | 'fr', checkoutResponse: () => Response | Promise<Response>) {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] });
+    vi.stubGlobal('fetch', purchaseFetch(checkoutResponse));
+    render(<HoldPicker organizerId={ORG} ticketTypeId={TT} locale={locale} />);
+    const labels = LABELS[locale];
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: labels.reserve })); });
+    await until(() => screen.queryByRole('button', { name: labels.pay }) !== null, 'the Pay button');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: labels.pay })); });
+  }
+
+  async function confirmed(locale: 'en' | 'fr') {
+    const labels = LABELS[locale];
+    await reserveAndPay(locale, () => new Response(JSON.stringify(COMPLETED), { status: 200 }));
+    await until(() => screen.queryByRole('link', { name: labels.tickets }) !== null, 'the ticket link');
+    expect(liveText()).toBe(labels.confirmed);
+    expect(checkoutForms()).toBe(0);
+    return labels;
+  }
+
+  afterEach(() => {
+    // Unmount first, so no interval of the faked clock outlives the test.
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it.each(['en', 'fr'] as const)(
+    'keeps the exact confirmation and no checkout form past countdown ticks and the old deadline (%s)',
+    async (locale) => {
+      const labels = await confirmed(locale);
+      // Dropping the hold stops the countdown. The ref guard alone would hide the
+      // ticks but leave the interval running for the life of the page.
+      expect.soft(vi.getTimerCount(), 'countdown intervals after confirmation').toBe(0);
+
+      const before = performance.now();
+      await advance(300);
+      // Guards against an inert fake: the interval clock must move performance.now().
+      expect(performance.now() - before).toBe(300);
+      expect.soft(liveText(), 'after one countdown tick').toBe(labels.confirmed);
+      expect.soft(checkoutForms(), 'checkout forms after one countdown tick').toBe(0);
+
+      await advance(950);
+      expect.soft(liveText(), 'past the old hold deadline').toBe(labels.confirmed);
+      expect.soft(checkoutForms(), 'checkout forms past the old hold deadline').toBe(0);
+    },
+  );
+
+  it('keeps Reserve disabled after confirmation until the page reloads (D1)', async () => {
+    await confirmed('en');
+    const reserve = () => screen.getByRole('button', { name: 'Reserve' }) as HTMLButtonElement;
+    expect.soft(reserve().disabled, 'Reserve right after confirmation').toBe(true);
+
+    await advance(1_250);
+    expect.soft(reserve().disabled, 'Reserve past the old hold deadline').toBe(true);
+
+    cleanup();
+    render(<HoldPicker organizerId={ORG} ticketTypeId={TT} locale="en" />);
+    expect(reserve().disabled, 'Reserve on a fresh mount').toBe(false);
+  });
+
+  // D2. React commits the success setters only when the event-loop turn ends. A tick
+  // that runs between the setters and that commit must not queue a countdown value or
+  // the expiry message. One act scope holds that window open deterministically.
+  it('ignores a countdown tick that runs before the confirmation commits (D2)', async () => {
+    let answer: (response: Response) => void = () => {};
+    const pending = new Promise<Response>((resolve) => { answer = resolve; });
+    await reserveAndPay('en', () => pending);
+
+    await act(async () => {
+      answer(new Response(JSON.stringify(COMPLETED), { status: 200 }));
+      for (let turn = 0; turn < 3; turn += 1) await realTurn();
+      vi.advanceTimersByTime(250);
+    });
+
+    expect(liveText()).toBe('Order confirmed');
+    expect(checkoutForms()).toBe(0);
   });
 });
