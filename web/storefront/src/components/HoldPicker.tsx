@@ -237,13 +237,11 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
   const [paymentToken, setPaymentToken] = useState('fake-ok');
   const [ticketLink, setTicketLink] = useState<string | null>(null);
   const deadline = useRef(0);
-  // Set synchronously when checkout completes, before any setter. A countdown tick
-  // that runs before React commits the confirmation must not queue a countdown value
-  // or the expiry message over it (TKT-513).
-  const confirmed = useRef(false);
-  // The same guard for a hold that commerce ended without a completed order: a decline or a
-  // released checkout (TKT-503). Set synchronously before the cleanup setters, and
-  // cleared when the next hold is accepted, so that hold's countdown runs.
+  // Set synchronously, before the first setter, when checkout ends the hold: a confirmed
+  // order (TKT-513), a decline or a released checkout (TKT-503). A countdown tick queued
+  // before React commits that result must not restore the countdown or show the expiry
+  // message over it. The next accepted hold clears the flag, so its countdown runs. After
+  // a confirmation the ticket link keeps Reserve disabled, so the flag stays set.
   const holdEnded = useRef(false);
   const map = useRef<SeatMapHandle>(null);
   // One string table. There used to be a second, inline one here, and the two had
@@ -284,7 +282,7 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
   useEffect(() => {
     if (holdId === null) return;
     const timer = window.setInterval(() => {
-      if (confirmed.current || holdEnded.current) return;
+      if (holdEnded.current) return;
       const next = Math.max(0, deadline.current - performance.now());
       setRemaining(next);
       if (next === 0) {
@@ -381,7 +379,7 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
       if (response.ok) {
         const result = decodeOrderResult(body);
         // A completed order is terminal: stop the countdown and drop the hold.
-        confirmed.current = true;
+        holdEnded.current = true;
         setRemaining(0); setHoldId(null); setTicketLink(`/${locale}/tickets/${result.guest_order_ref}`); setStatus(t.orderConfirmed); return;
       }
       const released = isReleasedCheckout(response.status, body);
