@@ -91,13 +91,15 @@ changed and you can ignore this message.
 		lifetime: map[time.Duration]string{time.Hour: "one hour"},
 	},
 	// Vouvoiement and typographic apostrophes, as in the storefront's French strings
-	// (web/storefront/src/lib/locales.ts).
+	// (web/storefront/src/lib/locales.ts). Typography follows ADR-089: the space before
+	// the colon below is a literal U+00A0 (a raw string has no escapes), so the colon
+	// never starts a line.
 	"fr": {
 		path:    "/fr/account/reset-password",
 		subject: "Réinitialisez votre mot de passe",
 		body: `Quelqu’un a demandé la réinitialisation du mot de passe associé à cette adresse.
 
-Ouvrez ce lien pour en choisir un nouveau :
+Ouvrez ce lien pour en choisir un nouveau :
 
 %s
 

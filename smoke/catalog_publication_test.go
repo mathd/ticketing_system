@@ -348,7 +348,8 @@ func TestCatalogPublicationAndStorefront(t *testing.T) {
 		t.Fatalf("storefront fr: status %d", code)
 	}
 	html := string(page)
-	for _, want := range []string{nameFR, "Le Zénith", "45,50", "vendredi 18 septembre 2026", "19:30"} {
+	// French is displayed as fr-CA (ADR-089): the start time reads "19 h 30", not "19:30".
+	for _, want := range []string{nameFR, "Le Zénith", "45,50", "vendredi 18 septembre 2026", "19 h 30"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("fr list page missing %q:\n%.600s", want, html)
 		}

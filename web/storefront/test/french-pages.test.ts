@@ -113,15 +113,11 @@ describe('the French ticket page (TKT-365)', () => {
     expect(kolkata.map(([label]) => label)).toEqual([t.historyIssued, t.historyDelivered, t.historyOther]);
     for (const [, datetime, shown] of kolkata) {
       expect(datetime).toBe(INSTANT);
-      expect(shown).toContain('15 juil. 2026');
-      expect(shown).toContain('04:00:05');
-      expect(shown).toContain('UTC+5:30');
+      expect(shown).toBe('15 juill. 2026, 04 h 00 min 05 s UTC+5:30');
     }
     expect(unknownZone).toHaveLength(1);
     expect(unknownZone[0][0]).toBe(t.historyIssued);
-    expect(unknownZone[0][2]).toContain('22:30:05');
-    expect(unknownZone[0][2]).toContain('UTC');
-    expect(unknownZone[0][2]).not.toContain('UTC+');
+    expect(unknownZone[0][2]).toBe('14 juill. 2026, 22 h 30 min 05 s UTC');
 
     // Service vocabulary never reaches the buyer.
     expect(html).not.toMatch(/>\s*(issued|delivered|future_kind)\b/);
