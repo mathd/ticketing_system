@@ -278,7 +278,10 @@ try {
   });
 
   // A different buyer, in a fresh browser context, in each locale.
-  for (const [locale, reserveLabel, soldOut] of [['en', 'Reserve', 'Sold out'], ['fr', 'Réserver', 'Complet']]) {
+  for (const [locale, reserveLabel, soldOut] of [
+    ['en', 'Reserve', 'Sold out for now — check back later'],
+    ['fr', 'Réserver', 'Complet pour le moment — revenez plus tard'],
+  ]) {
     const buyer = await browser.newContext({ baseURL: BASE });
     try {
       const fresh = await buyer.newPage();

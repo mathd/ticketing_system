@@ -6,6 +6,10 @@ Date: 2026-10-12
 
 Accepted (TKT-341, decision D1).
 
+**Amended by TKT-530 (2026-11-28)** — *the storefront copy bullet and the held-out consequence
+only.* Records the owner's 2026-10-12 copy decision. The replaced wording is kept at each changed
+section.
+
 ## Context
 
 A GA quantity hold that inventory refuses for capacity answered one code-less 409
@@ -122,8 +126,11 @@ retry succeeds.
   reserve and on the persisted replay. Partner routes never send it, and the exchange target
   refusal does not carry it.
 - `sold_out` is in both `Error.code` enums.
-- The storefront shows "Sold out" / "Complet" only for that exact GA answer. It shows no waitlist
-  action.
+- The storefront shows "Sold out for now — check back later" / "Complet pour le moment — revenez
+  plus tard" only for that exact GA answer. It shows no waitlist action.
+
+  > **Amended by TKT-530.** The original text was: "The storefront shows "Sold out" / "Complet"
+  > only for that exact GA answer. It shows no waitlist action."
 - The load harness counts a `sold_out` 409 as a capacity rejection. Every other code still fails
   closed.
 
@@ -137,8 +144,12 @@ account eligibility on the server.
     - The waitlist has an entry condition that matches the proposed capture headroom.
     - The channel refusals stay uniform, so the TKT-246 oracle stays closed.
 - **Negative:**
-    - A pool that is held out but not sold shows "Sold out" until holds expire. The owner can
-      decide later whether the copy adds "tickets may become available".
+    - A pool that is held out but not sold shows the sellout message until its holds expire or its
+      channel reservations release; a later retry can then succeed.
+
+      > **Amended by TKT-530.** The original text was: "A pool that is held out but not sold shows
+      > "Sold out" until holds expire. The owner can decide later whether the copy adds "tickets
+      > may become available"."
     - `sold_out` is per slot (pool). A slot with more than one GA ticket type sells out as one.
     - Name the adversary (ADR-021): the code adds no information that the public availability
       read does not already give (`available`, `held`, `offering_status`). Inventory takes it

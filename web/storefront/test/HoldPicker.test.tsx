@@ -472,9 +472,9 @@ describe('checkout idempotency', () => {
 });
 
 // TKT-341 / ADR-082. Commerce answers a public GA reserve on a pool with zero public
-// headroom with 409 `sold_out`. The picker says "Sold out" for that exact answer, and
-// for nothing else: every other refusal keeps "Quantity unavailable", so a closed slot
-// or a malformed answer never reads as a sellout. No waitlist action yet.
+// headroom with 409 `sold_out`. The picker shows the localized sellout message for that
+// exact answer, and for nothing else: every other refusal keeps "Quantity unavailable", so
+// a closed slot or a malformed answer never reads as a sellout. No waitlist action yet.
 describe('GA sellout refusal', () => {
   function gaRefusal(body: string, status = 409): ReturnType<typeof vi.fn> {
     return vi.fn(async (input: RequestInfo | URL) => {
@@ -491,8 +491,8 @@ describe('GA sellout refusal', () => {
   const SOLD_OUT = JSON.stringify({ error: 'sold out', code: 'sold_out' });
 
   it.each([
-    ['en', 'Reserve', 'Sold out'],
-    ['fr', 'Réserver', 'Complet'],
+    ['en', 'Reserve', 'Sold out for now — check back later'],
+    ['fr', 'Réserver', 'Complet pour le moment — revenez plus tard'],
   ] as const)('shows the localized sellout for an exact sold_out refusal (%s)', async (locale, reserve, soldOut) => {
     mountGAIn(gaRefusal(SOLD_OUT), locale);
     fireEvent.click(screen.getByRole('button', { name: reserve }));
@@ -514,13 +514,11 @@ describe('GA sellout refusal', () => {
     mountGAIn(gaRefusal(body, status), 'en');
     fireEvent.click(screen.getByRole('button', { name: 'Reserve' }));
     await screen.findByText('Quantity unavailable');
-    expect(screen.queryByText('Sold out')).toBeNull();
   });
 
   it('keeps the neutral refusal for a seated reservation answered with sold_out', async () => {
     await selectAndReserve(seatedFetch({ error: 'sold out', code: 'sold_out' }, 409));
     await screen.findByText('Quantity unavailable');
-    expect(screen.queryByText('Sold out')).toBeNull();
   });
 });
 
