@@ -120,6 +120,30 @@ describe('the checkout form in each locale', () => {
   });
 });
 
+// TKT-503. The released-checkout copy is spelled out here, byte for byte (owner
+// decision D5). HoldPicker.test.tsx holds the 402 decline control.
+describe('a released checkout, in French', () => {
+  const RELEASED = { order_id: '00000000-0000-0000-0000-000000000006', status: 'timeout', replay: false };
+  const message = "Votre commande n'a pas abouti. Veuillez sélectionner de nouveau vos billets.";
+
+  it('a 408 shows its exact copy and closes the form', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/reservations')) return new Response(JSON.stringify(heldReservation()), { status: 201 });
+      if (url.includes('/checkout')) return new Response(JSON.stringify(RELEASED), { status: 408 });
+      throw new Error(`unexpected fetch ${url}`);
+    }));
+    render(<HoldPicker organizerId={ORG} ticketTypeId={TT} locale="fr" />);
+    fireEvent.click(screen.getByRole('button', { name: UI_STRINGS.fr.reserve }));
+    fireEvent.change(await screen.findByRole('combobox', { name: 'Paiement simulé' }), { target: { value: 'fake-timeout' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Payer / }));
+
+    const live = await screen.findByText(message, EXACT);
+    expect(live.textContent).toBe(message);
+    expect(document.querySelectorAll('.checkout-form').length).toBe(0);
+  });
+});
+
 // The conflict messages agree with the NUMBER of seats they name.
 describe('seat refusals agree with the seat count', () => {
   it.each([
