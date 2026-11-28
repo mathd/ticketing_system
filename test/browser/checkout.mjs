@@ -133,9 +133,11 @@ try {
     channel.port1.onmessage = () => resolve();
     channel.port2.postMessage(0);
   }));
-  const confirmation = (await page.locator('span[aria-live="polite"]').innerText()).trim();
+  const statusSpan = page.locator('span[aria-live="polite"]');
+  const confirmation = (await statusSpan.innerText()).trim();
+  const statusVisible = await statusSpan.isVisible();
   check('the completed order stays exactly confirmed after countdown ticks',
-    confirmation === 'Order confirmed', JSON.stringify(confirmation));
+    statusVisible && confirmation === 'Order confirmed', JSON.stringify({ confirmation, statusVisible }));
   check('no checkout form returns after the order is confirmed',
     (await page.locator('.checkout-form').count()) === 0);
   await waitForAvailability(page, performanceId, {

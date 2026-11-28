@@ -165,9 +165,11 @@ try {
       channel.port1.onmessage = () => resolve();
       channel.port2.postMessage(0);
     }));
-    const confirmation = (await page.locator('span[aria-live="polite"]').innerText()).trim();
+    const statusSpan = page.locator('span[aria-live="polite"]');
+    const confirmation = (await statusSpan.innerText()).trim();
+    const statusVisible = await statusSpan.isVisible();
     check('the confirmation is exactly French after countdown ticks',
-      confirmation === FR.orderConfirmed, JSON.stringify(confirmation));
+      statusVisible && confirmation === FR.orderConfirmed, JSON.stringify({ confirmation, statusVisible }));
     check('no checkout form returns after the order is confirmed',
       (await page.locator('.checkout-form').count()) === 0);
     check('the confirmation stays on the French event page', new URL(page.url()).pathname === eventPath, page.url());
