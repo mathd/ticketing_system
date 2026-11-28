@@ -219,6 +219,41 @@ try {
   });
   check('a declined payment returns to a reservable state', await page.getByRole('button', { name: 'Reserve', exact: true }).isEnabled());
 
+  // TKT-503. A fake-timeout checkout ends without a charge: commerce releases the hold
+  // and answers 408 `status: "timeout"`. No installClock here: the purchase above
+  // already installed the page clock (TKT-513).
+  await page.goto(`/en/events/${eventId}`, { waitUntil: 'domcontentloaded' });
+  await reserve(page, 'released checkout');
+  await waitForAvailability(page, performanceId, {
+    capacity: FIXTURE_CAPACITY,
+    held: 1,
+    confirmed: 1,
+    available: 0,
+    offering_status: 'open',
+  });
+  await page.getByLabel('Fake payment').selectOption('fake-timeout');
+  const releasedResponse = page.waitForResponse((response) =>
+    response.request().method() === 'POST' && new URL(response.url()).pathname === '/checkout');
+  await page.getByRole('button', { name: /^Pay / }).click();
+  const released = await releasedResponse;
+  check('a released checkout answers 408 through the storefront bridge',
+    released.status() === 408, `${released.status()} ${await released.text()}`);
+  const notCharged = page.getByText(
+    'Your order was not completed and you were not charged. Please select your tickets again.',
+    { exact: true },
+  );
+  await notCharged.waitFor();
+  check('a released checkout shows the exact not-charged copy', await notCharged.isVisible());
+  check('a released checkout closes the checkout form', (await page.locator('.checkout-form').count()) === 0);
+  check('a released checkout enables Reserve', await page.getByRole('button', { name: 'Reserve', exact: true }).isEnabled());
+  await waitForAvailability(page, performanceId, {
+    capacity: FIXTURE_CAPACITY,
+    held: 0,
+    confirmed: 1,
+    available: 1,
+    offering_status: 'open',
+  });
+
   // TKT-341 / ADR-082. One unit is left. Two asked for is a partial shortage: the
   // buyer can buy fewer now, so it is not a sellout.
   await page.goto(`/en/events/${eventId}`, { waitUntil: 'domcontentloaded' });

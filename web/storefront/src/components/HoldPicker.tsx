@@ -19,6 +19,7 @@ type Props = {
 };
 type Reservation = components['schemas']['Reservation'];
 type OrderResult = components['schemas']['OrderResult'];
+type OrderFailure = components['schemas']['OrderFailure'];
 type ReservationRefusal =
   | { error: string; code: 'seat_taken'; seat_identities: string[] }
   | {
@@ -184,6 +185,21 @@ function decodeOrderResult(value: unknown): OrderResult {
     guest_order_ref: uuidField(body.guest_order_ref, 'guest_order_ref'),
     status: body.status,
   };
+}
+
+// isReleasedCheckout reads commerce's answer for a checkout it released without a
+// charge (TKT-503, ADR-016 `not_attempted`): HTTP 408, an object body, `status:
+// "timeout"` and a string `order_id`. `replay` and other fields are optional. Any other
+// 408, including one whose body does not parse, keeps the hold and the ambiguous
+// "being checked" message, because nothing here proves that the buyer was not charged.
+function isReleasedCheckout(
+  httpStatus: number,
+  value: unknown,
+): value is Pick<OrderFailure, 'order_id' | 'status'> {
+  if (httpStatus !== 408) return false;
+  if (!isObject(value)) return false;
+  if (value.status !== 'timeout') return false;
+  return typeof value.order_id === 'string';
 }
 
 export function remainingMilliseconds(hold: Pick<Hold, 'expires_at' | 'server_time'>): number {
@@ -363,7 +379,15 @@ export default function HoldPicker({ organizerId, ticketTypeId, locale, slotId, 
         confirmed.current = true;
         setRemaining(0); setHoldId(null); setTicketLink(`/${locale}/tickets/${result.guest_order_ref}`); setStatus(t.orderConfirmed); return;
       }
-      if (response.status === 402 || response.status === 408) { setReservation(null); setHoldId(null); setRemaining(null); setStatus(t.paymentDeclined); return; }
+      const released = isReleasedCheckout(response.status, body);
+      if (response.status === 402 || released) {
+        setReservation(null); setHoldId(null); setRemaining(null);
+        // Commerce released this hold. A replay of the cached reserve key would return the
+        // released reservation, so the same selection must ask for a new hold. Reserve is
+        // disabled while this request runs, so no reserve call can read the old key.
+        if (released) reserveKey.current = null;
+        setStatus(released ? t.paymentNotCharged : t.paymentDeclined); return;
+      }
       // 401 = the customer assertion was refused (expired, or signed with a key
       // that has since rotated). It is NOT the payment-uncertainty answer, which
       // is what this fell through to before — a lie in the frightening direction.

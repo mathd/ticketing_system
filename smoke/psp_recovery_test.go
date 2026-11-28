@@ -332,6 +332,31 @@ func TestCheckoutReplayAgainstRecoveredOrders(t *testing.T) {
 	if code != 409 {
 		t.Fatalf("replay against reconciliation_required = %d %s, want 409", code, body)
 	}
+
+	// TKT-503. A checkout released without a charge: the storefront's not-charged copy
+	// depends on this exact replay answer. The initial decline already released this
+	// reservation's hold. The row is fabricated as above; the runner and store smoke
+	// tests cover the transition that writes it.
+	tag, err := db.Exec(ctx, `UPDATE orders SET status='timeout', terminal_outcome='not_attempted' WHERE id=$1`, declined.OrderID)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("fabricate released timeout order: %v (rows=%d)", err, tag.RowsAffected())
+	}
+	code, body = postWithKey(t, gatewayURL+"/api/commerce/orders", checkoutKey, checkoutBody)
+	if code != http.StatusRequestTimeout {
+		t.Fatalf("replay against released timeout = %d %s, want 408", code, body)
+	}
+	// A fresh value: the refunded replay above already set Replay.
+	var released struct {
+		OrderID string `json:"order_id"`
+		Status  string `json:"status"`
+		Replay  bool   `json:"replay"`
+	}
+	if err := json.Unmarshal(body, &released); err != nil {
+		t.Fatal(err)
+	}
+	if released.Status != "timeout" || released.OrderID != declined.OrderID || !released.Replay {
+		t.Fatalf("released replay = %+v, want status=timeout order_id=%s replay=true", released, declined.OrderID)
+	}
 }
 
 // TKT-116 item 3. A checkout retry that arrives at `release_pending` after the recovery

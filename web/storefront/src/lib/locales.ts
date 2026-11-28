@@ -148,6 +148,9 @@ const ENGLISH_UI_STRINGS = {
     orderConfirmed: 'Order confirmed',
     viewMyTickets: 'View my tickets',
     paymentDeclined: 'Payment declined — try again',
+    // Only for commerce's 408 with `status: "timeout"` and an order id (TKT-503): the
+    // checkout was released without a charge, so the buyer must reserve again.
+    paymentNotCharged: 'Your order was not completed and you were not charged. Please select your tickets again.',
     serviceUnavailable: 'Service unavailable',
     paymentChecking: 'Payment status is being checked',
     checkoutRetryShortly: 'This order is being finalised — try again in a moment.',
@@ -288,6 +291,7 @@ const FRENCH_UI_STRINGS = {
     orderConfirmed: 'Commande confirmée',
     viewMyTickets: 'Voir mes billets',
     paymentDeclined: 'Paiement refusé — réessayez',
+    paymentNotCharged: "Votre commande n'a pas abouti et vous n'avez pas été débité. Veuillez sélectionner de nouveau vos billets.",
     serviceUnavailable: 'Service indisponible',
     paymentChecking: 'Vérification du paiement en cours',
     checkoutRetryShortly: 'Cette commande est en cours de finalisation — réessayez dans un instant.',

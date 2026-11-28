@@ -120,6 +120,32 @@ describe('the checkout form in each locale', () => {
   });
 });
 
+// TKT-503. The released-checkout copy is spelled out here, byte for byte, and the
+// decline copy stays as it was for a 402 with the same body.
+describe('a checkout that ends without a charge, in French', () => {
+  const RELEASED = { order_id: '00000000-0000-0000-0000-000000000006', status: 'timeout', replay: false };
+
+  it.each([
+    [408, "Votre commande n'a pas abouti et vous n'avez pas été débité. Veuillez sélectionner de nouveau vos billets."],
+    [402, 'Paiement refusé — réessayez'],
+  ] as const)('a %i shows its exact copy and closes the form', async (status, message) => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/reservations')) return new Response(JSON.stringify(heldReservation()), { status: 201 });
+      if (url.includes('/checkout')) return new Response(JSON.stringify(RELEASED), { status });
+      throw new Error(`unexpected fetch ${url}`);
+    }));
+    render(<HoldPicker organizerId={ORG} ticketTypeId={TT} locale="fr" />);
+    fireEvent.click(screen.getByRole('button', { name: UI_STRINGS.fr.reserve }));
+    fireEvent.change(await screen.findByRole('combobox', { name: 'Paiement simulé' }), { target: { value: 'fake-timeout' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Payer / }));
+
+    const live = await screen.findByText(message, EXACT);
+    expect(live.textContent).toBe(message);
+    expect(document.querySelectorAll('.checkout-form').length).toBe(0);
+  });
+});
+
 // The conflict messages agree with the NUMBER of seats they name.
 describe('seat refusals agree with the seat count', () => {
   it.each([

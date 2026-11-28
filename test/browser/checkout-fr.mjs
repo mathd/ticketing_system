@@ -1,6 +1,6 @@
 // TKT-365: one French purchase in real Chrome, from the French event page to the French
-// ticket page, with a French decline. Its own offer, so the English spec's exact
-// availability and sellout assertions are untouched.
+// ticket page, with a French decline and a French released checkout (TKT-503). Its own
+// offer, so the English spec's exact availability and sellout assertions are untouched.
 //
 // What "the rendered actions" means here: the purchase has no native <form>. Reserve and
 // Pay are buttons whose handlers POST JSON, so this spec clicks the rendered controls and
@@ -46,6 +46,7 @@ const FR = {
   ticketQrAlt: 'Code QR du billet',
   historyIssued: 'Émis',
   paymentDeclined: 'Paiement refusé — réessayez',
+  paymentNotCharged: "Votre commande n'a pas abouti et vous n'avez pas été débité. Veuillez sélectionner de nouveau vos billets.",
 };
 
 // The storefront's history format (formatHistoryTime in web/storefront/src/lib/format.ts),
@@ -224,6 +225,37 @@ try {
     await waitForAvailability(page, performanceId, { held: 0, confirmed: 1, available: 1 });
     check('a declined payment returns to a reservable state',
       await page.getByRole('button', { name: FR.reserve, exact: true }).isEnabled());
+  });
+
+  // TKT-503. A fake-timeout checkout ends without a charge. Then Réserver, on the same
+  // page with the same quantity, must take a NEW hold: a replay of the released
+  // reservation also answers 201, so only the capacity tells them apart. This is the
+  // last scenario, so the live hold it leaves cannot affect another one. No installClock
+  // here: the purchase above already installed the page clock (TKT-513).
+  await scenario('French released checkout', async () => {
+    await reserveInFrench(page, eventId, 'released checkout');
+    await waitForAvailability(page, performanceId, { held: 1, confirmed: 1, available: 0 });
+    await page.getByRole('combobox', { name: FR.fakePaymentLabel, exact: true }).selectOption('fake-timeout');
+    const checkout = postTo(page, '/checkout');
+    await page.getByRole('button', { name: new RegExp(`^${FR.pay} `) }).click();
+    const response = await checkout;
+    check('a released Payer answers 408 through the storefront bridge',
+      response.status() === 408, `${response.status()} ${await response.text()}`);
+    const notCharged = page.getByText(FR.paymentNotCharged, { exact: true });
+    await notCharged.waitFor();
+    check('the not-charged copy is exactly French', await notCharged.isVisible());
+    check('a released checkout closes the checkout form', (await page.locator('.checkout-form').count()) === 0);
+    const reserve = page.getByRole('button', { name: FR.reserve, exact: true });
+    check('a released checkout enables Réserver', await reserve.isEnabled());
+    await waitForAvailability(page, performanceId, { held: 0, confirmed: 1, available: 1 });
+
+    const reservation = postTo(page, '/api/commerce/reservations');
+    await reserve.click();
+    const again = await reservation;
+    check('Réserver after a released checkout answers 201', again.status() === 201, `${again.status()}`);
+    await page.locator('.checkout-form').waitFor();
+    check('Réserver after a released checkout shows the checkout form', await page.locator('.checkout-form').isVisible());
+    await waitForAvailability(page, performanceId, { held: 1, confirmed: 1, available: 0 });
   });
 } finally {
   await browser.close();
